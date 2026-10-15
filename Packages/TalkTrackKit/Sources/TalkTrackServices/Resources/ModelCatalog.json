@@ -1,0 +1,843 @@
+{
+  "legacyModels": [
+    {
+      "adapter": "qwen3Text",
+      "downloadByteCount": 20429167693,
+      "evidenceSHA256": "75fb1f33060b83c177629959dfc20c2df0a7c1725c193ce79709bb11c617a87b",
+      "evidenceURL": "https://huggingface.co/api/models/mlx-community/Qwen3.6-35B-A3B-4bit/revision/38740b847e4cb78f352aba30aa41c76e08e6eb46?blobs=true",
+      "files": [
+        {
+          "byteCount": 724,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "6bb763042ecef777c32411e65252d17aa0f62b35"
+          },
+          "path": "README.md"
+        },
+        {
+          "byteCount": 7764,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "a8755d827c0a7b614c246c4060dfd58ab352a8ff"
+          },
+          "path": "chat_template.jinja"
+        },
+        {
+          "byteCount": 23591,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "e3a2334ebf2df216742ef3ed4b784417bfffe6fc"
+          },
+          "path": "config.json"
+        },
+        {
+          "byteCount": 58,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "d24dba949ee1fe70cc810e4c4709a0bddf4e06ba"
+          },
+          "path": "configuration.json"
+        },
+        {
+          "byteCount": 202,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "023756cfadf88e5bf69eefeee3e172f38c448d64"
+          },
+          "path": "generation_config.json"
+        },
+        {
+          "byteCount": 5288196018,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "09f3e6ecb0b7af6e6a38bc8169a134c821b0924c2679b2bb8f4426ad38d032b8"
+          },
+          "path": "model-00001-of-00004.safetensors"
+        },
+        {
+          "byteCount": 5368472749,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "31dcdb1c49eebdb1505bd14e3cb33f9cf900bd2546b638f2464694ae763a033f"
+          },
+          "path": "model-00002-of-00004.safetensors"
+        },
+        {
+          "byteCount": 5368324139,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "3e66de06a1f03dade16a612a368cfce4a4c9caa4efd7d28185454384082cec03"
+          },
+          "path": "model-00003-of-00004.safetensors"
+        },
+        {
+          "byteCount": 4377211365,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "a5d0cf03519c26f8b506df6b0ba60526e5c08c8cea22d0c21ce92950e58a5422"
+          },
+          "path": "model-00004-of-00004.safetensors"
+        },
+        {
+          "byteCount": 215755,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "f714d295484e01790bad8b40c2ce49323d7d2598"
+          },
+          "path": "model.safetensors.index.json"
+        },
+        {
+          "byteCount": 390,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "2ea84a437d448ff71b08df68fdd949d5cc4ebb64"
+          },
+          "path": "preprocessor_config.json"
+        },
+        {
+          "byteCount": 1312,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "a3be3e79470d0a5befe0ba5247dfad8717d84529"
+          },
+          "path": "processor_config.json"
+        },
+        {
+          "byteCount": 19989343,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4"
+          },
+          "path": "tokenizer.json"
+        },
+        {
+          "byteCount": 1139,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "a068e2468cff426a9b105006e74e044030a6faf4"
+          },
+          "path": "tokenizer_config.json"
+        },
+        {
+          "byteCount": 385,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "3ba673a5ad7d4d13f54155ecd38b2a94a6dac8fe"
+          },
+          "path": "video_preprocessor_config.json"
+        },
+        {
+          "byteCount": 6722759,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "0aa0ce0658d60ac4a5d609f4eadb0e8e43514176"
+          },
+          "path": "vocab.json"
+        }
+      ],
+      "generatedArtifacts": [],
+      "id": "text",
+      "license": {
+        "baseAccess": "public",
+        "baseLicense": "apache-2.0",
+        "baseRepository": "Qwen/Qwen3.6-35B-A3B",
+        "baseRevision": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+        "checkpointLicense": "apache-2.0",
+        "modelCardURL": "https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit/blob/38740b847e4cb78f352aba30aa41c76e08e6eb46/README.md"
+      },
+      "preprocessingVersion": "mlx-swift-lm-3.31.4-chat-v1",
+      "quantization": "4-bit mixed",
+      "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "roles": [
+        "summary",
+        "translation",
+        "spelling"
+      ],
+      "runtimeValidation": "pending",
+      "weightByteCount": 20402204271
+    }
+  ],
+  "models": [
+    {
+      "adapter": "qwen3ASR",
+      "downloadByteCount": 712779760,
+      "evidenceSHA256": "9630b386d415cf46b43e03fef946b583a5d1fe24e85963e0e3fb3b588eb736b8",
+      "evidenceURL": "https://huggingface.co/api/models/mlx-community/Qwen3-ASR-0.6B-4bit/revision/313d850181767edf09f00a9c289becca70e58cd0?blobs=true",
+      "files": [
+        {
+          "byteCount": 1008,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "ab0d6d2e72d8587f2f599536e8b7463bba412a61"
+          },
+          "path": "README.md"
+        },
+        {
+          "byteCount": 1161,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "c44736493efd71ec96218cc626904698cdb13235"
+          },
+          "path": "chat_template.json"
+        },
+        {
+          "byteCount": 7187,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "049989ad1e19719b99c2f374eb7067040aa4c830"
+          },
+          "path": "config.json"
+        },
+        {
+          "byteCount": 142,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "7382a4d347c0a865b76bb1b8277f66a5ac312854"
+          },
+          "path": "generation_config.json"
+        },
+        {
+          "byteCount": 1671853,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+          },
+          "path": "merges.txt"
+        },
+        {
+          "byteCount": 708236945,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "70c7e67e588062adce4f10796e47ad42ead51c6671eda61a0987eae38ca95ddf"
+          },
+          "path": "model.safetensors"
+        },
+        {
+          "byteCount": 71814,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "b507ef4ee5b57e6147c4bda5d9db05992477030d"
+          },
+          "path": "model.safetensors.index.json"
+        },
+        {
+          "byteCount": 330,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "8f7f07346466d5d494ec0d4969d1c3d0190eed72"
+          },
+          "path": "preprocessor_config.json"
+        },
+        {
+          "byteCount": 12487,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "b93109843922a40c6654c5449d3bf95372267c66"
+          },
+          "path": "tokenizer_config.json"
+        },
+        {
+          "byteCount": 2776833,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "4783fe10ac3adce15ac8f358ef5462739852c569"
+          },
+          "path": "vocab.json"
+        }
+      ],
+      "generatedArtifacts": [
+        {
+          "generatorVersion": "mlx-audio-01dec7c9-qwen3-tokenizer-v1",
+          "path": "tokenizer.json",
+          "sourcePaths": [
+            "vocab.json",
+            "merges.txt",
+            "tokenizer_config.json"
+          ]
+        }
+      ],
+      "id": "live-asr",
+      "license": {
+        "baseAccess": "public",
+        "baseLicense": "apache-2.0",
+        "baseRepository": "Qwen/Qwen3-ASR-0.6B",
+        "baseRevision": "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
+        "checkpointLicense": "apache-2.0",
+        "modelCardURL": "https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-4bit/blob/313d850181767edf09f00a9c289becca70e58cd0/README.md"
+      },
+      "preprocessingVersion": "mlx-audio-01dec7c9-qwen3-tokenizer-v1",
+      "quantization": "4-bit mixed",
+      "repository": "mlx-community/Qwen3-ASR-0.6B-4bit",
+      "revision": "313d850181767edf09f00a9c289becca70e58cd0",
+      "roles": [
+        "liveASR"
+      ],
+      "runtimeValidation": "pending",
+      "weightByteCount": 708236945
+    },
+    {
+      "adapter": "qwen3ASR",
+      "downloadByteCount": 2467857511,
+      "evidenceSHA256": "07c284d9bd4fc8be1f1ed2b4551554b239d9b05349ab8b77d0fe25931b3d0918",
+      "evidenceURL": "https://huggingface.co/api/models/mlx-community/Qwen3-ASR-1.7B-8bit/revision/a8379a2e2f9e313c9292cdf1af4055ab56d50d55?blobs=true",
+      "files": [
+        {
+          "byteCount": 1008,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "b835cd3f6d4f5a2dd6b7f3ad83138166bdf5f1b5"
+          },
+          "path": "README.md"
+        },
+        {
+          "byteCount": 1161,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "c44736493efd71ec96218cc626904698cdb13235"
+          },
+          "path": "chat_template.json"
+        },
+        {
+          "byteCount": 7188,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "888cc7fae19ea9ede543b1ae82e9c78aa06104ca"
+          },
+          "path": "config.json"
+        },
+        {
+          "byteCount": 142,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "7382a4d347c0a865b76bb1b8277f66a5ac312854"
+          },
+          "path": "generation_config.json"
+        },
+        {
+          "byteCount": 1671853,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+          },
+          "path": "merges.txt"
+        },
+        {
+          "byteCount": 2463307541,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c"
+          },
+          "path": "model.safetensors"
+        },
+        {
+          "byteCount": 78968,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "f0191caac2794d5b6fba0ab3eeb70f8eff90319e"
+          },
+          "path": "model.safetensors.index.json"
+        },
+        {
+          "byteCount": 330,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "8f7f07346466d5d494ec0d4969d1c3d0190eed72"
+          },
+          "path": "preprocessor_config.json"
+        },
+        {
+          "byteCount": 12487,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "b93109843922a40c6654c5449d3bf95372267c66"
+          },
+          "path": "tokenizer_config.json"
+        },
+        {
+          "byteCount": 2776833,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "4783fe10ac3adce15ac8f358ef5462739852c569"
+          },
+          "path": "vocab.json"
+        }
+      ],
+      "generatedArtifacts": [
+        {
+          "generatorVersion": "mlx-audio-01dec7c9-qwen3-tokenizer-v1",
+          "path": "tokenizer.json",
+          "sourcePaths": [
+            "vocab.json",
+            "merges.txt",
+            "tokenizer_config.json"
+          ]
+        }
+      ],
+      "id": "final-asr",
+      "license": {
+        "baseAccess": "public",
+        "baseLicense": "apache-2.0",
+        "baseRepository": "Qwen/Qwen3-ASR-1.7B",
+        "baseRevision": "7278e1e70fe206f11671096ffdd38061171dd6e5",
+        "checkpointLicense": "apache-2.0",
+        "modelCardURL": "https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit/blob/a8379a2e2f9e313c9292cdf1af4055ab56d50d55/README.md"
+      },
+      "preprocessingVersion": "mlx-audio-01dec7c9-qwen3-tokenizer-v1",
+      "quantization": "8-bit mixed",
+      "repository": "mlx-community/Qwen3-ASR-1.7B-8bit",
+      "revision": "a8379a2e2f9e313c9292cdf1af4055ab56d50d55",
+      "roles": [
+        "finalASR"
+      ],
+      "runtimeValidation": "pending",
+      "weightByteCount": 2463307541
+    },
+    {
+      "adapter": "qwen3Aligner",
+      "downloadByteCount": 1276474460,
+      "evidenceSHA256": "f7a668cb067bf8f78b0a12366dd9b342609809c8e13a864820d04ceb45515a2b",
+      "evidenceURL": "https://huggingface.co/api/models/mlx-community/Qwen3-ForcedAligner-0.6B-8bit/revision/0e1a68e91d815300c7c9754b2a7639378b23db15?blobs=true",
+      "files": [
+        {
+          "byteCount": 1068,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "23c0a2762f86d9a54775cf58057bcb87ddd329da"
+          },
+          "path": "README.md"
+        },
+        {
+          "byteCount": 1161,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "c44736493efd71ec96218cc626904698cdb13235"
+          },
+          "path": "chat_template.json"
+        },
+        {
+          "byteCount": 6940,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "6a2c723df27c38e6924a3cfc6629636b42b79311"
+          },
+          "path": "config.json"
+        },
+        {
+          "byteCount": 115,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "b0a540032cf7b6b5ba1438d04ab69b7e787d9b8e"
+          },
+          "path": "generation_config.json"
+        },
+        {
+          "byteCount": 1671853,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+          },
+          "path": "merges.txt"
+        },
+        {
+          "byteCount": 1271924386,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "be19ef8ac4326d032e7673342930b14c2df30bd68c1632493b0f563e30829f91"
+          },
+          "path": "model.safetensors"
+        },
+        {
+          "byteCount": 79108,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "a360f0d6b31173a7285457c7b99613ba2b0a0653"
+          },
+          "path": "model.safetensors.index.json"
+        },
+        {
+          "byteCount": 330,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "8f7f07346466d5d494ec0d4969d1c3d0190eed72"
+          },
+          "path": "preprocessor_config.json"
+        },
+        {
+          "byteCount": 12666,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "3df92df83b22342e36a7b11cf9a70de2a2996bec"
+          },
+          "path": "tokenizer_config.json"
+        },
+        {
+          "byteCount": 2776833,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "4783fe10ac3adce15ac8f358ef5462739852c569"
+          },
+          "path": "vocab.json"
+        }
+      ],
+      "generatedArtifacts": [
+        {
+          "generatorVersion": "mlx-audio-01dec7c9-qwen3-tokenizer-v1",
+          "path": "tokenizer.json",
+          "sourcePaths": [
+            "vocab.json",
+            "merges.txt",
+            "tokenizer_config.json"
+          ]
+        }
+      ],
+      "id": "alignment",
+      "license": {
+        "baseAccess": "public",
+        "baseLicense": "apache-2.0",
+        "baseRepository": "Qwen/Qwen3-ForcedAligner-0.6B",
+        "baseRevision": "c7cbfc2048c462b0d63a45797104fc9db3ad62b7",
+        "checkpointLicense": "apache-2.0",
+        "modelCardURL": "https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit/blob/0e1a68e91d815300c7c9754b2a7639378b23db15/README.md"
+      },
+      "preprocessingVersion": "mlx-audio-01dec7c9-qwen3-tokenizer-v1",
+      "quantization": "8-bit mixed",
+      "repository": "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
+      "revision": "0e1a68e91d815300c7c9754b2a7639378b23db15",
+      "roles": [
+        "alignment"
+      ],
+      "runtimeValidation": "pending",
+      "weightByteCount": 1271924386
+    },
+    {
+      "adapter": "pyannoteSegmentation",
+      "downloadByteCount": 5964199,
+      "evidenceSHA256": "010d6c34b18a7a2ec06909d515a15f7804f0073beaabb7f65aedd09b10c5996a",
+      "evidenceURL": "https://huggingface.co/api/models/aufklarer/Pyannote-Segmentation-MLX/revision/abef0110277063f0ea117a802832a3eba22af84c?blobs=true",
+      "files": [
+        {
+          "byteCount": 3151,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "905182839b2679c2fb13011bac65f1a8dc00bede"
+          },
+          "path": "README.md"
+        },
+        {
+          "byteCount": 644,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "79c692efdb741e758e16d8784f674ee43dc68411"
+          },
+          "path": "config.json"
+        },
+        {
+          "byteCount": 5960404,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "d1630fa2c22f47e4c89034f8d5e3aff99884f55347d48ce70dd306328b4421f5"
+          },
+          "path": "model.safetensors"
+        }
+      ],
+      "generatedArtifacts": [],
+      "id": "segmentation",
+      "license": {
+        "baseAccess": "gated",
+        "baseLicense": "mit",
+        "baseRepository": "pyannote/segmentation-3.0",
+        "baseRevision": "e66f3d3b9eb0873085418a7b813d3b369bf160bb",
+        "checkpointLicense": "mit",
+        "modelCardURL": "https://huggingface.co/aufklarer/Pyannote-Segmentation-MLX/blob/abef0110277063f0ea117a802832a3eba22af84c/README.md"
+      },
+      "preprocessingVersion": "speech-swift-1e6e0e52-segmentation-v1",
+      "quantization": "F32",
+      "repository": "aufklarer/Pyannote-Segmentation-MLX",
+      "revision": "abef0110277063f0ea117a802832a3eba22af84c",
+      "roles": [
+        "segmentation"
+      ],
+      "runtimeValidation": "pending",
+      "weightByteCount": 5960404
+    },
+    {
+      "adapter": "weSpeaker",
+      "downloadByteCount": 26530518,
+      "evidenceSHA256": "ae9e2d8f9a82491a460806d4337015fbe7e8cae4047327a99a76f32f7a1af076",
+      "evidenceURL": "https://huggingface.co/api/models/aufklarer/WeSpeaker-ResNet34-LM-MLX/revision/26499ce11ad1b48ac96aacc8d6fa433f941bdc96?blobs=true",
+      "files": [
+        {
+          "byteCount": 3329,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "a97f49a31543610b064c19aefd039a63a300f94c"
+          },
+          "path": "README.md"
+        },
+        {
+          "byteCount": 237,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "53b9040b0620f4eae3283799cd658897aeb06735"
+          },
+          "path": "config.json"
+        },
+        {
+          "byteCount": 26526952,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "f56204883f2de969f584af7893e5373575556b422190c14c206a5fd94f3d7fe6"
+          },
+          "path": "model.safetensors"
+        }
+      ],
+      "generatedArtifacts": [],
+      "id": "embedding",
+      "license": {
+        "baseAccess": "public",
+        "baseLicense": "cc-by-4.0",
+        "baseRepository": "pyannote/wespeaker-voxceleb-resnet34-LM",
+        "baseRevision": "837717ddb9ff5507820346191109dc79c958d614",
+        "checkpointLicense": "mit",
+        "modelCardURL": "https://huggingface.co/aufklarer/WeSpeaker-ResNet34-LM-MLX/blob/26499ce11ad1b48ac96aacc8d6fa433f941bdc96/README.md"
+      },
+      "preprocessingVersion": "speech-swift-1e6e0e52-mel-v1",
+      "quantization": "F32",
+      "repository": "aufklarer/WeSpeaker-ResNet34-LM-MLX",
+      "revision": "26499ce11ad1b48ac96aacc8d6fa433f941bdc96",
+      "roles": [
+        "embedding"
+      ],
+      "runtimeValidation": "pending",
+      "weightByteCount": 26526952
+    },
+    {
+      "adapter": "qwen3Text",
+      "downloadByteCount": 7120915472,
+      "evidenceSHA256": "23ebfa39a847c9e2b8cbe04b30fb855eb684ea2a519566f65a52517a566078a3",
+      "evidenceURL": "https://huggingface.co/api/models/mlx-community/Qwen3.5-9B-OptiQ-4bit/revision/890b4c43f99ff392819d83605f7b1e59fa9688aa?blobs=true",
+      "files": [
+        {
+          "byteCount": 5111,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "4d10ac6b7e4efdcb0631a5e6288f213becc6a042"
+          },
+          "path": "README.md"
+        },
+        {
+          "byteCount": 7756,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "a585dec894e63da457d9440ec6aa7caa16d20860"
+          },
+          "path": "chat_template.jinja"
+        },
+        {
+          "byteCount": 55670,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "164a4b16b20fb91bf4d58700ea7111fa373d038a"
+          },
+          "path": "config.json"
+        },
+        {
+          "byteCount": 148,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "2e9c72f1d20c18e18b56838f5be31c0d87eb8fa8"
+          },
+          "path": "generation_config.json"
+        },
+        {
+          "byteCount": 528,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "69ca6e63949793e1451567038961ef42e4539393"
+          },
+          "path": "kv_config.json"
+        },
+        {
+          "byteCount": 5349382977,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "ac85c6ecdcd12ab778d44a9d6f90f1080498173c7fa6da2f335f3c42b716d85c"
+          },
+          "path": "model-00001-of-00002.safetensors"
+        },
+        {
+          "byteCount": 1751328661,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "9d3a23b2307c705af2e86bbf2af791f0d63eae8c24042c5f362ad7586caa0062"
+          },
+          "path": "model-00002-of-00002.safetensors"
+        },
+        {
+          "byteCount": 117910,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "41771fccdbcbedf41c06577ce34b1d86e5f23da3"
+          },
+          "path": "model.safetensors.index.json"
+        },
+        {
+          "byteCount": 26233,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "7e813ff586528f6ae7e1f3c76bc8c21513ab3ce2"
+          },
+          "path": "optiq_metadata.json"
+        },
+        {
+          "byteCount": 19989343,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4"
+          },
+          "path": "tokenizer.json"
+        },
+        {
+          "byteCount": 1135,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "f57cfc38c7cf688e8241301163edb3d22e1f5248"
+          },
+          "path": "tokenizer_config.json"
+        }
+      ],
+      "generatedArtifacts": [],
+      "id": "text-qwen35-9b",
+      "license": {
+        "baseAccess": "public",
+        "baseLicense": "apache-2.0",
+        "baseRepository": "Qwen/Qwen3.5-9B",
+        "baseRevision": "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+        "checkpointLicense": "apache-2.0",
+        "modelCardURL": "https://huggingface.co/mlx-community/Qwen3.5-9B-OptiQ-4bit/blob/890b4c43f99ff392819d83605f7b1e59fa9688aa/README.md"
+      },
+      "preprocessingVersion": "mlx-swift-lm-3.31.4-qwen35-optiq-chat-v1",
+      "quantization": "4-bit mixed",
+      "repository": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "revision": "890b4c43f99ff392819d83605f7b1e59fa9688aa",
+      "roles": [
+        "summary",
+        "translation",
+        "spelling"
+      ],
+      "runtimeValidation": "pending",
+      "weightByteCount": 7100711638
+    },
+    {
+      "adapter": "qwen3Text",
+      "downloadByteCount": 3289856275,
+      "evidenceSHA256": "73b5481deefa1bb51741e9561e76800c6b6255827221edb91233be8642859e82",
+      "evidenceURL": "https://huggingface.co/api/models/mlx-community/Qwen3.5-4B-OptiQ-4bit/revision/6cb5bdfd0bf15f484881fb9f1ab6d7c840fddde9?blobs=true",
+      "files": [
+        {
+          "byteCount": 5101,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "85d23e04f9b45b9fa16f64b3d142c04aba14de50"
+          },
+          "path": "README.md"
+        },
+        {
+          "byteCount": 7756,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "a585dec894e63da457d9440ec6aa7caa16d20860"
+          },
+          "path": "chat_template.jinja"
+        },
+        {
+          "byteCount": 55543,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "1ec20dc20a20b50b256e395cdef5473071367d87"
+          },
+          "path": "config.json"
+        },
+        {
+          "byteCount": 148,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "2e9c72f1d20c18e18b56838f5be31c0d87eb8fa8"
+          },
+          "path": "generation_config.json"
+        },
+        {
+          "byteCount": 528,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "54f61f53be6dfe25d541aa2363b52ac45391615a"
+          },
+          "path": "kv_config.json"
+        },
+        {
+          "byteCount": 3269669552,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "5d59fea455202270c0f7f71a1902516b06457df5600c3182e1ff9163c33287c1"
+          },
+          "path": "model.safetensors"
+        },
+        {
+          "byteCount": 100945,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "8b4b8cdd5e802463ace477acdbb4313d4268c78c"
+          },
+          "path": "model.safetensors.index.json"
+        },
+        {
+          "byteCount": 26224,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "a72fbb1f02c8a798d3a022f76b59680ab415d10c"
+          },
+          "path": "optiq_metadata.json"
+        },
+        {
+          "byteCount": 19989343,
+          "digest": {
+            "algorithm": "sha256",
+            "value": "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4"
+          },
+          "path": "tokenizer.json"
+        },
+        {
+          "byteCount": 1135,
+          "digest": {
+            "algorithm": "gitBlobSHA1",
+            "value": "f57cfc38c7cf688e8241301163edb3d22e1f5248"
+          },
+          "path": "tokenizer_config.json"
+        }
+      ],
+      "generatedArtifacts": [],
+      "id": "text-qwen35-4b",
+      "license": {
+        "baseAccess": "public",
+        "baseLicense": "apache-2.0",
+        "baseRepository": "Qwen/Qwen3.5-4B",
+        "baseRevision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+        "checkpointLicense": "apache-2.0",
+        "modelCardURL": "https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit/blob/6cb5bdfd0bf15f484881fb9f1ab6d7c840fddde9/README.md"
+      },
+      "preprocessingVersion": "mlx-swift-lm-3.31.4-qwen35-optiq-chat-v1",
+      "quantization": "4-bit mixed",
+      "repository": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+      "revision": "6cb5bdfd0bf15f484881fb9f1ab6d7c840fddde9",
+      "roles": [
+        "summary",
+        "translation",
+        "spelling"
+      ],
+      "runtimeValidation": "pending",
+      "weightByteCount": 3269669552
+    }
+  ],
+  "schemaVersion": 1
+}

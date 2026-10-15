@@ -1,0 +1,87 @@
+name: TalkTrack
+# Local developer tools (debug screens, model fixtures); absent in a public checkout.
+include:
+  - path: project.devtools.yml
+    enable: ${TALKTRACK_DEVTOOLS}
+options:
+  minimumXcodeGenVersion: 2.44.0
+  deploymentTarget:
+    macOS: '15.0'
+packages:
+  TalkTrackKit:
+    path: Packages/TalkTrackKit
+  TalkTrackInference:
+    path: Packages/TalkTrackInference
+  MLX:
+    url: https://github.com/ml-explore/mlx-swift
+    exactVersion: 0.31.6
+  MLXLM:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    exactVersion: 3.31.4
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    SWIFT_STRICT_CONCURRENCY: complete
+    ARCHS: arm64
+    MACOSX_DEPLOYMENT_TARGET: '15.0'
+    # Stable Apple Development signing keeps macOS privacy grants across rebuilds.
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: Apple Development
+    DEVELOPMENT_TEAM: XG948CSUCR
+    ENABLE_HARDENED_RUNTIME: YES
+targets:
+  TalkTrack:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+      - path: ThirdParty
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: TalkTrackKit
+        product: TalkTrackAudio
+      - package: TalkTrackInference
+        product: TalkTrackInferenceRuntime
+      - package: TalkTrackInference
+        product: TalkTrackTextMLX
+      - package: TalkTrackKit
+        product: TalkTrackDomain
+      - package: TalkTrackKit
+        product: TalkTrackServices
+      - package: MLX
+        product: MLX
+      - package: MLXLM
+        product: MLXLLM
+      - package: TalkTrackInference
+        product: MLXAudioSTT
+      - package: TalkTrackInference
+        product: TalkTrackSpeakerMLX
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: TalkTrack
+        CFBundleShortVersionString: '0.1.0'
+        CFBundleVersion: '1'
+        LSUIElement: true
+        NSMicrophoneUsageDescription: TalkTrack records your microphone as a separate meeting audio track for local transcription.
+        NSScreenCaptureUsageDescription: TalkTrack records meeting audio from other apps for local transcription. It never saves screen images or video.
+    entitlements:
+      path: App/TalkTrack.entitlements
+      properties:
+        # Hardened runtime denies microphone access without this entitlement.
+        com.apple.security.device.audio-input: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: local.talktrack.app
+        # App/Assets.xcassets, drawn by scripts/make-app-icon.swift.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_APP_SANDBOX: NO
+        GENERATE_INFOPLIST_FILE: NO
+schemes:
+  TalkTrack:
+    build:
+      targets:
+        TalkTrack: all
+    run:
+      config: Debug

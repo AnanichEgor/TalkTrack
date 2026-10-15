@@ -1,0 +1,659 @@
+[
+  {
+    "repository": "mlx-community/Qwen3-ASR-0.6B-4bit",
+    "revision": "313d850181767edf09f00a9c289becca70e58cd0",
+    "sourceURL": "https://huggingface.co/api/models/mlx-community/Qwen3-ASR-0.6B-4bit/revision/313d850181767edf09f00a9c289becca70e58cd0?blobs=true",
+    "metadataFile": "mlx-community--Qwen3-ASR-0.6B-4bit--313d850181767edf09f00a9c289becca70e58cd0.json",
+    "metadataSHA256": "9630b386d415cf46b43e03fef946b583a5d1fe24e85963e0e3fb3b588eb736b8",
+    "fileCount": 11,
+    "declaredBytes": 712781279,
+    "files": [
+      {
+        "rfilename": ".gitattributes",
+        "blobId": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "size": 1519
+      },
+      {
+        "rfilename": "README.md",
+        "blobId": "ab0d6d2e72d8587f2f599536e8b7463bba412a61",
+        "size": 1008
+      },
+      {
+        "rfilename": "chat_template.json",
+        "blobId": "c44736493efd71ec96218cc626904698cdb13235",
+        "size": 1161
+      },
+      {
+        "rfilename": "config.json",
+        "blobId": "049989ad1e19719b99c2f374eb7067040aa4c830",
+        "size": 7187
+      },
+      {
+        "rfilename": "generation_config.json",
+        "blobId": "7382a4d347c0a865b76bb1b8277f66a5ac312854",
+        "size": 142
+      },
+      {
+        "rfilename": "merges.txt",
+        "blobId": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7",
+        "size": 1671853
+      },
+      {
+        "rfilename": "model.safetensors",
+        "blobId": "7421526c273013a7eb16dec9bb77abd1c2c2c611",
+        "size": 708236945,
+        "lfs": {
+          "sha256": "70c7e67e588062adce4f10796e47ad42ead51c6671eda61a0987eae38ca95ddf",
+          "size": 708236945,
+          "pointerSize": 134
+        }
+      },
+      {
+        "rfilename": "model.safetensors.index.json",
+        "blobId": "b507ef4ee5b57e6147c4bda5d9db05992477030d",
+        "size": 71814
+      },
+      {
+        "rfilename": "preprocessor_config.json",
+        "blobId": "8f7f07346466d5d494ec0d4969d1c3d0190eed72",
+        "size": 330
+      },
+      {
+        "rfilename": "tokenizer_config.json",
+        "blobId": "b93109843922a40c6654c5449d3bf95372267c66",
+        "size": 12487
+      },
+      {
+        "rfilename": "vocab.json",
+        "blobId": "4783fe10ac3adce15ac8f358ef5462739852c569",
+        "size": 2776833
+      }
+    ],
+    "declaredQuantizationBits": 4,
+    "tensorDTypes": [
+      "BF16",
+      "U32"
+    ]
+  },
+  {
+    "repository": "mlx-community/Qwen3-ASR-1.7B-8bit",
+    "revision": "a8379a2e2f9e313c9292cdf1af4055ab56d50d55",
+    "sourceURL": "https://huggingface.co/api/models/mlx-community/Qwen3-ASR-1.7B-8bit/revision/a8379a2e2f9e313c9292cdf1af4055ab56d50d55?blobs=true",
+    "metadataFile": "mlx-community--Qwen3-ASR-1.7B-8bit--a8379a2e2f9e313c9292cdf1af4055ab56d50d55.json",
+    "metadataSHA256": "07c284d9bd4fc8be1f1ed2b4551554b239d9b05349ab8b77d0fe25931b3d0918",
+    "fileCount": 11,
+    "declaredBytes": 2467859030,
+    "files": [
+      {
+        "rfilename": ".gitattributes",
+        "blobId": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "size": 1519
+      },
+      {
+        "rfilename": "README.md",
+        "blobId": "b835cd3f6d4f5a2dd6b7f3ad83138166bdf5f1b5",
+        "size": 1008
+      },
+      {
+        "rfilename": "chat_template.json",
+        "blobId": "c44736493efd71ec96218cc626904698cdb13235",
+        "size": 1161
+      },
+      {
+        "rfilename": "config.json",
+        "blobId": "888cc7fae19ea9ede543b1ae82e9c78aa06104ca",
+        "size": 7188
+      },
+      {
+        "rfilename": "generation_config.json",
+        "blobId": "7382a4d347c0a865b76bb1b8277f66a5ac312854",
+        "size": 142
+      },
+      {
+        "rfilename": "merges.txt",
+        "blobId": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7",
+        "size": 1671853
+      },
+      {
+        "rfilename": "model.safetensors",
+        "blobId": "de177bf40049eee64602f9128e9daf09cf3d6ff2",
+        "size": 2463307541,
+        "lfs": {
+          "sha256": "bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c",
+          "size": 2463307541,
+          "pointerSize": 135
+        }
+      },
+      {
+        "rfilename": "model.safetensors.index.json",
+        "blobId": "f0191caac2794d5b6fba0ab3eeb70f8eff90319e",
+        "size": 78968
+      },
+      {
+        "rfilename": "preprocessor_config.json",
+        "blobId": "8f7f07346466d5d494ec0d4969d1c3d0190eed72",
+        "size": 330
+      },
+      {
+        "rfilename": "tokenizer_config.json",
+        "blobId": "b93109843922a40c6654c5449d3bf95372267c66",
+        "size": 12487
+      },
+      {
+        "rfilename": "vocab.json",
+        "blobId": "4783fe10ac3adce15ac8f358ef5462739852c569",
+        "size": 2776833
+      }
+    ],
+    "declaredQuantizationBits": 8,
+    "tensorDTypes": [
+      "BF16",
+      "U32"
+    ]
+  },
+  {
+    "repository": "mlx-community/Qwen3-ForcedAligner-0.6B-8bit",
+    "revision": "0e1a68e91d815300c7c9754b2a7639378b23db15",
+    "sourceURL": "https://huggingface.co/api/models/mlx-community/Qwen3-ForcedAligner-0.6B-8bit/revision/0e1a68e91d815300c7c9754b2a7639378b23db15?blobs=true",
+    "metadataFile": "mlx-community--Qwen3-ForcedAligner-0.6B-8bit--0e1a68e91d815300c7c9754b2a7639378b23db15.json",
+    "metadataSHA256": "f7a668cb067bf8f78b0a12366dd9b342609809c8e13a864820d04ceb45515a2b",
+    "fileCount": 11,
+    "declaredBytes": 1276475979,
+    "files": [
+      {
+        "rfilename": ".gitattributes",
+        "blobId": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "size": 1519
+      },
+      {
+        "rfilename": "README.md",
+        "blobId": "23c0a2762f86d9a54775cf58057bcb87ddd329da",
+        "size": 1068
+      },
+      {
+        "rfilename": "chat_template.json",
+        "blobId": "c44736493efd71ec96218cc626904698cdb13235",
+        "size": 1161
+      },
+      {
+        "rfilename": "config.json",
+        "blobId": "6a2c723df27c38e6924a3cfc6629636b42b79311",
+        "size": 6940
+      },
+      {
+        "rfilename": "generation_config.json",
+        "blobId": "b0a540032cf7b6b5ba1438d04ab69b7e787d9b8e",
+        "size": 115
+      },
+      {
+        "rfilename": "merges.txt",
+        "blobId": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7",
+        "size": 1671853
+      },
+      {
+        "rfilename": "model.safetensors",
+        "blobId": "14a8fbfa7a8f8b320c74ffad4ea1fa1f74b8a608",
+        "size": 1271924386,
+        "lfs": {
+          "sha256": "be19ef8ac4326d032e7673342930b14c2df30bd68c1632493b0f563e30829f91",
+          "size": 1271924386,
+          "pointerSize": 135
+        }
+      },
+      {
+        "rfilename": "model.safetensors.index.json",
+        "blobId": "a360f0d6b31173a7285457c7b99613ba2b0a0653",
+        "size": 79108
+      },
+      {
+        "rfilename": "preprocessor_config.json",
+        "blobId": "8f7f07346466d5d494ec0d4969d1c3d0190eed72",
+        "size": 330
+      },
+      {
+        "rfilename": "tokenizer_config.json",
+        "blobId": "3df92df83b22342e36a7b11cf9a70de2a2996bec",
+        "size": 12666
+      },
+      {
+        "rfilename": "vocab.json",
+        "blobId": "4783fe10ac3adce15ac8f358ef5462739852c569",
+        "size": 2776833
+      }
+    ],
+    "declaredQuantizationBits": 8,
+    "tensorDTypes": [
+      "BF16",
+      "U32"
+    ]
+  },
+  {
+    "repository": "aufklarer/Pyannote-Segmentation-MLX",
+    "revision": "abef0110277063f0ea117a802832a3eba22af84c",
+    "sourceURL": "https://huggingface.co/api/models/aufklarer/Pyannote-Segmentation-MLX/revision/abef0110277063f0ea117a802832a3eba22af84c?blobs=true",
+    "metadataFile": "aufklarer--Pyannote-Segmentation-MLX--abef0110277063f0ea117a802832a3eba22af84c.json",
+    "metadataSHA256": "010d6c34b18a7a2ec06909d515a15f7804f0073beaabb7f65aedd09b10c5996a",
+    "fileCount": 4,
+    "declaredBytes": 5965718,
+    "files": [
+      {
+        "rfilename": ".gitattributes",
+        "blobId": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "size": 1519
+      },
+      {
+        "rfilename": "README.md",
+        "blobId": "905182839b2679c2fb13011bac65f1a8dc00bede",
+        "size": 3151
+      },
+      {
+        "rfilename": "config.json",
+        "blobId": "79c692efdb741e758e16d8784f674ee43dc68411",
+        "size": 644
+      },
+      {
+        "rfilename": "model.safetensors",
+        "blobId": "29fab00d0abcd634b45ad733d42408a08dd84b6f",
+        "size": 5960404,
+        "lfs": {
+          "sha256": "d1630fa2c22f47e4c89034f8d5e3aff99884f55347d48ce70dd306328b4421f5",
+          "size": 5960404,
+          "pointerSize": 132
+        }
+      }
+    ],
+    "declaredQuantizationBits": null,
+    "tensorDTypes": [
+      "F32"
+    ]
+  },
+  {
+    "repository": "aufklarer/WeSpeaker-ResNet34-LM-MLX",
+    "revision": "26499ce11ad1b48ac96aacc8d6fa433f941bdc96",
+    "sourceURL": "https://huggingface.co/api/models/aufklarer/WeSpeaker-ResNet34-LM-MLX/revision/26499ce11ad1b48ac96aacc8d6fa433f941bdc96?blobs=true",
+    "metadataFile": "aufklarer--WeSpeaker-ResNet34-LM-MLX--26499ce11ad1b48ac96aacc8d6fa433f941bdc96.json",
+    "metadataSHA256": "ae9e2d8f9a82491a460806d4337015fbe7e8cae4047327a99a76f32f7a1af076",
+    "fileCount": 4,
+    "declaredBytes": 26532037,
+    "files": [
+      {
+        "rfilename": ".gitattributes",
+        "blobId": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "size": 1519
+      },
+      {
+        "rfilename": "README.md",
+        "blobId": "a97f49a31543610b064c19aefd039a63a300f94c",
+        "size": 3329
+      },
+      {
+        "rfilename": "config.json",
+        "blobId": "53b9040b0620f4eae3283799cd658897aeb06735",
+        "size": 237
+      },
+      {
+        "rfilename": "model.safetensors",
+        "blobId": "27ec2175c03ce3041afa2c38f1c172849a3d488f",
+        "size": 26526952,
+        "lfs": {
+          "sha256": "f56204883f2de969f584af7893e5373575556b422190c14c206a5fd94f3d7fe6",
+          "size": 26526952,
+          "pointerSize": 133
+        }
+      }
+    ],
+    "declaredQuantizationBits": null,
+    "tensorDTypes": [
+      "F32"
+    ]
+  },
+  {
+    "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    "revision": "38740b847e4cb78f352aba30aa41c76e08e6eb46",
+    "sourceURL": "https://huggingface.co/api/models/mlx-community/Qwen3.6-35B-A3B-4bit/revision/38740b847e4cb78f352aba30aa41c76e08e6eb46?blobs=true",
+    "metadataFile": "mlx-community--Qwen3.6-35B-A3B-4bit--38740b847e4cb78f352aba30aa41c76e08e6eb46.json",
+    "metadataSHA256": "75fb1f33060b83c177629959dfc20c2df0a7c1725c193ce79709bb11c617a87b",
+    "fileCount": 17,
+    "declaredBytes": 20429169263,
+    "files": [
+      {
+        "rfilename": ".gitattributes",
+        "blobId": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+        "size": 1570
+      },
+      {
+        "rfilename": "README.md",
+        "blobId": "6bb763042ecef777c32411e65252d17aa0f62b35",
+        "size": 724
+      },
+      {
+        "rfilename": "chat_template.jinja",
+        "blobId": "a8755d827c0a7b614c246c4060dfd58ab352a8ff",
+        "size": 7764
+      },
+      {
+        "rfilename": "config.json",
+        "blobId": "e3a2334ebf2df216742ef3ed4b784417bfffe6fc",
+        "size": 23591
+      },
+      {
+        "rfilename": "configuration.json",
+        "blobId": "d24dba949ee1fe70cc810e4c4709a0bddf4e06ba",
+        "size": 58
+      },
+      {
+        "rfilename": "generation_config.json",
+        "blobId": "023756cfadf88e5bf69eefeee3e172f38c448d64",
+        "size": 202
+      },
+      {
+        "rfilename": "model-00001-of-00004.safetensors",
+        "blobId": "a2b31c0d047b4b528e9e789ba765ff6a9c6df5f7",
+        "size": 5288196018,
+        "lfs": {
+          "sha256": "09f3e6ecb0b7af6e6a38bc8169a134c821b0924c2679b2bb8f4426ad38d032b8",
+          "size": 5288196018,
+          "pointerSize": 135
+        }
+      },
+      {
+        "rfilename": "model-00002-of-00004.safetensors",
+        "blobId": "6ef94e647bb187f65d947435b781d2727e52e067",
+        "size": 5368472749,
+        "lfs": {
+          "sha256": "31dcdb1c49eebdb1505bd14e3cb33f9cf900bd2546b638f2464694ae763a033f",
+          "size": 5368472749,
+          "pointerSize": 135
+        }
+      },
+      {
+        "rfilename": "model-00003-of-00004.safetensors",
+        "blobId": "3fc47ae0adc479169737d38bd840896acb5aeab0",
+        "size": 5368324139,
+        "lfs": {
+          "sha256": "3e66de06a1f03dade16a612a368cfce4a4c9caa4efd7d28185454384082cec03",
+          "size": 5368324139,
+          "pointerSize": 135
+        }
+      },
+      {
+        "rfilename": "model-00004-of-00004.safetensors",
+        "blobId": "6103cd4079c374472fa36695e8ee53336ab88c03",
+        "size": 4377211365,
+        "lfs": {
+          "sha256": "a5d0cf03519c26f8b506df6b0ba60526e5c08c8cea22d0c21ce92950e58a5422",
+          "size": 4377211365,
+          "pointerSize": 135
+        }
+      },
+      {
+        "rfilename": "model.safetensors.index.json",
+        "blobId": "f714d295484e01790bad8b40c2ce49323d7d2598",
+        "size": 215755
+      },
+      {
+        "rfilename": "preprocessor_config.json",
+        "blobId": "2ea84a437d448ff71b08df68fdd949d5cc4ebb64",
+        "size": 390
+      },
+      {
+        "rfilename": "processor_config.json",
+        "blobId": "a3be3e79470d0a5befe0ba5247dfad8717d84529",
+        "size": 1312
+      },
+      {
+        "rfilename": "tokenizer.json",
+        "blobId": "67741b04f23bfdb46501f748ce27865ec82eccfb",
+        "size": 19989343,
+        "lfs": {
+          "sha256": "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4",
+          "size": 19989343,
+          "pointerSize": 133
+        }
+      },
+      {
+        "rfilename": "tokenizer_config.json",
+        "blobId": "a068e2468cff426a9b105006e74e044030a6faf4",
+        "size": 1139
+      },
+      {
+        "rfilename": "video_preprocessor_config.json",
+        "blobId": "3ba673a5ad7d4d13f54155ecd38b2a94a6dac8fe",
+        "size": 385
+      },
+      {
+        "rfilename": "vocab.json",
+        "blobId": "0aa0ce0658d60ac4a5d609f4eadb0e8e43514176",
+        "size": 6722759
+      }
+    ],
+    "declaredQuantizationBits": 4,
+    "tensorDTypes": [
+      "BF16",
+      "U32"
+    ]
+  },
+  {
+    "repository": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+    "revision": "890b4c43f99ff392819d83605f7b1e59fa9688aa",
+    "sourceURL": "https://huggingface.co/api/models/mlx-community/Qwen3.5-9B-OptiQ-4bit/revision/890b4c43f99ff392819d83605f7b1e59fa9688aa?blobs=true",
+    "metadataSHA256": "23ebfa39a847c9e2b8cbe04b30fb855eb684ea2a519566f65a52517a566078a3",
+    "files": [
+      {
+        "rfilename": ".gitattributes",
+        "blobId": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+        "size": 1570
+      },
+      {
+        "rfilename": "README.md",
+        "blobId": "4d10ac6b7e4efdcb0631a5e6288f213becc6a042",
+        "size": 5111
+      },
+      {
+        "rfilename": "chat_template.jinja",
+        "blobId": "a585dec894e63da457d9440ec6aa7caa16d20860",
+        "size": 7756
+      },
+      {
+        "rfilename": "config.json",
+        "blobId": "164a4b16b20fb91bf4d58700ea7111fa373d038a",
+        "size": 55670
+      },
+      {
+        "rfilename": "generation_config.json",
+        "blobId": "2e9c72f1d20c18e18b56838f5be31c0d87eb8fa8",
+        "size": 148
+      },
+      {
+        "rfilename": "kv_config.json",
+        "blobId": "69ca6e63949793e1451567038961ef42e4539393",
+        "size": 528
+      },
+      {
+        "rfilename": "model-00001-of-00002.safetensors",
+        "blobId": "92ddc4216c0c7f367ab764d286fc8f8dccd3beba",
+        "size": 5349382977,
+        "lfs": {
+          "sha256": "ac85c6ecdcd12ab778d44a9d6f90f1080498173c7fa6da2f335f3c42b716d85c",
+          "size": 5349382977,
+          "pointerSize": 135
+        }
+      },
+      {
+        "rfilename": "model-00002-of-00002.safetensors",
+        "blobId": "51610f773216b649a0a6d02c92befd64cf719be2",
+        "size": 1751328661,
+        "lfs": {
+          "sha256": "9d3a23b2307c705af2e86bbf2af791f0d63eae8c24042c5f362ad7586caa0062",
+          "size": 1751328661,
+          "pointerSize": 135
+        }
+      },
+      {
+        "rfilename": "model.safetensors.index.json",
+        "blobId": "41771fccdbcbedf41c06577ce34b1d86e5f23da3",
+        "size": 117910
+      },
+      {
+        "rfilename": "optiq/mtp.safetensors",
+        "blobId": "1dbad5f4c41ec8df00c6e94254533c4defd521ea",
+        "size": 185118739,
+        "lfs": {
+          "sha256": "84f77e2c18a70efa345ec8217e586750f8013ca572ee594a8b8d10cd4906b995",
+          "size": 185118739,
+          "pointerSize": 134
+        }
+      },
+      {
+        "rfilename": "optiq/optiq_vision.safetensors",
+        "blobId": "fe63cd57b65b333b4175206cdd910cdb9cf4d8d5",
+        "size": 912057935,
+        "lfs": {
+          "sha256": "af5d3b456c02edbf708e2bc0b016d4ed16a2d1ce96f7ba7e93b171ab7c464500",
+          "size": 912057935,
+          "pointerSize": 134
+        }
+      },
+      {
+        "rfilename": "optiq_metadata.json",
+        "blobId": "7e813ff586528f6ae7e1f3c76bc8c21513ab3ce2",
+        "size": 26233
+      },
+      {
+        "rfilename": "tokenizer.json",
+        "blobId": "67741b04f23bfdb46501f748ce27865ec82eccfb",
+        "size": 19989343,
+        "lfs": {
+          "sha256": "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4",
+          "size": 19989343,
+          "pointerSize": 133
+        }
+      },
+      {
+        "rfilename": "tokenizer_config.json",
+        "blobId": "f57cfc38c7cf688e8241301163edb3d22e1f5248",
+        "size": 1135
+      }
+    ],
+    "declaredQuantizationBits": 4,
+    "tensorDTypes": [
+      "BF16",
+      "F32",
+      "U32"
+    ],
+    "excludedRuntimeFiles": [
+      "optiq/mtp.safetensors",
+      "optiq/optiq_vision.safetensors"
+    ],
+    "runtimeWeightShards": [
+      "model-00001-of-00002.safetensors",
+      "model-00002-of-00002.safetensors"
+    ]
+  },
+  {
+    "repository": "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+    "revision": "6cb5bdfd0bf15f484881fb9f1ab6d7c840fddde9",
+    "sourceURL": "https://huggingface.co/api/models/mlx-community/Qwen3.5-4B-OptiQ-4bit/revision/6cb5bdfd0bf15f484881fb9f1ab6d7c840fddde9?blobs=true",
+    "metadataSHA256": "73b5481deefa1bb51741e9561e76800c6b6255827221edb91233be8642859e82",
+    "files": [
+      {
+        "rfilename": ".gitattributes",
+        "blobId": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+        "size": 1570
+      },
+      {
+        "rfilename": "README.md",
+        "blobId": "85d23e04f9b45b9fa16f64b3d142c04aba14de50",
+        "size": 5101
+      },
+      {
+        "rfilename": "chat_template.jinja",
+        "blobId": "a585dec894e63da457d9440ec6aa7caa16d20860",
+        "size": 7756
+      },
+      {
+        "rfilename": "config.json",
+        "blobId": "1ec20dc20a20b50b256e395cdef5473071367d87",
+        "size": 55543
+      },
+      {
+        "rfilename": "generation_config.json",
+        "blobId": "2e9c72f1d20c18e18b56838f5be31c0d87eb8fa8",
+        "size": 148
+      },
+      {
+        "rfilename": "kv_config.json",
+        "blobId": "54f61f53be6dfe25d541aa2363b52ac45391615a",
+        "size": 528
+      },
+      {
+        "rfilename": "model.safetensors",
+        "blobId": "54f1f9891b40c25383b8b3ef40ac221e537c448d",
+        "size": 3269669552,
+        "lfs": {
+          "sha256": "5d59fea455202270c0f7f71a1902516b06457df5600c3182e1ff9163c33287c1",
+          "size": 3269669552,
+          "pointerSize": 135
+        }
+      },
+      {
+        "rfilename": "model.safetensors.index.json",
+        "blobId": "8b4b8cdd5e802463ace477acdbb4313d4268c78c",
+        "size": 100945
+      },
+      {
+        "rfilename": "optiq/mtp.safetensors",
+        "blobId": "0f5f4057f8bc8197160e37dede73f3db8e146095",
+        "size": 86701044,
+        "lfs": {
+          "sha256": "a5b658f4145445564c3f7990fd7c3b551b8a2de990c0a743ddde05736e8ded30",
+          "size": 86701044,
+          "pointerSize": 133
+        }
+      },
+      {
+        "rfilename": "optiq/optiq_vision.safetensors",
+        "blobId": "c6c54af864471a71edc02bb315da0020a121bf08",
+        "size": 667061501,
+        "lfs": {
+          "sha256": "2f3a952d401ef2e5735c0b56a0b718e338224a0d7af717f80a9315c26bdd8577",
+          "size": 667061501,
+          "pointerSize": 134
+        }
+      },
+      {
+        "rfilename": "optiq_metadata.json",
+        "blobId": "a72fbb1f02c8a798d3a022f76b59680ab415d10c",
+        "size": 26224
+      },
+      {
+        "rfilename": "tokenizer.json",
+        "blobId": "67741b04f23bfdb46501f748ce27865ec82eccfb",
+        "size": 19989343,
+        "lfs": {
+          "sha256": "87a7830d63fcf43bf241c3c5242e96e62dd3fdc29224ca26fed8ea333db72de4",
+          "size": 19989343,
+          "pointerSize": 133
+        }
+      },
+      {
+        "rfilename": "tokenizer_config.json",
+        "blobId": "f57cfc38c7cf688e8241301163edb3d22e1f5248",
+        "size": 1135
+      }
+    ],
+    "declaredQuantizationBits": 4,
+    "tensorDTypes": [
+      "BF16",
+      "F32",
+      "U32"
+    ],
+    "excludedRuntimeFiles": [
+      "optiq/mtp.safetensors",
+      "optiq/optiq_vision.safetensors"
+    ],
+    "runtimeWeightShards": [
+      "model.safetensors"
+    ]
+  }
+]

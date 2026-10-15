@@ -1,0 +1,199 @@
+[
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioCore/DSP.swift",
+    "sourceSHA256": "1f307c350ebe8454a81ac0bcb798e2f0a06aba2a1f0d2e052b50af3eb725be97",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioCore/DSP.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Generation.swift",
+    "sourceSHA256": "1c595308bd4c345093a5b3c5e22f6eb3550dabd0f091948ed75719c99276a653",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Generation.swift",
+    "changes": [
+      "Generation protocol and convenience method propagate errors."
+    ]
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/GLMASR/STTOutput.swift",
+    "sourceSHA256": "c84bcbf798f6be9a90ed88a792f640592f4bad302bf37235edd8363ba29f6e80",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/STTOutput.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Qwen3ASR/Qwen3ASR.swift",
+    "sourceSHA256": "8f6de3978ececf44c8ea3e240b19bfdac83b4fd238d9d413bebc8c22327f0068",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Qwen3ASR.swift",
+    "changes": [
+      "Removed fromPretrained download/cache entry point and HuggingFace import.",
+      "Require a confined ModelLocalDirectory capability instead of an arbitrary URL.",
+      "Moved tokenizer generation to descriptor-confined QwenTokenizerPreparation; loaders are read-only.",
+      "Validate configuration before MLX construction; propagate missing-tokenizer errors instead of process termination.",
+      "Use an explicitly offline local Hub parser with no shared cache; ASR token loop checks cancellation."
+    ]
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Qwen3ASR/Qwen3ASRConfig.swift",
+    "sourceSHA256": "9c7d64e3b4fe35bb72dd797d07ff68e408c82261f98aacbd5b5968897e6f29d0",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Qwen3ASRConfig.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Qwen3ASR/Qwen3ForcedAligner.swift",
+    "sourceSHA256": "8506088879bd2163cfae5dc1a7cf725d48959e64afcf45060d4dd394aaafd8c1",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Qwen3ForcedAligner.swift",
+    "changes": [
+      "Removed fromPretrained download/cache entry point and HuggingFace import.",
+      "Require a confined ModelLocalDirectory capability instead of an arbitrary URL.",
+      "Moved tokenizer generation to descriptor-confined QwenTokenizerPreparation; loaders are read-only.",
+      "Validate configuration before MLX construction; propagate missing-tokenizer errors instead of process termination.",
+      "Use an explicitly offline local Hub parser with no shared cache; ASR token loop checks cancellation."
+    ]
+  },
+  {
+    "repository": "https://github.com/soniqo/speech-swift",
+    "revision": "1e6e0e527be00e9c0ac79ebb255ea54cd6e9dd80",
+    "source": "Sources/SpeechVAD/WeSpeakerModel.swift",
+    "sourceSHA256": "bd00c2f287264d424c5355ad04feb27a5f7cd8e6e50a2ac231f5521a98907ef3",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackSpeakerMLX/WeSpeakerModel.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/soniqo/speech-swift",
+    "revision": "1e6e0e527be00e9c0ac79ebb255ea54cd6e9dd80",
+    "source": "Sources/SpeechVAD/WeSpeakerWeightLoading.swift",
+    "sourceSHA256": "e68378041e286d0a5d7650a422d3697ada95ded00ce17832808582f1da2dc3a5",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackSpeakerMLX/WeSpeakerWeightLoading.swift",
+    "changes": [
+      "Removed multi-backend support imports; use local missing-weights error.",
+      "Require a confined ModelLocalDirectory capability instead of an arbitrary URL.",
+      "Preserve caller isolation and require complete parameter verification when loading."
+    ]
+  },
+  {
+    "repository": "https://github.com/soniqo/speech-swift",
+    "revision": "1e6e0e527be00e9c0ac79ebb255ea54cd6e9dd80",
+    "source": "Sources/SpeechVAD/Segmentation.swift",
+    "sourceSHA256": "414477e0110682cbf3d08146d331dee4e609e4c438e8a90dedc638d97e0cd3d8",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackSpeakerMLX/Segmentation.swift",
+    "changes": [
+      "Propagate recurrent cancellation to the adapter."
+    ]
+  },
+  {
+    "repository": "https://github.com/soniqo/speech-swift",
+    "revision": "1e6e0e527be00e9c0ac79ebb255ea54cd6e9dd80",
+    "source": "Sources/SpeechVAD/WeightLoading.swift",
+    "sourceSHA256": "d99121fb57f417cfee8e8cc713abed0d937243dcbbf0ca8072a96f1027d87c20",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackSpeakerMLX/WeightLoading.swift",
+    "changes": [
+      "Removed multi-backend support imports; use local missing-weights error.",
+      "Require a confined ModelLocalDirectory capability instead of an arbitrary URL.",
+      "Preserve caller isolation and require complete parameter verification when loading."
+    ]
+  },
+  {
+    "repository": "https://github.com/soniqo/speech-swift",
+    "revision": "1e6e0e527be00e9c0ac79ebb255ea54cd6e9dd80",
+    "source": "Sources/SpeechVAD/Configuration.swift",
+    "sourceSHA256": "421f472681b71067cd42502e25b1948930562f0eceb68b72ad49d529acf451f4",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackSpeakerMLX/Configuration.swift",
+    "changes": [
+      "Keep only segmentation configuration."
+    ]
+  },
+  {
+    "repository": "https://github.com/soniqo/speech-swift",
+    "revision": "1e6e0e527be00e9c0ac79ebb255ea54cd6e9dd80",
+    "source": "Sources/SpeechVAD/SincNet.swift",
+    "sourceSHA256": "d41e2ed551d0c85ad1bfc35f01e572a510b1aa91e893a1e654f0d3c4d003c662",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackSpeakerMLX/SincNet.swift",
+    "changes": [
+      "Disable bias on the converted ParamSincFB first layer, matching the verified pinned checkpoint and upstream architecture."
+    ]
+  },
+  {
+    "repository": "https://github.com/soniqo/speech-swift",
+    "revision": "1e6e0e527be00e9c0ac79ebb255ea54cd6e9dd80",
+    "source": "Sources/SpeechVAD/BiLSTM.swift",
+    "sourceSHA256": "773a4e58124e7093d3fc45df5f0b0bcfa63f020788a5a317ca7626d3a5998d51",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackSpeakerMLX/BiLSTM.swift",
+    "changes": [
+      "Propagate cancellation during recurrent graph construction."
+    ]
+  },
+  {
+    "repository": "https://github.com/soniqo/speech-swift",
+    "revision": "1e6e0e527be00e9c0ac79ebb255ea54cd6e9dd80",
+    "source": "Sources/SpeechVAD/MelFeatureExtractor.swift",
+    "sourceSHA256": "acc7aa73581a579077df0f55e7aa9655e9bb60794643ae68811ea065c2937de7",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackSpeakerMLX/MelFeatureExtractor.swift",
+    "changes": [
+      "Replaced unsafe temporary-pointer mean subtraction with indexed subtraction; same operation.",
+      "Throw on unavailable FFT setup and check task cancellation between feature frames."
+    ]
+  },
+  {
+    "repository": "https://github.com/soniqo/speech-swift",
+    "revision": "1e6e0e527be00e9c0ac79ebb255ea54cd6e9dd80",
+    "source": "Sources/SpeechVAD/PowersetDecoder.swift",
+    "sourceSHA256": "7da1beceece3ea4e1c5122e3a8da0a0cf4da92a921985e659623692d446ef871",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackSpeakerMLX/PowersetDecoder.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Muesli-HQ/muesli",
+    "revision": "d457aaf94691a73afd2867f5a6ca7fdd203044db",
+    "source": "native/MuesliNative/Sources/MuesliCore/ModelDownloadCoordinator.swift",
+    "sourceSHA256": "a4b5ee47ed8a145ed3b8ee886db8b75581e71d55cdbeceae9ba76b00a82d0057",
+    "destination": "Packages/TalkTrackKit/Sources/TalkTrackServices/ModelDownloadCoordinator.swift",
+    "changes": [
+      "Adapted orchestration patterns for shared requests, bounded batches, resume, cancellation and progress.",
+      "Replaced unrestricted URL operations with application-owned descriptor-relative file service.",
+      "Use bounded ephemeral streaming, strict Range/ETag validation, SHA-256/Git-blob manifests, and required preparation before atomic readiness."
+    ]
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Qwen3ASR/Qwen3ASR.swift",
+    "sourceSHA256": "8f6de3978ececf44c8ea3e240b19bfdac83b4fd238d9d413bebc8c22327f0068",
+    "destination": "Packages/TalkTrackKit/Sources/TalkTrackServices/QwenTokenizerPreparation.swift",
+    "changes": [
+      "Extracted tokenizer JSON construction; all input/output goes through ModelPreparationContext, with JSON/UTF-8 validation before publication."
+    ]
+  },
+  {
+    "repository": "https://github.com/ml-explore/mlx-swift-lm",
+    "revision": "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57",
+    "source": "Libraries/MLXHuggingFaceMacros/HuggingFaceIntegrationMacros.swift",
+    "sourceSHA256": "babb5b059ec3734c778a783bbb10106ded8b6c442b9059702d3cd32abcf82353",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackTextMLX/QwenTextAdapter.swift",
+    "changes": [
+      "Adapt only TokenizerAdaptorMacro protocol bridge without macros; require explicit offline local tokenizer loading."
+    ],
+    "version": "3.31.4"
+  },
+  {
+    "repository": "https://github.com/ml-explore/mlx-swift-lm",
+    "revision": "bd4b7434e6bdb588c7ef55706ff8904cb7fd4c57",
+    "source": "Libraries/MLXLLM/LLMModel.swift",
+    "sourceSHA256": "db62f13a36ccb2ced50f3899a828939c461c469b93972272c8a2ab0fc4f014c4",
+    "destination": "Packages/TalkTrackInference/Sources/TalkTrackTextMLX/QwenTextAdapter.swift",
+    "changes": [
+      "Wrap pinned Qwen model prefill with cancellation checks and evaluated 512-token chunks; no custom checkpoint loader."
+    ],
+    "version": "3.31.4"
+  }
+]
