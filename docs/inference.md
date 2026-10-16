@@ -116,8 +116,10 @@ Summary and translation jobs can run on an OpenAI-compatible chat completions se
 chosen in Settings ▸ Text (`TextServer.swift`). Such a job's model snapshot has
 `preprocessingVersion` `openai-chat-1`, the base URL as `repository` and the model name
 as `revision`; `RoutedTextInference` sends it to the server and every other job to the
-local runtime. Server jobs use a fixed 128K context. The server's tokenizer is unknown,
-so tokens are estimated as one per three UTF-8 bytes, more than English or Russian text
-uses with common tokenizers. A reply with `finish_reason: "length"` counts as reaching
-the output limit. The API key is kept in the Keychain together with the address it was
+local runtime. Server jobs have no context limit (`ContextLimit.unbounded`) and send no
+`max_tokens`, so a meeting goes in one request and the server's limits apply. When the
+server refuses a summary request as too large, the summary is planned again for 32K,
+then 8K, with token counts estimated as one per three UTF-8 bytes (more than English or
+Russian text uses with common tokenizers). A reply with `finish_reason: "length"` counts
+as reaching the output limit, and the part is split. The API key is kept in the Keychain together with the address it was
 entered for and is never sent to any other address. Memory admission does not apply.

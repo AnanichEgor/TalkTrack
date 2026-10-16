@@ -76,7 +76,7 @@ public enum TextServerError: Error, Equatable, LocalizedError, Sendable {
         case .unreadableResponse(let host):
             "\(host) returned a response that is not an OpenAI-compatible chat completion."
         case .contextTooSmall(let host):
-            "The request is larger than the model on \(host) accepts. TalkTrack plans server requests for a 128K-token context; choose a model on the server that supports it."
+            "The request is larger than the model on \(host) accepts. Choose a model with a larger context on the server."
         case .keychain(let status):
             "The API key could not be read from or saved to the Keychain (\(status))."
         }
@@ -96,9 +96,12 @@ public enum TextServerPreferences {
         return TextServer(baseURL: url, model: model)
     }
 
-    /// Server models are planned with a 128K context (user decision); the
+    /// TalkTrack sets no context or output limit for a server (user decision):
+    /// a meeting goes in one request and the server's own limits apply. The
     /// context in Settings ▸ Text applies to the local model only.
-    public static let context: ContextLimit = .large
+    public static let context: ContextLimit = .unbounded
+    /// A summary the server refuses as too large is split for these contexts in turn.
+    public static let fallbackContexts: [ContextLimit] = [.small, .tokens8K]
 
     /// Settings for a new job of `role`: the server's context when it runs there.
     public static func settings(for role: ModelRole, in defaults: UserDefaults = .standard) -> ProcessingSettings {
@@ -203,15 +206,17 @@ public struct TextServerClient: Sendable {
         return try await session.data(for: request)
     }
 
-    /// Sends one system and one user message. Optional parameters the server
-    /// rejects by name are dropped (newer OpenAI models take
-    /// `max_completion_tokens` instead of `max_tokens` and only the default temperature).
-    public func complete(system: String, prompt: String, maxTokens: Int, temperature: Double, seed: Int?) async throws -> TextServerReply {
+    /// Sends one system and one user message; without `maxTokens` the server
+    /// chooses the output length. Optional parameters the server rejects by
+    /// name are dropped (newer OpenAI models take `max_completion_tokens`
+    /// instead of `max_tokens` and only the default temperature).
+    public func complete(system: String, prompt: String, maxTokens: Int? = nil, temperature: Double, seed: Int?) async throws -> TextServerReply {
         var body: [String: Any] = [
             "model": server.model,
             "messages": [["role": "system", "content": system], ["role": "user", "content": prompt]],
-            "max_tokens": maxTokens, "temperature": temperature, "stream": false,
+            "temperature": temperature, "stream": false,
         ]
+        if let maxTokens { body["max_tokens"] = maxTokens }
         if let seed { body["seed"] = seed }
         for _ in 0..<4 {
             do {
@@ -315,10 +320,11 @@ public struct TextServerClient: Sendable {
 }
 
 /// Sends a job to its text server when its snapshot names one, otherwise to
-/// the local model. A server's tokenizer is unknown, so its token counts are
-/// estimated generously (a token for every three UTF-8 bytes; real tokenizers
-/// use more bytes per token in English and Russian), which keeps every
-/// request within the job's context (128K for servers).
+/// the local model. No context or output limit is sent to a server. Its
+/// tokenizer is unknown, so token counts are estimated generously (a token for
+/// every three UTF-8 bytes; real tokenizers use more bytes per token in
+/// English and Russian); they only matter after the server refused a request
+/// as too large and a summary is split for a fallback context.
 public struct RoutedTextInference: SummaryTextInference, TranslationTextInference {
     let local: any SummaryTextInference & TranslationTextInference
     let key: @Sendable (TextServer) throws -> String?
@@ -343,17 +349,15 @@ public struct RoutedTextInference: SummaryTextInference, TranslationTextInferenc
         TextServerClient(server: server, key: try key(server), transport: transport)
     }
 
-    /// The reply within the planned reserve; `generatedTokens` never claims the
-    /// whole reserve unless the server stopped at it.
+    /// The planned reserve is not sent. `generatedTokens` is the whole reserve
+    /// only when the server stopped at its own output limit, which the
+    /// summarizer and translator treat as capped and retry on smaller parts.
     private func run(_ server: TextServer, settings: ProcessingSettings, role: ModelRole, system: String, prompt: String,
                      outputTokens: Int?, temperature: Double, seed: Int?) async throws -> (String, TextContextPlan, Int) {
         let plan = try TextContextPlanner.resolve(selection: settings.contextLimit, role: role,
             inputTokens: Self.formatted(system: system, prompt: prompt), outputTokens: outputTokens)
-        let reply = try await client(server).complete(system: system, prompt: prompt, maxTokens: plan.outputTokens,
-                                                      temperature: temperature, seed: seed)
-        let generated = reply.truncated ? plan.outputTokens
-            : min(reply.completionTokens ?? Self.estimatedTokens(reply.text), plan.outputTokens - 1)
-        return (reply.text, plan, generated)
+        let reply = try await client(server).complete(system: system, prompt: prompt, temperature: temperature, seed: seed)
+        return (reply.text, plan, reply.truncated ? plan.outputTokens : 0)
     }
 
     // MARK: Summaries

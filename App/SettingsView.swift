@@ -511,7 +511,7 @@ private struct TextSettings: View {
                     Text("Auto chooses the smallest context that fits the complete task and its response. Available memory is checked before processing.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
-                    Text("Includes the source text, instructions and response. The maximum selectable context is 64K. Available memory is checked before processing. A text server always uses 128K.")
+                    Text("Includes the source text, instructions and response. The maximum selectable context is 64K. Available memory is checked before processing. A text server's own limits apply instead.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
@@ -571,7 +571,7 @@ private struct TextServerSection: View {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(Color.errorText)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Any server with the OpenAI chat completions API: OpenAI, OpenRouter, LM Studio, Ollama, vLLM. The meeting title, description and transcript of each summary or translation are sent to this server; use only one you trust. Requests are planned for a 128K-token context. The API key is kept in your Keychain. Recording and transcription always stay on this Mac.")
+            Text("Any server with the OpenAI chat completions API: OpenAI, OpenRouter, LM Studio, Ollama, vLLM. The meeting title, description and transcript of each summary or translation are sent to this server; use only one you trust. TalkTrack sets no context or response limit; the server's own limits apply. The API key is kept in your Keychain. Recording and transcription always stay on this Mac.")
                 .font(.callout).foregroundStyle(.secondary)
         }
     }

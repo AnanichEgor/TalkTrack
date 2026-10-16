@@ -68,7 +68,7 @@ import TalkTrackDomain
         defaults.set("https://api.example.com/v1", forKey: TextServerPreferences.urlKey)
         defaults.set("test-model", forKey: TextServerPreferences.modelKey)
         #expect(try TextServerPreferences.snapshot(for: .summary, in: defaults).flatMap(TextServer.init) == Self.server)
-        #expect(TextServerPreferences.settings(for: .summary, in: defaults).contextLimit == .large)
+        #expect(TextServerPreferences.settings(for: .summary, in: defaults).contextLimit == .unbounded)
         // Translations keep the local model and context until chosen separately.
         #expect(try TextServerPreferences.snapshot(for: .translation, in: defaults) == nil)
         #expect(TextServerPreferences.settings(for: .translation, in: defaults).contextLimit == .tokens8K)
@@ -112,9 +112,11 @@ import TalkTrackDomain
         let count = try await inference.formattedTokenCount(model, settings: settings, system: "System", prompt: "Привет, мир")
         #expect(count == RoutedTextInference.estimatedTokens("System") + RoutedTextInference.estimatedTokens("Привет, мир") + 16)
         let response = try await inference.summaryText(model, settings: settings, system: "System", prompt: "Привет, мир", outputTokens: 4096, attempt: 1)
-        #expect(response.text == "text" && response.generatedTokens == 12)
-        #expect(response.contextPlan.contextTokens == 131072 && response.contextPlan.outputTokens == 4096)
+        #expect(response.text == "text" && response.generatedTokens == 0)
+        #expect(response.contextPlan.contextTokens == Int.max && response.contextPlan.outputTokens == 4096)
         #expect(server.requests[0].value(forHTTPHeaderField: "Authorization") == nil)
+        // No context or output limit is sent to a server.
+        #expect(server.body(0)["max_tokens"] == nil && server.body(0)["max_completion_tokens"] == nil)
         #expect(server.body(0)["seed"] as? Int == 2)
         // A reply stopped at max_tokens reports the whole reserve, which the summarizer treats as capped.
         let capped = try await inference.summaryText(model, settings: settings, system: "S", prompt: "P", outputTokens: 4096, attempt: 0)
@@ -136,5 +138,25 @@ import TalkTrackDomain
                                                     inference: inference).translate(segments)
         #expect(result.map(\.text) == ["Привет номер 0", "Привет номер 1", "Привет номер 2"])
         #expect(server.body(0)["temperature"] as? Double == 0)
+    }
+
+    /// The whole meeting goes in one unlimited request; a server that refuses it
+    /// as too large gets the meeting again planned for 32K, and the summary is published.
+    @Test func summaryJobFallsBackWhenTheServerContextIsTooSmall() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let f = try await SummaryFixture.make(folder.url)
+        var settings = ProcessingSettings(); settings.contextLimit = TextServerPreferences.context
+        let template = try #require(SummaryTemplates.template(settings.summaryType))
+        let summary = template.sections.map { "## " + $0.title(settings.summaryLanguage) + "\nNone noted." }.joined(separator: "\n\n")
+        let server = Server([(400, #"{"error":{"message":"This model's maximum context length is 4096 tokens"}}"#),
+                             (200, Self.completion(summary))])
+        let inference = RoutedTextInference(local: NoLocal(), key: { _ in nil }, transport: server.transport)
+        let job = try await f.store.enqueueSummary(meetingID: f.meeting.id, recordingID: f.recording.id, settings: settings,
+                                                   model: try Self.server.snapshot(for: .summary))
+        try await SummaryJobPipeline(store: f.store, inference: inference).run(jobID: job.id)
+        let output = try #require(try await f.output())
+        #expect(output.job.settings.contextLimit == .unbounded && TextServer(output.job.models[0]) == Self.server)
+        #expect(server.requests.count == 2 && server.body(1)["max_tokens"] == nil)
+        #expect(try await f.store.isOutdated(output, settings: settings) == false)
     }
 }

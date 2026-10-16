@@ -89,9 +89,8 @@ public actor SummaryJobPipeline {
             var draft: SummaryDraft?
             var corrections: [String] = []
             for attempt in 0..<Self.formatAttempts where draft == nil {
-                let value = try await MeetingSummarizer(model: model, settings: job.settings, inference: inference, attempt: attempt,
-                    corrections: corrections, progress: { [weak self] value in await self?.report(value, jobID: jobID) })
-                    .summarize(meeting: source.meeting, notes: source.notes?.text, transcript: transcript)
+                let value = try await summarize(source, model: model, transcript: transcript, attempt: attempt,
+                                                corrections: corrections, jobID: jobID)
                 try Task.checkCancellation()
                 if Self.isValid(value.text, template: template, language: job.settings.summaryLanguage) { draft = value }
                 else { corrections = SummaryCheck.formatProblems(value.text, template: template, language: job.settings.summaryLanguage) }
@@ -126,6 +125,24 @@ public actor SummaryJobPipeline {
     }
 
     private func report(_ value: SummaryProgress, jobID: UUID) { progress[jobID] = value }
+
+    /// A text server sees the whole meeting at once; when it refuses the request
+    /// as larger than its model accepts, the meeting is split for 32K, then 8K.
+    private func summarize(_ source: SummarySource, model: ModelSnapshot, transcript: [TranscriptDisplayItem],
+                           attempt: Int, corrections: [String], jobID: UUID) async throws -> SummaryDraft {
+        var settings = source.job.settings
+        var fallbacks = settings.contextLimit == .unbounded ? TextServerPreferences.fallbackContexts : []
+        while true {
+            do {
+                return try await MeetingSummarizer(model: model, settings: settings, inference: inference, attempt: attempt,
+                    corrections: corrections, progress: { [weak self] value in await self?.report(value, jobID: jobID) })
+                    .summarize(meeting: source.meeting, notes: source.notes?.text, transcript: transcript)
+            } catch TextServerError.contextTooSmall(let host) {
+                guard !fallbacks.isEmpty else { throw TextServerError.contextTooSmall(host) }
+                settings.contextLimit = fallbacks.removeFirst()
+            }
+        }
+    }
 
     /// Required headings in order, no extra or repeated headings, well-formed action items;
     /// "(notes)" is a citation only for version 1, which had notes.

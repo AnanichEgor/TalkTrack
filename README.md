@@ -183,8 +183,10 @@ with LM Studio, Ollama or vLLM. In Settings ▸ Text ▸ Text Server:
 3. Enter the **API key** (local servers usually need none) and the **Model** name.
    **Check Connection** lists the server's models and sends a short test request.
 
-Requests to a server are planned for a 128K-token context, whatever context is chosen
-for the local model; choose a model that accepts it. The meeting title, description
+TalkTrack sets no context or response limit for a server: the whole meeting is sent in
+one request and the server's own limits apply (the context in Settings ▸ Text is for the
+local model only). If the server answers that a meeting is too large for its model, the
+summary is made again from parts. The meeting title, description
 and transcript of each summary or translation are sent to that server, so use only one
 you trust. The key is stored in your Keychain (macOS may ask to allow access after an
 update) and is sent only to the address it was entered for. Recording and

@@ -27,13 +27,15 @@ public enum ContextLimit: Int, Codable, CaseIterable, Sendable {
     case small = 32768, standard = 65536, large = 131072
     // Preserve historical immutable jobs; neither large budget is selectable.
     case legacy126K = 129024
+    /// Text-server jobs: TalkTrack sets no context or output limit; the server decides.
+    case unbounded = 9223372036854775807
 
     public static let defaultSelection: ContextLimit = .small
     public static let maximumSelectable: ContextLimit = .standard
     public static let allCases: [ContextLimit] = [.automatic, .tokens4K, .tokens8K, .tokens16K, .small, .standard]
     public static var manualOptions: [ContextLimit] { allCases.filter { $0 != .automatic } }
     public static func supports(tokenCount: Int) -> Bool { tokenCount > 0 && Self(rawValue: tokenCount) != nil }
-    public var label: String { self == .automatic ? "Auto" : "\(rawValue / 1024)K" }
+    public var label: String { self == .automatic ? "Auto" : self == .unbounded ? "Server" : "\(rawValue / 1024)K" }
 }
 public enum SummaryType: String, Codable, CaseIterable, Sendable {
     case auto, oneToOne, customerDiscovery, hiringInterview, standup, weeklyReview
