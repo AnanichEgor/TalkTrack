@@ -126,6 +126,26 @@ struct SummarySample {
         #expect(system.hasSuffix(SummaryPrompt.correctionNote(problems)))
     }
 
+    /// A name on its own line heads its sub-bullets; only a name with nothing under it is removed.
+    @Test func nameBulletsWithSubBulletsAreKept() {
+        let text = """
+        ## Обновления по участникам
+        - **Юра**
+          - Чистит тестовые данные.
+          - Блокеры: не отмечено.
+        - **Дима**
+          - Не сообщил об обновлениях.
+        - **You**
+
+        ## Блокеры
+        Не отмечено.
+        """
+        let result = SummaryCheck.withoutEmptyBullets(text, language: .russian)
+        #expect(result.contains("- **Юра**\n  - Чистит тестовые данные."))
+        #expect(!result.contains("Дима") && !result.contains("- **You**") && !result.contains("Блокеры: не отмечено"))
+        #expect(!result.contains("## Обновления по участникам\nНе отмечено."))
+    }
+
     @Test func bulletsSayingNothingAreRemovedFromEverySection() throws {
         for line in ["- **Voice1**: No update noted.", "- Voice6: none noted", "- **Дима**: нет обновлений.", "- **Voice7**:",
                      "- **Voice1**: Не сообщал об обновлениях.", "- **Voice2**: Did not give an update.",

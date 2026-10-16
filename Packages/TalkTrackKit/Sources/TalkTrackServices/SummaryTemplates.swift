@@ -333,17 +333,34 @@ public enum SummaryCheck {
                 result.insert(Substring(SummaryPrompt.phrases(language).noneNoted), at: headingIndex + 1)
             }
         }
-        for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
+        let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+        for (index, line) in lines.enumerated() {
             if line.hasPrefix("## ") {
                 close(); headingIndex = result.count; kept = 0; removed = false
                 result.append(line); continue
             }
-            if saysNoUpdate(line) { removed = true; continue }
+            // "- **Name**" alone heads the sub-bullets below it (server models
+            // write updates this way); it is empty only without kept sub-bullets.
+            if saysNoUpdate(line), !headsKeptSubBullets(lines, at: index) { removed = true; continue }
             if !line.trimmingCharacters(in: .whitespaces).isEmpty { kept += 1 }
             result.append(line)
         }
         close()
         return result.joined(separator: "\n")
+    }
+
+    private static func isIndented(_ line: Substring) -> Bool { line.hasPrefix(" ") || line.hasPrefix("\t") }
+
+    /// True when the unindented bullet at `index` is followed by indented lines
+    /// of which at least one says something.
+    static func headsKeptSubBullets(_ lines: [Substring], at index: Int) -> Bool {
+        guard !isIndented(lines[index]) else { return false }
+        for line in lines[(index + 1)...] {
+            if line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+            guard isIndented(line) else { return false }
+            if !saysNoUpdate(line) { return true }
+        }
+        return false
     }
 
     /// Headings of the template that the output lacks, or that appear out of order.
