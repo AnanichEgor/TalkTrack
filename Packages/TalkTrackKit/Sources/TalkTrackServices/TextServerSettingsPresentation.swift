@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import TalkTrackDomain
 
-/// Settings ▸ Text ▸ Text Server. The address, model and choices are
+/// Settings ▸ Models ▸ Text Server. The address, model and choices are
 /// preferences; the key is saved to the Keychain with the address it was
 /// entered for. Changes apply to summaries and translations queued afterwards.
 @MainActor @Observable public final class TextServerSettingsPresentation {

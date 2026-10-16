@@ -54,7 +54,7 @@ struct WorkspaceServices {
     let speakers: SavedSpeakersPresentation
     /// New releases on GitHub (Settings ▸ General ▸ Updates, menu bar).
     let updates = UpdateChecker(currentVersion: AppModel.version)
-    /// The user's OpenAI-compatible text server (Settings ▸ Text).
+    /// The user's OpenAI-compatible text server (Settings ▸ Models).
     let textServer = TextServerSettingsPresentation()
     let setupError: String?
     private(set) var libraryMove: LibraryMove = .idle
@@ -177,7 +177,7 @@ struct WorkspaceServices {
                                            capture: MeetingRecorder.nativeCapture(selection: { ProcessingPreferences.microphone() }),
                                            playback: player, jobs: policy)
             let pipeline = FinalTranscriptionPipeline(store: store, library: library, inference: runtime)
-            // Summaries and translations may run on the user's own text server (Settings ▸ Text);
+            // Summaries and translations may run on the user's own text server (Settings ▸ Models);
             // a server has nothing to download.
             let text = RoutedTextInference(local: runtime)
             let localMissing: @Sendable ([ModelSnapshot]) async throws -> [ModelRole] = {

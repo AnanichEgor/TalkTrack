@@ -69,9 +69,8 @@ supported.
 - Audio: microphone, live transcription, default meeting language, spelling
   correction.
 - Models: download, resume, cancel and remove each model; choose the text model
-  (Automatic, 9B or 4B).
-- Text: summary language and translation language (independent), context size,
-  and an optional text server (see below).
+  (Automatic, 9B or 4B) or a text server (see below).
+- Text: summary language and translation language (independent), context size.
 - Speakers: saved voices and automatic recognition.
 
 ## Stack
@@ -175,7 +174,7 @@ Applications.
 
 Summaries and translations can run on any server with the OpenAI chat completions
 API instead of the local model: OpenAI, OpenRouter, or a model on your own machine
-with LM Studio, Ollama or vLLM. In Settings ▸ Text ▸ Text Server:
+with LM Studio, Ollama or vLLM. In Settings ▸ Models ▸ Text Server:
 
 1. Turn on **Use for summaries** and/or **Use for translations**.
 2. Enter the **Server URL**, for example `https://api.openai.com/v1`,

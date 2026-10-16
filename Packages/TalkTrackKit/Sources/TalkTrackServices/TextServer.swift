@@ -64,11 +64,11 @@ public enum TextServerError: Error, Equatable, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .notConfigured:
-            "The text server is not set up. Enter its address and model in Settings ▸ Text."
+            "The text server is not set up. Enter its address and model in Settings ▸ Models."
         case .keyForAnotherServer(let host):
             "This request was queued for \(host), but the saved API key belongs to another server. Generate it again to use the current server."
         case .unauthorized(let host):
-            "\(host) refused the API key. Check the key in Settings ▸ Text."
+            "\(host) refused the API key. Check the key in Settings ▸ Models."
         case .server(let host, let code, let message):
             "\(host) answered with status \(code)" + (message.isEmpty ? "." : ": \(message)")
         case .unreachable(let host, let message):

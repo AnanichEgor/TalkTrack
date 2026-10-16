@@ -17,13 +17,18 @@ struct SettingsView: View {
             }
             Tab("Models", systemImage: "square.and.arrow.down", value: AppModel.SettingsTab.models) {
                 if let models = model.models {
-                    ModelSettings(models: models)
+                    ModelSettings(models: models, server: model.textServer)
                 } else {
-                    Form { Text(model.setupError ?? "Models are unavailable.").foregroundStyle(.secondary) }.formStyle(.grouped)
+                    Form {
+                        Text(model.setupError ?? "Models are unavailable.").foregroundStyle(.secondary)
+                        TextServerSection(server: model.textServer)
+                    }
+                    .formStyle(.grouped)
+                    .onAppear { model.textServer.loadKey() }
                 }
             }
             Tab("Text", systemImage: "text.alignleft", value: AppModel.SettingsTab.text) {
-                TextSettings(server: model.textServer)
+                TextSettings()
             }
             Tab("Speakers", systemImage: "person.2", value: AppModel.SettingsTab.speakers) {
                 Form { SavedSpeakersView(presentation: model.speakers) }.formStyle(.grouped)
@@ -316,6 +321,7 @@ private struct AudioSettings: View {
 
 private struct ModelSettings: View {
     let models: ModelSettingsPresentation
+    let server: TextServerSettingsPresentation
     @State private var removing: ModelSettingsPresentation.Item?
 
     var body: some View {
@@ -328,7 +334,7 @@ private struct ModelSettings: View {
             } header: {
                 Text("Speech and Speakers")
             } footer: {
-                Text("Models are downloaded only when you choose Download, and run entirely on this Mac. Recordings and transcripts never leave it.")
+                Text("Models are downloaded only when you choose Download, and run entirely on this Mac. Recordings never leave it.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section {
@@ -350,12 +356,14 @@ private struct ModelSettings: View {
             } header: {
                 Text("Text Model")
             } footer: {
-                Text("Automatic uses the larger model on Macs with 32 GB of memory or more (this Mac has \(Self.memory(models.physicalMemory))). Summaries and translations already queued keep the model they were started with.")
+                Text("Automatic uses the larger model on Macs with 32 GB of memory or more (this Mac has \(Self.memory(models.physicalMemory))). A text server below replaces it for the tasks you choose. Summaries and translations already queued keep the model they were started with.")
                     .font(.callout).foregroundStyle(.secondary)
             }
+            TextServerSection(server: server)
         }
         .formStyle(.grouped)
         .task { await models.refresh() }
+        .onAppear { server.loadKey() }
         .confirmationDialog(removing.map { "Remove \($0.title)?" } ?? "", isPresented: Binding(
             get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { item in
             Button("Remove", role: .destructive) { Task { await models.remove(item.id) } }
@@ -487,7 +495,6 @@ private struct ModelRow: View {
 // MARK: Text
 
 private struct TextSettings: View {
-    @Bindable var server: TextServerSettingsPresentation
     @AppStorage(ProcessingPreferences.summaryLanguageKey) private var summaryLanguage = OutputLanguage.english.rawValue
     @AppStorage(ProcessingPreferences.translationLanguageKey) private var translationLanguage = OutputLanguage.russian.rawValue
     @AppStorage(ProcessingPreferences.contextKey) private var selectedContext = ContextLimit.defaultSelection.rawValue
@@ -500,7 +507,6 @@ private struct TextSettings: View {
                 Text("Summaries are written in the summary language and transcripts are translated into the translation language, whatever language the meeting was in. Changing a language does not regenerate existing results.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            TextServerSection(server: server)
             Section("Context") {
                 Picker("Context size", selection: $selectedContext) {
                     ForEach(ContextLimit.allCases, id: \.rawValue) { limit in
@@ -511,14 +517,13 @@ private struct TextSettings: View {
                     Text("Auto chooses the smallest context that fits the complete task and its response. Available memory is checked before processing.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
-                    Text("Includes the source text, instructions and response. The maximum selectable context is 64K. Available memory is checked before processing. A text server's own limits apply instead.")
+                    Text("Includes the source text, instructions and response. The maximum selectable context is 64K. Available memory is checked before processing. A text server (Settings ▸ Models) uses its own limits instead.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
         }
         .formStyle(.grouped)
         .onAppear {
-            server.loadKey()
             // Show (and keep) only supported values; unchanged values are not rewritten.
             selectedContext = ProcessingPreferences.context().rawValue
             let summary = ProcessingPreferences.summaryLanguage().rawValue, translation = ProcessingPreferences.translationLanguage().rawValue

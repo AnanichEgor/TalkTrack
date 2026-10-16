@@ -113,7 +113,7 @@ long recordings and native UI behavior have their own outstanding tasks.
 ## Text server
 
 Summary and translation jobs can run on an OpenAI-compatible chat completions server
-chosen in Settings ▸ Text (`TextServer.swift`). Such a job's model snapshot has
+chosen in Settings ▸ Models (`TextServer.swift`). Such a job's model snapshot has
 `preprocessingVersion` `openai-chat-1`, the base URL as `repository` and the model name
 as `revision`; `RoutedTextInference` sends it to the server and every other job to the
 local runtime. Server jobs have no context limit (`ContextLimit.unbounded`) and send no
