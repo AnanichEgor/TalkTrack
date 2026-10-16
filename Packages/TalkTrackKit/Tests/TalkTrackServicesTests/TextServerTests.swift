@@ -58,20 +58,35 @@ import TalkTrackDomain
         #expect(throws: TextServerError.notConfigured) { try Self.server.snapshot(for: .finalASR) }
     }
 
-    @Test func serverJobsUseA128KContextAndOnlyWhenChosen() throws {
+    @Test func translationsUseTheServerOnlyWhenChosen() throws {
         let defaults = try #require(UserDefaults(suiteName: "TextServerTests-\(UUID())"))
         defaults.set(ContextLimit.tokens8K.rawValue, forKey: ProcessingPreferences.contextKey)
-        #expect(try TextServerPreferences.snapshot(for: .summary, in: defaults) == nil)
-        #expect(TextServerPreferences.settings(for: .summary, in: defaults).contextLimit == .tokens8K)
-        defaults.set(true, forKey: TextServerPreferences.summariesKey)
-        #expect(throws: TextServerError.notConfigured) { try TextServerPreferences.snapshot(for: .summary, in: defaults) }
+        #expect(try TextServerPreferences.snapshot(for: .translation, in: defaults) == nil)
+        defaults.set(true, forKey: TextServerPreferences.translationsKey)
+        // Not used before Check Connection succeeded.
+        #expect(try TextServerPreferences.snapshot(for: .translation, in: defaults) == nil)
+        defaults.set(true, forKey: TextServerPreferences.verifiedKey)
+        #expect(throws: TextServerError.notConfigured) { try TextServerPreferences.snapshot(for: .translation, in: defaults) }
         defaults.set("https://api.example.com/v1", forKey: TextServerPreferences.urlKey)
         defaults.set("test-model", forKey: TextServerPreferences.modelKey)
-        #expect(try TextServerPreferences.snapshot(for: .summary, in: defaults).flatMap(TextServer.init) == Self.server)
-        #expect(TextServerPreferences.settings(for: .summary, in: defaults).contextLimit == .unbounded)
-        // Translations keep the local model and context until chosen separately.
-        #expect(try TextServerPreferences.snapshot(for: .translation, in: defaults) == nil)
-        #expect(TextServerPreferences.settings(for: .translation, in: defaults).contextLimit == .tokens8K)
+        #expect(try TextServerPreferences.snapshot(for: .translation, in: defaults).flatMap(TextServer.init) == Self.server)
+        #expect(TextServerPreferences.settings(for: .translation, in: defaults).contextLimit == .unbounded)
+        // Summaries choose their model in the Summary tab, not here.
+        #expect(try TextServerPreferences.snapshot(for: .summary, in: defaults) == nil)
+        #expect(SummaryModelOptions.settings(for: .local("text-qwen35-4b"), in: defaults).contextLimit == .tokens8K)
+        #expect(SummaryModelOptions.settings(for: .server, in: defaults).contextLimit == .unbounded)
+    }
+
+    /// The server is the default once set up; otherwise the local model for this Mac's memory.
+    @Test func summaryModelChoices() {
+        let local = [(id: "text-qwen35-9b", title: "Qwen3.5 9B", installed: false), (id: "text-qwen35-4b", title: "Qwen3.5 4B", installed: true)]
+        let withServer = SummaryModelOptions.make(server: Self.server, local: local, localDefault: "text-qwen35-4b")
+        #expect(withServer.map(\.choice) == [.server, .local("text-qwen35-4b")])
+        #expect(withServer[0].title == "test-model (api.example.com)")
+        #expect(SummaryModelOptions.defaultChoice(server: Self.server, localDefault: "text-qwen35-4b") == .server)
+        let localOnly = SummaryModelOptions.make(server: nil, local: local, localDefault: "text-qwen35-9b")
+        #expect(localOnly.map(\.title) == ["Qwen3.5 9B (not downloaded)", "Qwen3.5 4B"])
+        #expect(SummaryModelOptions.defaultChoice(server: nil, localDefault: "text-qwen35-9b") == .local("text-qwen35-9b"))
     }
 
     @Test func requestShapeAndRejectedParameters() async throws {
@@ -168,5 +183,39 @@ import TalkTrackDomain
         #expect(output.job.settings.contextLimit == .unbounded && TextServer(output.job.models[0]) == Self.server)
         #expect(server.requests.count == 2 && server.body(1)["max_tokens"] == nil)
         #expect(try await f.store.isOutdated(output, settings: settings) == false)
+        // Choosing a local model afterwards does not outdate the server's summary.
+        #expect(try await f.store.isOutdated(output, settings: ProcessingSettings()) == false)
+    }
+
+    /// Use for summaries / translations need a successful check of the current
+    /// fields; any edit turns them off until the next check.
+    @MainActor @Test func serverIsUsedOnlyAfterACheckOfTheCurrentFields() async throws {
+        let keychain = TextServerKeychain(service: "TalkTrack Text Server Tests \(UUID())")
+        defer { try? keychain.delete() }
+        let defaults = try #require(UserDefaults(suiteName: "TextServerTests-\(UUID())"))
+        let server = Server([(200, #"{"data":[{"id":"test-model"}]}"#), (200, Self.completion("OK")),
+                             (200, #"{"data":[{"id":"test-model"}]}"#), (200, Self.completion("OK"))])
+        let settings = TextServerSettingsPresentation(defaults: defaults, keychain: keychain, transport: server.transport)
+        settings.use(for: .summary, true)
+        #expect(!settings.summaries && settings.enableHint?.contains("Enter the server URL") == true)
+        settings.address = "https://api.example.com/v1"; settings.model = "test-model"; settings.key = "k"
+        settings.use(for: .translation, true)
+        #expect(!settings.translations && settings.summaryServer == nil)
+        await settings.checkConnection()
+        #expect(settings.verified && settings.enableHint == nil)
+        settings.use(for: .summary, true); settings.use(for: .translation, true)
+        #expect(settings.summaryServer == Self.server && TextServerPreferences.uses(.translation, in: defaults))
+        // A new launch keeps the checked choices.
+        let reopened = TextServerSettingsPresentation(defaults: defaults, keychain: keychain, transport: server.transport)
+        reopened.loadKey()
+        #expect(reopened.verified && reopened.summaries && reopened.translations && reopened.key == "k")
+        // Editing any field turns both off.
+        reopened.model = "other-model"
+        #expect(!reopened.verified && !reopened.summaries && !reopened.translations && reopened.summaryServer == nil)
+        #expect(!TextServerPreferences.uses(.translation, in: defaults))
+        reopened.model = "test-model"
+        await reopened.checkConnection()
+        reopened.key = "changed"
+        #expect(!reopened.verified)
     }
 }

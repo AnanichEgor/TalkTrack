@@ -36,6 +36,8 @@ import TalkTrackDomain
     }
 
     public var type: SummaryType = .auto
+    /// The model for the next summaries, chosen beside Generate Summaries; nil uses the default.
+    public var modelChoice: SummaryModelChoice?
     public private(set) var entries: [Entry] = []
     public private(set) var error: String?
     public private(set) var isBusy = false
@@ -44,20 +46,21 @@ import TalkTrackDomain
     private let store: SessionStore
     private let runner: FinalJobRunner
     private let pipeline: SummaryJobPipeline
-    private let model: @MainActor () throws -> ModelSnapshot
-    private let settings: @MainActor () -> ProcessingSettings
+    private let model: @MainActor (SummaryModelChoice?) throws -> ModelSnapshot
+    private let settings: @MainActor (SummaryModelChoice?) -> ProcessingSettings
     private var refreshing = false
 
     public convenience init(meetingID: UUID, store: SessionStore, runner: FinalJobRunner,
                 pipeline: SummaryJobPipeline, model: ModelSnapshot,
                 settings: @escaping @MainActor () -> ProcessingSettings = { ProcessingPreferences.snapshot() }) {
-        self.init(meetingID: meetingID, store: store, runner: runner, pipeline: pipeline, model: { model }, settings: settings)
+        self.init(meetingID: meetingID, store: store, runner: runner, pipeline: pipeline,
+                  model: { _ in model }, settings: { _ in settings() })
     }
 
-    /// `model` is read when work is queued, so a text model chosen in Settings applies to the next summaries.
+    /// `model` and `settings` are read with `modelChoice` when work is queued.
     public init(meetingID: UUID, store: SessionStore, runner: FinalJobRunner,
-                pipeline: SummaryJobPipeline, model: @escaping @MainActor () throws -> ModelSnapshot,
-                settings: @escaping @MainActor () -> ProcessingSettings = { ProcessingPreferences.snapshot() }) {
+                pipeline: SummaryJobPipeline, model: @escaping @MainActor (SummaryModelChoice?) throws -> ModelSnapshot,
+                settings: @escaping @MainActor (SummaryModelChoice?) -> ProcessingSettings) {
         self.meetingID = meetingID; self.store = store
         self.runner = runner; self.pipeline = pipeline; self.model = model; self.settings = settings
     }
@@ -71,7 +74,7 @@ import TalkTrackDomain
     public func canRegenerate(_ entry: Entry) -> Bool { loaded && !isBusy && entry.requirement == nil && !entry.running }
 
     private var selectedSettings: ProcessingSettings {
-        var value = settings()
+        var value = settings(modelChoice)
         value.summaryType = type; value.templateVersion = SummaryTemplates.currentVersion
         return value
     }
@@ -112,14 +115,14 @@ import TalkTrackDomain
     /// Queues every recording whose summary is missing or outdated.
     public func generate() async {
         guard canGenerate else { return }
-        await perform { _ = try await self.store.enqueueSummaries(meetingID: self.meetingID, settings: self.selectedSettings, model: try self.model()) }
+        await perform { _ = try await self.store.enqueueSummaries(meetingID: self.meetingID, settings: self.selectedSettings, model: try self.model(self.modelChoice)) }
     }
 
     public func regenerate(_ entry: Entry) async {
         guard canRegenerate(entry) else { return }
         await perform {
             _ = try await self.store.enqueueSummary(meetingID: self.meetingID, recordingID: entry.recording.id,
-                                                    settings: self.selectedSettings, model: try self.model())
+                                                    settings: self.selectedSettings, model: try self.model(self.modelChoice))
         }
     }
 

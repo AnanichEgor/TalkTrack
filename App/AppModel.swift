@@ -16,7 +16,7 @@ struct WorkspaceServices {
     let summaries: SummaryJobPipeline
     let runner: FinalJobRunner
     /// The text model for new jobs, read when they are queued (Settings may change it).
-    let summaryModel: @MainActor () throws -> ModelSnapshot
+    let summaryModel: @MainActor (SummaryModelChoice?) throws -> ModelSnapshot
     let translations: TranslationJobPipeline
     let translationModel: @MainActor () throws -> ModelSnapshot
 }
@@ -223,9 +223,17 @@ struct WorkspaceServices {
             state = .ready(workspace, WorkspaceServices(store: store, notes: NotesAutosave(store: store),
                                                         enrollment: enrollment, jobPolicy: policy, player: player,
                                                         summaries: summaries, runner: runner,
-                                                        summaryModel: {
-                                                            try TextServerPreferences.snapshot(for: .summary)
-                                                                ?? current().model(for: .summary).snapshot(for: .summary) },
+                                                        summaryModel: { choice in
+                                                            switch choice {
+                                                            case .server:
+                                                                guard let server = TextServerPreferences.server() else { throw TextServerError.notConfigured }
+                                                                return try server.snapshot(for: .summary)
+                                                            case .local(let id):
+                                                                return try catalog.selecting(textModel: id).model(for: .summary).snapshot(for: .summary)
+                                                            case nil:
+                                                                return try current().model(for: .summary).snapshot(for: .summary)
+                                                            }
+                                                        },
                                                         translations: translations,
                                                         translationModel: {
                                                             try TextServerPreferences.snapshot(for: .translation)

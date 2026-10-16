@@ -356,7 +356,7 @@ private struct ModelSettings: View {
             } header: {
                 Text("Text Model")
             } footer: {
-                Text("Automatic uses the larger model on Macs with 32 GB of memory or more (this Mac has \(Self.memory(models.physicalMemory))). A text server below replaces it for the tasks you choose. Summaries and translations already queued keep the model they were started with.")
+                Text("Automatic uses the larger model on Macs with 32 GB of memory or more (this Mac has \(Self.memory(models.physicalMemory))). Summaries choose their model beside Generate Summaries: the text server below when it is used for summaries, otherwise this one. Summaries and translations already queued keep the model they were started with.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             TextServerSection(server: server)
@@ -545,14 +545,12 @@ private struct TextServerSection: View {
 
     var body: some View {
         Section("Text Server") {
-            Toggle("Use for summaries", isOn: $server.summaries)
-            Toggle("Use for translations", isOn: $server.translations)
-            TextField("Server URL", text: $server.address, prompt: Text("https://api.openai.com/v1"))
+            TextField("Server URL", text: $server.address, prompt: Text(""))
                 .textContentType(.URL).autocorrectionDisabled()
-            SecureField("API key", text: $server.key, prompt: Text("Not needed for most local servers"))
+            SecureField("API key", text: $server.key, prompt: Text(""))
                 .onSubmit { server.saveKey() }
             HStack {
-                TextField("Model", text: $server.model, prompt: Text("gpt-4.1-mini, qwen3:14b…")).autocorrectionDisabled()
+                TextField("Model", text: $server.model, prompt: Text("")).autocorrectionDisabled()
                 if !server.availableModels.isEmpty {
                     Menu("Choose") {
                         ForEach(server.availableModels, id: \.self) { name in Button(name) { server.model = name } }
@@ -566,16 +564,22 @@ private struct TextServerSection: View {
                 Button("Check Connection") { Task { await server.checkConnection() } }
                     .disabled(server.check == .checking || TextServer.normalizedURL(server.address) == nil)
             }
+            Toggle("Use for summaries", isOn: Binding(get: { server.summaries }, set: { server.use(for: .summary, $0) }))
+                .disabled(!server.verified)
+            Toggle("Use for translations", isOn: Binding(get: { server.translations }, set: { server.use(for: .translation, $0) }))
+                .disabled(!server.verified)
             if let problem = server.addressProblem {
                 Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(Color.errorText)
-            } else if server.incomplete {
-                Label("Enter the server URL and model to use the server.", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
+            } else if let hint = server.enableHint {
+                Text(hint).font(.callout).foregroundStyle(.secondary)
             }
             if let error = server.keyError {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(Color.errorText)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Examples stay out of the fields, where they looked like entered values.
+            Text("For example, Server URL https://api.openai.com/v1 with model gpt-4.1-mini, or http://localhost:11434/v1 (Ollama) with qwen3:14b. Local servers usually need no API key.")
+                .font(.callout).foregroundStyle(.secondary)
             Text("Any server with the OpenAI chat completions API: OpenAI, OpenRouter, LM Studio, Ollama, vLLM. The meeting title, description and transcript of each summary or translation are sent to this server; use only one you trust. TalkTrack sets no context or response limit; the server's own limits apply. The API key is kept in your Keychain. Recording and transcription always stay on this Mac.")
                 .font(.callout).foregroundStyle(.secondary)
         }

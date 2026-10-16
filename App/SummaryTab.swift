@@ -14,7 +14,24 @@ struct SummaryTab: View {
         self.captureActive = captureActive
         _presentation = State(initialValue: SummaryPresentation(meetingID: meetingID, store: services.store,
             runner: services.runner, pipeline: services.summaries, model: services.summaryModel,
-            settings: { TextServerPreferences.settings(for: .summary) }))
+            settings: { SummaryModelOptions.settings(for: $0) }))
+    }
+
+    /// The text server when it is set up, then the downloaded local text models.
+    private var modelOptions: [SummaryModelOption] {
+        let local = (app.models?.items ?? []).filter(\.isTextModel).map {
+            (id: $0.id, title: $0.title.replacingOccurrences(of: "Text processing: ", with: ""), installed: $0.state.isInstalled)
+        }
+        return SummaryModelOptions.make(server: app.textServer.summaryServer, local: local, localDefault: localDefault)
+    }
+
+    /// The local model chosen in Settings ▸ Models; Automatic picks it by memory.
+    private var localDefault: String { app.models?.selectedTextModel ?? "" }
+
+    /// The user's choice while it is still offered; otherwise the server, or the model for this Mac's memory.
+    private var modelChoice: SummaryModelChoice {
+        if let choice = presentation.modelChoice, modelOptions.contains(where: { $0.choice == choice }) { return choice }
+        return SummaryModelOptions.defaultChoice(server: app.textServer.summaryServer, localDefault: localDefault)
     }
 
     var body: some View {
@@ -26,7 +43,14 @@ struct SummaryTab: View {
                 .frame(maxWidth: 290)
                 .disabled(presentation.isBusy)
                 .help("Used for the next summaries you generate")
+                Picker("Model", selection: Binding(get: { modelChoice }, set: { presentation.modelChoice = $0 })) {
+                    ForEach(modelOptions) { Text($0.title).tag($0.choice) }
+                }
+                .frame(maxWidth: 260)
+                .disabled(presentation.isBusy)
+                .help("The model for the next summaries you generate. A text server is set up in Settings ▸ Models.")
                 Button("Generate Summaries", systemImage: "text.badge.plus") {
+                    presentation.modelChoice = modelChoice
                     Task { await presentation.generate() }
                 }
                 .disabled(!presentation.canGenerate || captureActive)
@@ -84,7 +108,10 @@ struct SummaryTab: View {
                         .disabled(presentation.isBusy)
                         .help("Cancel generation and keep the previous summary of this recording")
                 } else if entry.output != nil {
-                    Button("Regenerate", systemImage: "arrow.clockwise") { Task { await presentation.regenerate(entry) } }
+                    Button("Regenerate", systemImage: "arrow.clockwise") {
+                        presentation.modelChoice = modelChoice
+                        Task { await presentation.regenerate(entry) }
+                    }
                         .disabled(!presentation.canRegenerate(entry) || captureActive)
                         .help("Summarize this recording again using the selected type")
                 }

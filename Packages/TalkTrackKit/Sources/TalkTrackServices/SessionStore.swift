@@ -1206,7 +1206,11 @@ public actor SessionStore {
         let old = output.job.settings
         // `templateVersion` is per kind; an output is current only at its kind's current version.
         let currentVersion = output.kind == .summary ? SummaryTemplates.currentVersion : IndexedTranslation.version
-        let settingsChanged = old.contextLimit != settings.contextLimit || old.templateVersion != currentVersion ||
+        // A text server has no context limit; choosing between it and a local
+        // model is a model choice, which never outdates a result.
+        let contextChanged = old.contextLimit != settings.contextLimit
+            && old.contextLimit != .unbounded && settings.contextLimit != .unbounded
+        let settingsChanged = contextChanged || old.templateVersion != currentVersion ||
             (output.kind == .summary ? old.summaryLanguage != settings.summaryLanguage || old.summaryType != settings.summaryType :
                                       old.translationLanguage != settings.translationLanguage)
         if output.kind == .summary, let recordingID = output.job.recordingID {

@@ -69,7 +69,7 @@ supported.
 - Audio: microphone, live transcription, default meeting language, spelling
   correction.
 - Models: download, resume, cancel and remove each model; choose the text model
-  (Automatic, 9B or 4B) or a text server (see below).
+  (Automatic, 9B or 4B), and a text server (see below).
 - Text: summary language and translation language (independent), context size.
 - Speakers: saved voices and automatic recognition.
 
@@ -176,11 +176,16 @@ Summaries and translations can run on any server with the OpenAI chat completion
 API instead of the local model: OpenAI, OpenRouter, or a model on your own machine
 with LM Studio, Ollama or vLLM. In Settings ▸ Models ▸ Text Server:
 
-1. Turn on **Use for summaries** and/or **Use for translations**.
-2. Enter the **Server URL**, for example `https://api.openai.com/v1`,
+1. Enter the **Server URL**, for example `https://api.openai.com/v1`,
    `http://localhost:1234/v1` (LM Studio) or `http://localhost:11434/v1` (Ollama).
-3. Enter the **API key** (local servers usually need none) and the **Model** name.
+2. Enter the **API key** (local servers usually need none) and the **Model** name.
    **Check Connection** lists the server's models and sends a short test request.
+3. After the check succeeds, turn on **Use for summaries** and/or **Use for translations**.
+   They cannot be turned on before, and changing the URL, key or model turns them off
+   until the connection is checked again.
+4. With **Use for summaries** on, the **Model** menu beside **Generate Summaries** offers
+   the server and selects it by default; otherwise it selects the local text model chosen
+   in Settings ▸ Models (Automatic: by your Mac's memory).
 
 TalkTrack sets no context or response limit for a server: the whole meeting is sent in
 one request and the server's own limits apply (the context in Settings ▸ Text is for the

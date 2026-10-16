@@ -89,6 +89,8 @@ public enum TextServerPreferences {
     public static let modelKey = "textServerModel"
     public static let summariesKey = "summariesUseTextServer"
     public static let translationsKey = "translationsUseTextServer"
+    /// Check Connection succeeded for the saved address, key and model.
+    public static let verifiedKey = "textServerVerified"
 
     public static func server(in defaults: UserDefaults = .standard) -> TextServer? {
         guard let url = TextServer.normalizedURL(defaults.string(forKey: urlKey) ?? ""),
@@ -110,8 +112,10 @@ public enum TextServerPreferences {
         return settings
     }
 
+    /// Translations follow Use for translations; summaries choose their model in
+    /// the Summary tab, which offers the server when Use for summaries is on.
     public static func uses(_ role: ModelRole, in defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: role == .summary ? summariesKey : translationsKey)
+        role == .translation && defaults.bool(forKey: verifiedKey) && defaults.bool(forKey: translationsKey)
     }
 
     /// The server's snapshot when `role` is set to use it; nil for the local model.
@@ -120,6 +124,45 @@ public enum TextServerPreferences {
         guard uses(role, in: defaults) else { return nil }
         guard let server = server(in: defaults) else { throw TextServerError.notConfigured }
         return try server.snapshot(for: role)
+    }
+}
+
+/// The model of the next summaries, chosen in the Summary tab.
+public enum SummaryModelChoice: Hashable, Sendable {
+    case server
+    /// A local text model's catalog id.
+    case local(String)
+}
+
+public struct SummaryModelOption: Identifiable, Hashable, Sendable {
+    public let choice: SummaryModelChoice
+    public let title: String
+    public var id: SummaryModelChoice { choice }
+}
+
+public enum SummaryModelOptions {
+    /// The text server when one is set up, then the downloaded local text
+    /// models; the local default is listed even before it is downloaded.
+    /// `local` is (catalog id, title, downloaded).
+    public static func make(server: TextServer?, local: [(id: String, title: String, installed: Bool)],
+                            localDefault: String) -> [SummaryModelOption] {
+        var options = server.map { [SummaryModelOption(choice: .server, title: "\($0.model) (\($0.displayHost))")] } ?? []
+        for model in local where model.installed || model.id == localDefault {
+            options.append(SummaryModelOption(choice: .local(model.id), title: model.title + (model.installed ? "" : " (not downloaded)")))
+        }
+        return options
+    }
+
+    /// The text server when one is set up, otherwise the local model for this Mac's memory.
+    public static func defaultChoice(server: TextServer?, localDefault: String) -> SummaryModelChoice {
+        server == nil ? .local(localDefault) : .server
+    }
+
+    /// Settings of a new summary job: a server sets no context limit.
+    public static func settings(for choice: SummaryModelChoice?, in defaults: UserDefaults = .standard) -> ProcessingSettings {
+        var settings = ProcessingPreferences.snapshot(from: defaults)
+        if choice == .server { settings.contextLimit = TextServerPreferences.context }
+        return settings
     }
 }
 
