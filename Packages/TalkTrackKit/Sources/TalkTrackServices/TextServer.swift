@@ -226,6 +226,11 @@ public struct TextServerClient: Sendable {
                 let name = Self.rejected(message, in: body)!
                 if name == "max_tokens" { body["max_completion_tokens"] = body["max_tokens"] }
                 body[name] = nil
+            } catch TextServerError.server(_, 400, let message)
+                where body["enable_thinking"] == nil && message.lowercased().contains("enable_thinking") {
+                // Alibaba Model Studio (DashScope) asks non-streaming requests to Qwen
+                // models with reasoning to turn it off.
+                body["enable_thinking"] = false
             }
         }
         throw TextServerError.unreadableResponse(server.displayHost)

@@ -92,6 +92,16 @@ import TalkTrackDomain
         #expect(last["max_tokens"] == nil && last["max_completion_tokens"] as? Int == 100 && last["temperature"] == nil)
     }
 
+    @Test func reasoningIsTurnedOffWhenTheServerAsks() async throws {
+        let server = Server([
+            (400, #"{"error":{"message":"parameter.enable_thinking must be set to false for non-streaming calls","type":"invalid_request_error"}}"#),
+            (200, Self.completion("OK")),
+        ])
+        let reply = try await TextServerClient(server: Self.server, key: "k", transport: server.transport)
+            .complete(system: "S", prompt: "P", temperature: 0, seed: nil)
+        #expect(reply.text == "OK" && server.body(0)["enable_thinking"] == nil && server.body(1)["enable_thinking"] as? Bool == false)
+    }
+
     @Test func errorsNameTheServer() async {
         for (code, body, expected) in [
             (401, #"{"error":{"message":"bad key"}}"#, TextServerError.unauthorized("api.example.com")),
