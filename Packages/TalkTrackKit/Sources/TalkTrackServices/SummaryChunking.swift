@@ -89,13 +89,16 @@ public struct MeetingSummarizer: Sendable {
     let progress: @Sendable (SummaryProgress) async -> Void
     /// 0 for the first generation of a job; see `SummaryTextInference.summaryText`.
     let attempt: Int
+    /// What the previous attempt got wrong; added to the final request's prompt.
+    let corrections: [String]
 
     public init(model: ModelSnapshot, settings: ProcessingSettings, inference: any SummaryTextInference, attempt: Int = 0,
-                progress: @escaping @Sendable (SummaryProgress) async -> Void = { _ in }) {
+                corrections: [String] = [], progress: @escaping @Sendable (SummaryProgress) async -> Void = { _ in }) {
         self.model = model
         self.settings = settings
         self.inference = inference
         self.attempt = attempt
+        self.corrections = corrections
         self.progress = progress
     }
 
@@ -134,7 +137,7 @@ public struct MeetingSummarizer: Sendable {
         let trimmedNotes = withNotes ? notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : ""
         guard hasSpeech || !trimmedNotes.isEmpty else { throw SummaryGenerationError.emptySource }
 
-        let system = SummaryPrompt.system(template, language: language)
+        let system = SummaryPrompt.system(template, language: language, corrections: corrections)
         let prompt = SummaryPrompt.user(meeting: meeting, notes: trimmedNotes, transcript: transcript, date: date)
         let formatted = try await inference.formattedTokenCount(model, settings: settings, system: system, prompt: prompt)
         if (try? TextContextPlanner.resolve(selection: settings.contextLimit, role: .summary, inputTokens: formatted)) != nil {
@@ -163,7 +166,7 @@ public struct MeetingSummarizer: Sendable {
         }
 
         // Merge until the final summary fits.
-        let finalSystem = SummaryPrompt.system(template, language: language, fromParts: true)
+        let finalSystem = SummaryPrompt.system(template, language: language, fromParts: true, corrections: corrections)
         let mergeSystem = SummaryPrompt.mergeSystem(language: language, notes: withNotes)
         var depth = 0
         while true {
@@ -212,6 +215,7 @@ public struct MeetingSummarizer: Sendable {
         if let template = SummaryTemplates.template(settings.summaryType, version: settings.templateVersion) {
             text = SummaryCheck.removeRepeatedSections(text, template: template, language: settings.summaryLanguage)
         }
+        text = SummaryCheck.unquoteBullets(text)
         let citations = SummaryCheck.repairCitations(text, transcript: transcript)
         let items = SummaryCheck.repairActionItems(citations.text, language: settings.summaryLanguage)
         return SummaryDraft(text: items.text, units: units, requests: requests, repairedCitations: citations.repaired,

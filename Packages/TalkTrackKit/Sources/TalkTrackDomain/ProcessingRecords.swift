@@ -52,7 +52,7 @@ public struct ProcessingSettings: Codable, Equatable, Sendable {
 
     public init(meetingLanguage: MeetingLanguage = .auto, summaryLanguage: OutputLanguage = .english,
                 translationLanguage: OutputLanguage = .russian, contextLimit: ContextLimit = .defaultSelection,
-                summaryType: SummaryType = .auto, templateVersion: String = "3", spellingCorrection: Bool = true) {
+                summaryType: SummaryType = .auto, templateVersion: String = "4", spellingCorrection: Bool = true) {
         self.spellingCorrection = spellingCorrection
         self.meetingLanguage = meetingLanguage
         self.summaryLanguage = summaryLanguage

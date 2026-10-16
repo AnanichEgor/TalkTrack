@@ -85,16 +85,22 @@ public actor SummaryJobPipeline {
             // A response in the wrong format gets up to two more, differently
             // seeded attempts (the 4B model sometimes leaves a task uncited);
             // a third failure keeps the previous summary.
+            // From version 4 a retry is told what the previous answer got wrong.
             var draft: SummaryDraft?
+            var corrections: [String] = []
             for attempt in 0..<Self.formatAttempts where draft == nil {
                 let value = try await MeetingSummarizer(model: model, settings: job.settings, inference: inference, attempt: attempt,
-                    progress: { [weak self] value in await self?.report(value, jobID: jobID) })
+                    corrections: corrections, progress: { [weak self] value in await self?.report(value, jobID: jobID) })
                     .summarize(meeting: source.meeting, notes: source.notes?.text, transcript: transcript)
                 try Task.checkCancellation()
                 if Self.isValid(value.text, template: template, language: job.settings.summaryLanguage) { draft = value }
+                else { corrections = SummaryCheck.formatProblems(value.text, template: template, language: job.settings.summaryLanguage) }
             }
             guard let draft else { throw SummaryJobError.invalidOutput }
             var text = draft.text
+            if !["1", "2", "3"].contains(template.version) {
+                text = SummaryCheck.withoutEmptyBullets(text, language: job.settings.summaryLanguage)
+            }
             if let section = template.perPersonSection {
                 text = SummaryCheck.withoutBriefSpeakers(text, section: section.title(job.settings.summaryLanguage),
                                                                language: job.settings.summaryLanguage, transcript: transcript)

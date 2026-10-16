@@ -53,7 +53,7 @@ struct SummarySample {
         #expect(SummaryTemplates.current.map(\.title) == ["Auto", "One-to-One", "Customer Discovery", "Hiring Interview", "Standup", "Weekly Review"])
         #expect(ProcessingSettings().templateVersion == SummaryTemplates.currentVersion)
         for template in SummaryTemplates.current {
-            #expect(template.version == "3")
+            #expect(template.version == "4")
             #expect(!template.sections.isEmpty && !template.purpose.isEmpty)
             for language in OutputLanguage.allCases {
                 let titles = template.sections.map { $0.title(language) }
@@ -63,7 +63,7 @@ struct SummarySample {
             #expect(template.sections.contains { ["Action Items", "Next Steps"].contains($0.english) })
         }
         // A version that never existed resolves to nothing, never to a different template.
-        #expect(SummaryTemplates.template(.auto, version: "4") == nil)
+        #expect(SummaryTemplates.template(.auto, version: "5") == nil)
         #expect(SummaryTemplates.template(.standup, version: "1")?.sections.first?.russian == "Кто что делает")
         // Version 2 keeps version 1's sections and rules; only the source changed.
         // Version 3 changes only Standup: people without a work update are left out.
@@ -71,14 +71,77 @@ struct SummarySample {
             #expect(SummaryTemplates.template(type, version: "1")?.sections == SummaryTemplates.template(type, version: "2")?.sections)
             #expect(SummaryTemplates.template(type, version: "1")?.rules == SummaryTemplates.template(type, version: "2")?.rules)
             guard type != .standup else { continue }
-            #expect(SummaryTemplates.template(type, version: "2")?.sections == SummaryTemplates.template(type)?.sections)
-            #expect(SummaryTemplates.template(type, version: "2")?.rules == SummaryTemplates.template(type)?.rules)
+            #expect(SummaryTemplates.template(type, version: "2")?.sections == SummaryTemplates.template(type, version: "3")?.sections)
+            #expect(SummaryTemplates.template(type, version: "2")?.rules == SummaryTemplates.template(type, version: "3")?.rules)
         }
-        let standup = try #require(SummaryTemplates.template(.standup))
+        let standup = try #require(SummaryTemplates.template(.standup, version: "3"))
         #expect(standup.sections.map(\.english) == SummaryTemplates.template(.standup, version: "2")?.sections.map(\.english))
         #expect(standup.sections[0].guidance.contains("who gave a work update"))
         #expect(standup.rules.last?.contains("said nothing about their work") == true)
         #expect(SummaryPrompt.system(standup, language: .english).contains("said nothing about their work"))
+    }
+
+    /// Version 4: Standup's Russian heading reads as updates, not tasks; reports are
+    /// not turned into tasks; decisions are cited bullets; small talk and translation rules.
+    @Test func version4ClarifiesStandupDecisionsAndTranslation() throws {
+        let standup = try #require(SummaryTemplates.template(.standup))
+        #expect(standup.version == "4")
+        #expect(standup.sections.map(\.russian) == ["Обновления по участникам", "Блокеры", "Решения", "Задачи"])
+        #expect(standup.sections.map(\.english) == ["Updates by Person", "Blockers", "Decisions", "Action Items"])
+        #expect(standup.perPersonSection?.russian == "Обновления по участникам")
+        #expect(standup.sections[1].guidance.contains("unclear requirements"))
+        let russian = SummaryPrompt.system(standup, language: .russian)
+        for rule in ["it is not a task list", "small talk", "translate what was said faithfully",
+                     "ending with its time citation in brackets", "said nothing about their work"] {
+            #expect(russian.contains(rule), "\(rule)")
+        }
+        #expect(!russian.contains("previous answer was rejected"))
+        // Other types share the decisions and small-talk changes only.
+        let weekly = try #require(SummaryTemplates.template(.weeklyReview))
+        let old = try #require(SummaryTemplates.template(.weeklyReview, version: "3"))
+        #expect(weekly.sections.map(\.english) == old.sections.map(\.english))
+        #expect(weekly.rules.count == old.rules.count + 1 && !weekly.rules.contains { $0.contains("task list") })
+        // Older versions keep their exact prompts, with or without corrections.
+        let v3 = try #require(SummaryTemplates.template(.standup, version: "3"))
+        #expect(SummaryPrompt.system(v3, language: .russian) == SummaryPrompt.system(v3, language: .russian, corrections: ["x"]))
+        #expect(!SummaryPrompt.system(v3, language: .russian).contains("small talk"))
+    }
+
+    @Test func retryPromptNamesWhatTheRejectedAnswerGotWrong() throws {
+        let standup = try #require(SummaryTemplates.template(.standup))
+        let rejected = """
+        ## Обновления по участникам
+        - **Артем** — готово
+        ## Решения
+        - Решили [09:41:00]
+        ## Задачи
+        - [ ] Перенести тикет — Ответственный: Артем
+        """
+        #expect(!SummaryJobPipeline.isValid(rejected, template: standup, language: .russian))
+        let problems = SummaryCheck.formatProblems(rejected, template: standup, language: .russian)
+        #expect(problems.count == 2)
+        #expect(problems[0].contains("\"## Блокеры\""))
+        #expect(problems[1].contains("Перенести тикет") && problems[1].contains("time citation"))
+        let system = SummaryPrompt.system(standup, language: .russian, corrections: problems)
+        #expect(system.hasSuffix(SummaryPrompt.correctionNote(problems)))
+    }
+
+    @Test func bulletsSayingNothingAreRemovedFromEverySection() throws {
+        for line in ["- **Voice1**: No update noted.", "- Voice6: none noted", "- **Дима**: нет обновлений.", "- **Voice7**:",
+                     "- **Voice1**: Не сообщал об обновлениях.", "- **Voice2**: Did not give an update.",
+                     "- **Voice5**: No update reported; small talk regarding cricket.", "- **Максим**: Не сообщил о блокерах.",
+                     "- **Дима (Dima)** — не упоминал блокеров"] {
+            #expect(SummaryCheck.saysNoUpdate(Substring(line)), "\(line)")
+        }
+        for line in ["- **Voice2**: Will create a PR for review today.", "- **Юра**: Сообщил, что закрыл дефект.",
+                     "- Nonetheless the release ships [09:41:00]", "- [ ] Create a PR — Owner: Voice2 [09:45:55]", "## Blockers"] {
+            #expect(!SummaryCheck.saysNoUpdate(Substring(line)), "\(line)")
+        }
+        let output = "## Блокеры\n- **Максим**: Не сообщил о блокерах.\n- **Артем**: нет блокеров\n\n## Решения\n- Решили выпустить [09:41:00]\n- **Дима**: не отмечено"
+        #expect(SummaryCheck.withoutEmptyBullets(output, language: .russian)
+                == "## Блокеры\nНе отмечено.\n\n## Решения\n- Решили выпустить [09:41:00]")
+        #expect(SummaryCheck.unquoteBullets("## Decisions\n- \"- Ship on Friday [09:38:45]\"\n\"- Skip it [09:39:27]\"\n- Keep \"quotes\"")
+                == "## Decisions\n- Ship on Friday [09:38:45]\n- Skip it [09:39:27]\n- Keep \"quotes\"")
     }
 
     @Test func systemPromptCarriesGroundingLanguageAndTypeRules() throws {
@@ -100,8 +163,9 @@ struct SummarySample {
         #expect(russian.contains("Write the whole summary in Russian") && russian.contains("Ответственный: не указан"))
         #expect(russian.contains("## О кандидате") && russian.contains("\"Не отмечено.\"") && !russian.contains("## Candidate Overview"))
         // Type rules stay with their type.
-        let auto = SummaryPrompt.system(try #require(SummaryTemplates.template(.auto)), language: .english)
+        let auto = SummaryPrompt.system(try #require(SummaryTemplates.template(.auto, version: "3")), language: .english)
         #expect(!auto.contains("Never comment on age") && !auto.contains("For this type of meeting"))
+        #expect(!SummaryPrompt.system(try #require(SummaryTemplates.template(.auto)), language: .english).contains("Never comment on age"))
     }
 
     /// Version 2 summarizes one recording: no notes wording, its date in the

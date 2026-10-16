@@ -26,6 +26,15 @@ guaranteed.
   - 2 (2026-10-13): one recording, no notes, the recording date as
     `<recording_date>`.
   - 3 (2026-10-14): Standup leaves out people who said nothing substantive.
+  - 4 (2026-10-16): the Russian Standup heading is "Обновления по участникам"
+    (the old "Кто что делает" read as a task list); per-person updates are
+    reports, not tasks, and work already done is never an action item; Blockers
+    include waiting, missing access and unclear requirements; decisions are cited
+    bullets; small talk is left out; summaries in another language than the
+    meeting are translated faithfully, keeping names as written. A format retry
+    is told what the rejected answer got wrong (`SummaryCheck.formatProblems`),
+    and bullets that only say there is nothing to report are removed
+    (`SummaryCheck.withoutEmptyBullets`).
 - **Sampling.** `TextSampling.summary`: temperature 0.2, repetition penalty
   1.05, fixed seed (seed + attempt on the one retry); thinking mode is off.
 - **Translation.** `IndexedTranslation.version` 1: indexed batches of at most 16
