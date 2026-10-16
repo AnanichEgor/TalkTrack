@@ -69,8 +69,11 @@ struct WorkspaceServices {
         do {
             let runtime = try InferenceRuntime(), catalog = try ModelCatalog.bundled()
             self.runtime = runtime; self.catalog = catalog
-            models = ModelSettingsPresentation(catalog: catalog, control: runtime)
+            let models = ModelSettingsPresentation(catalog: catalog, control: runtime)
+            self.models = models
             setupError = nil
+            // The Summary tab's model menu needs installation states before Settings opens.
+            Task { await models.refresh() }
         } catch {
             runtime = nil; catalog = nil; models = nil
             setupError = error.localizedDescription
