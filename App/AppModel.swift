@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Observation
 import TalkTrackDomain
 import TalkTrackInferenceRuntime
@@ -50,6 +52,8 @@ struct WorkspaceServices {
     /// while the Settings window is closed.
     let models: ModelSettingsPresentation?
     let speakers: SavedSpeakersPresentation
+    /// New releases on GitHub (Settings ▸ General ▸ Updates, menu bar).
+    let updates = UpdateChecker(currentVersion: AppModel.version)
     let setupError: String?
     private(set) var libraryMove: LibraryMove = .idle
     /// What launch recovery did with an unfinished move, shown in Settings.
@@ -70,6 +74,32 @@ struct WorkspaceServices {
             setupError = error.localizedDescription
         }
         speakers = SavedSpeakersPresentation(store: VoiceProfileStore(home: Self.profilesHome))
+    }
+
+    /// Opens Settings in front of every other window. TalkTrack is a menu-bar
+    /// app, so it may not be active, and SwiftUI would otherwise leave the
+    /// window behind the main window or another app.
+    func showSettings(_ open: OpenSettingsAction, tab: SettingsTab? = nil) {
+        if let tab { settingsTab = tab }
+        NSApp.activate()
+        open()
+        // The window may be created by `open()`; it reports itself on appearing.
+        DispatchQueue.main.async { [weak self] in self?.settingsWindow.map(Self.bringToFront) }
+    }
+
+    /// Set by the Settings window when it appears (see `SettingsView`).
+    @ObservationIgnored weak var settingsWindow: NSWindow? {
+        didSet { settingsWindow.map(Self.bringToFront) }
+    }
+
+    private static func bringToFront(_ window: NSWindow) {
+        NSApp.activate()
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
     /// From a "needs models" status: show the Models tab with those rows marked.

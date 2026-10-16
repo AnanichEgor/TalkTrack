@@ -29,18 +29,20 @@ struct TranslationTab: View {
                             .help("Cancel generation and keep the previous translation")
                     }
                     Spacer()
-                    Button("Language Settings…") { app.settingsTab = .text; openSettings() }
+                    Button("Language Settings…") { app.showSettings(openSettings, tab: .text) }
                 }
                 if let status = presentation.status {
-                    HStack(alignment: .top) {
+                    // Centered: the message lines up with Retry and Download Model….
+                    HStack(alignment: .center, spacing: 8) {
                         if presentation.running { ProgressView().controlSize(.small) }
                         Text(status).font(.callout).textSelection(.enabled).id(status)
+                            .fixedSize(horizontal: false, vertical: true)
                         if presentation.canRetry {
                             Button("Retry") { Task { await presentation.retry() } }.disabled(captureActive)
                                 .help("Retry using this request’s saved transcript and settings")
                         }
                         if presentation.job?.stage == .waitingForModels {
-                            Button("Download Model…") { app.showMissingModels([.translation]); openSettings() }
+                            Button("Download Model…") { app.showMissingModels([.translation]); app.showSettings(openSettings) }
                         }
                     }
                 }

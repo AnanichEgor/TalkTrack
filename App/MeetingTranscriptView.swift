@@ -35,8 +35,9 @@ struct MeetingTranscriptView: View {
                     .accessibilityLabel(notice)
             }
             if let error = presentation.errorMessage {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(error).foregroundStyle(Color.errorText).textSelection(.enabled)
+                HStack(alignment: .center, spacing: 8) {
+                    Text(error).font(.callout).foregroundStyle(Color.errorText).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                     Button("Retry") { Task { await presentation.refresh() } }
                         .disabled(presentation.isBusy)
                 }

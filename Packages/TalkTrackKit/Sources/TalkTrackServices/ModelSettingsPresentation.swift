@@ -97,6 +97,14 @@ public protocol ModelInstallationControl: Sendable {
     /// The text model new summaries, translations and spelling corrections use.
     public var selectedTextModel: String { textModelChoice ?? automaticTextModel }
 
+    /// The user chose a text model larger than this Mac's memory suggests: it may
+    /// be tried, but can be slow or stop when macOS runs out of memory.
+    public var selectedTextModelExceedsMemory: Bool {
+        guard let chosen = items.first(where: { $0.id == selectedTextModel }),
+              let automatic = items.first(where: { $0.id == automaticTextModel }) else { return false }
+        return chosen.downloadBytes > automatic.downloadBytes
+    }
+
     /// Saves the text model for new jobs; nil returns to the memory-based choice.
     /// Running and queued jobs keep the model they were created with.
     public func chooseTextModel(_ id: String?) {

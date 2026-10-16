@@ -93,8 +93,11 @@ Since 2026-10-15 (user decision) admission does not look at currently free
 memory: macOS compresses and swaps other apps to make room for the model, and the
 model is chosen by RAM (4B below 32 GB). It estimates resident weights plus
 4 GiB workspace (3 GiB for 4B) and the validated checkpoint's full-attention KV
-state, refuses a request larger than half of RAM, and refuses or stops only at
-critical memory pressure or when TalkTrack's footprint exceeds three fifths of RAM.
+state, refuses a request larger than RAM minus a system reserve (RAM/8, 2–8 GiB),
+and refuses or stops only at critical memory pressure or when TalkTrack's footprint
+exceeds that same limit. Since 2026-10-16 (user decision) a larger model than the
+Mac's default (9B below 32 GB) may be chosen and tried; Settings ▸ Models warns that
+it can be slow or stop with a memory error.
 Pressure checks continue between 512-token prefill chunks and during generation. The MLX free-buffer cache is limited to
 512 MiB. No refusal truncates source content; downstream text planners must split
 and cover it explicitly. `generateTask` cancellation joins the producer before

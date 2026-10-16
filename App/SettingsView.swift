@@ -30,10 +30,70 @@ struct SettingsView: View {
             }
         }
         .frame(width: 600, height: 560)
+        .background(WindowReader { model.settingsWindow = $0 })
+    }
+}
+
+/// Reports the hosting window once the view is in it.
+private struct WindowReader: NSViewRepresentable {
+    let found: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView { Reader(found: found) }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    private final class Reader: NSView {
+        let found: (NSWindow) -> Void
+        init(found: @escaping (NSWindow) -> Void) { self.found = found; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { DispatchQueue.main.async { self.found(window) } }
+        }
     }
 }
 
 // MARK: General
+
+private struct UpdateSettings: View {
+    @Bindable var updates: UpdateChecker
+
+    var body: some View {
+        Section("Updates") {
+            LabeledContent("Version", value: updates.currentVersion)
+            Toggle("Check for updates automatically", isOn: $updates.automatic)
+            HStack(alignment: .center, spacing: 8) {
+                status
+                Spacer()
+                if let update = updates.available {
+                    Button("Release Notes") { NSWorkspace.shared.open(update.pageURL) }
+                    Button("Download") { NSWorkspace.shared.open(update.downloadURL ?? update.pageURL) }
+                }
+                Button("Check Now") { Task { await updates.check() } }
+                    .disabled(updates.status == .checking)
+            }
+            Text("TalkTrack asks GitHub for the latest release at launch and once a day. Nothing about you or your meetings is sent. To update, download the new TalkTrack.dmg and replace the app in Applications.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var status: some View {
+        switch updates.status {
+        case .idle:
+            Text("Not checked yet").foregroundStyle(.secondary)
+        case .checking:
+            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Checking…") }
+        case .upToDate(let date):
+            Label("Up to date (checked \(date.formatted(date: .omitted, time: .shortened)))", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        case .available(let update):
+            Label("TalkTrack \(update.version) is available", systemImage: "arrow.down.circle.fill")
+                .foregroundStyle(Color.accentColor)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(Color.errorText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
 
 /// One line, shortened in the middle; the full path is the tooltip and the
 /// accessibility value.
@@ -90,6 +150,7 @@ struct StorageSettings: View {
                 Text("Models are stored separately from meetings and stay on this Mac.")
                     .font(.callout).foregroundStyle(.secondary)
             }
+            UpdateSettings(updates: model.updates)
         }
         .formStyle(.grouped)
         .alert("Move the library?", isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }),
@@ -275,6 +336,12 @@ private struct ModelSettings: View {
                     get: { models.textModelChoice ?? "" }, set: { models.chooseTextModel($0.isEmpty ? nil : $0) })) {
                     Text("Automatic (\(textName(models.automaticTextModel)))").tag("")
                     ForEach(models.items.filter(\.isTextModel)) { Text(textName($0.id)).tag($0.id) }
+                }
+                if models.selectedTextModelExceedsMemory {
+                    Label("This model is larger than recommended for \(Self.memory(models.physicalMemory)) of memory. Summaries and translations can take much longer, slow down other apps, or stop with a memory error. Recording and transcription are not affected.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 ForEach(models.items.filter(\.isTextModel)) { item in
                     ModelRow(item: item, requested: models.requested.contains(item.id), models: models,

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import TalkTrackServices
 
 @main
 struct TalkTrackApp: App {
@@ -72,10 +73,13 @@ private struct MenuBarContent: View {
                 .disabled(!workspace.controls(for: meeting.id).primaryEnabled || workspace.controls(for: meeting.id).primary != .stop)
             Divider()
         }
+        if let update = model.updates.available {
+            Button("Update Available: TalkTrack \(update.version)…") { NSWorkspace.shared.open(update.pageURL) }
+            Divider()
+        }
         Button("Open TalkTrack") { showMainWindow() }
         Button("Settings…") {
-            NSApp.activate()
-            openSettings()
+            model.showSettings(openSettings)
         }
         Divider()
         Button("Quit TalkTrack") { NSApp.terminate(nil) }
@@ -98,7 +102,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG && TALKTRACK_DEVTOOLS
         ReviewSupport.model = model
         ReviewSupport.install()
+        // Scripted reviews and checks launch with options; an alert would block them.
+        if ProcessInfo.processInfo.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) { return }
         #endif
+        model.updates.start { [weak self] update in self?.announce(update) }
+    }
+
+    /// Once per version, and never over a recording (the menu bar still shows it).
+    private func announce(_ update: AvailableUpdate) {
+        guard !model.isCapturing else { return }
+        let alert = NSAlert()
+        alert.messageText = "TalkTrack \(update.version) is available"
+        alert.informativeText = "You have version \(model.updates.currentVersion). Download the new TalkTrack.dmg and drag TalkTrack to Applications to replace this copy. Meetings, models and settings are kept."
+        alert.addButton(withTitle: "Download")
+        alert.addButton(withTitle: "Release Notes")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate()
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: NSWorkspace.shared.open(update.downloadURL ?? update.pageURL)
+        case .alertSecondButtonReturn: NSWorkspace.shared.open(update.pageURL)
+        default: break
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

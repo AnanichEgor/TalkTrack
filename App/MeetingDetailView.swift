@@ -252,7 +252,7 @@ struct StatusRow: View {
             if case .waitingForModels(_, let roles) = status, !roles.isEmpty {
                 Button("Download Models…") {
                     app.showMissingModels(roles)
-                    openSettings()
+                    app.showSettings(openSettings)
                 }
                 .controlSize(.small)
                 .help("Open Settings to download the missing models, then retry")

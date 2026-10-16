@@ -185,11 +185,12 @@ private actor FakeInstallations: ModelInstallationControl {
         let models = ModelSettingsPresentation(catalog: catalog, control: fake, pollInterval: .milliseconds(10),
                                                defaults: defaults, physicalMemory: 16 * gib)
         #expect(models.automaticTextModel == small && models.textModelChoice == nil && models.selectedTextModel == small)
+        #expect(!models.selectedTextModelExceedsMemory)
         #expect(models.items.filter(\.isTextModel).map(\.id) == [large, small])
         var changes = 0
         models.onChange = { changes += 1 }
         models.chooseTextModel(large)
-        #expect(models.selectedTextModel == large && changes == 1)
+        #expect(models.selectedTextModel == large && changes == 1 && models.selectedTextModelExceedsMemory)
         #expect(ProcessingPreferences.textModel(in: defaults) == large)
         #expect(try ModelCatalog.bundled(in: defaults).selecting(textModel: ProcessingPreferences.textModel(in: defaults),
                                                                 physicalMemory: 16 * gib).model(for: .summary).id == large)

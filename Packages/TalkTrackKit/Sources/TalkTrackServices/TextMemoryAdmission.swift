@@ -62,7 +62,7 @@ public enum TextMemoryAdmissionError: Error, LocalizedError, Equatable {
         let advice = "The source has not been changed or truncated."
         return switch self {
         case .unavailable: "Memory availability cannot be checked. Text processing was not started."
-        case .unsafe: "This text request is too large for this Mac's memory. Choose a smaller context in Settings ▸ Text, or the 4B text model in Settings ▸ Models. " + advice
+        case .unsafe: "This text request does not fit in this Mac's memory. Choose a smaller context in Settings ▸ Text, or the 4B text model in Settings ▸ Models. " + advice
         case .pressure: "macOS is critically short of memory, so text processing stopped. Quit memory-heavy apps and try again. " + advice
         }
     }
@@ -94,13 +94,21 @@ public enum TextMemoryAdmission {
 
     /// Decided by the Mac's RAM, not by what is free right now: macOS compresses
     /// and swaps other apps' memory to make room for the model. A request is
-    /// refused only when it could not fit in half of RAM, or when macOS already
-    /// reports critical pressure (it has nothing left to reclaim).
+    /// refused only when it could not fit in RAM beside the system reserve, or
+    /// when macOS already reports critical pressure (it has nothing left to
+    /// reclaim). A model larger than the Mac's default may still be tried; it can
+    /// be slow because macOS swaps (Settings ▸ Models warns about this).
     public static func admit(weightBytes: Int64, contextTokens: Int, alreadyLoaded: Bool,
                              memory: NativeMemorySnapshot, profile: TextMemoryProfile = .qwen36MoE35B) throws {
         let estimate = try estimate(weightBytes: weightBytes, contextTokens: contextTokens, profile: profile)
-        guard estimate <= memory.physicalBytes / 2 else { throw TextMemoryAdmissionError.unsafe }
+        guard estimate <= usableBytes(memory.physicalBytes) else { throw TextMemoryAdmissionError.unsafe }
         guard memory.pressure < criticalPressure else { throw TextMemoryAdmissionError.pressure }
+    }
+
+    /// RAM minus what macOS and the capture path keep: RAM/8, 2–8 GiB.
+    static func usableBytes(_ physical: UInt64) -> UInt64 {
+        let reserve = min(max(physical / 8, 2 * gib), 8 * gib)
+        return physical > reserve ? physical - reserve : 0
     }
 
     /// `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warning, 4 critical.
@@ -108,9 +116,9 @@ public enum TextMemoryAdmission {
 
     /// Called between bounded GPU batches. Stops without publishing an
     /// incomplete result, never clipping the input, when macOS reaches critical
-    /// pressure or this process grows past three fifths of RAM.
+    /// pressure or this process grows past RAM minus the system reserve.
     public static func checkDuringGeneration(_ memory: NativeMemorySnapshot) throws {
-        guard memory.pressure < criticalPressure, memory.footprintBytes <= memory.physicalBytes * 3 / 5 else {
+        guard memory.pressure < criticalPressure, memory.footprintBytes <= usableBytes(memory.physicalBytes) else {
             throw TextMemoryAdmissionError.pressure
         }
     }

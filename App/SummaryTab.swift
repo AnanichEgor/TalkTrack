@@ -103,15 +103,17 @@ struct SummaryTab: View {
                 }
             }
             if let status = entry.status {
-                HStack(alignment: .top, spacing: 8) {
+                // Centered: the message lines up with Retry and Download Model….
+                HStack(alignment: .center, spacing: 8) {
                     if entry.running { ProgressView().controlSize(.small) }
                     Text(status).font(.callout).textSelection(.enabled).id(status)
+                        .fixedSize(horizontal: false, vertical: true)
                     if entry.canRetry {
                         Button("Retry") { Task { await presentation.retry(entry) } }.disabled(captureActive || presentation.isBusy)
                             .help("Retry using this request’s saved transcript and settings")
                     }
                     if entry.job?.stage == .waitingForModels {
-                        Button("Download Model…") { app.showMissingModels([.summary]); openSettings() }
+                        Button("Download Model…") { app.showMissingModels([.summary]); app.showSettings(openSettings) }
                     }
                 }
             }

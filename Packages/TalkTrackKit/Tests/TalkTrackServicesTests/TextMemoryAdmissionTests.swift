@@ -26,11 +26,16 @@ import Testing
                                       memory: Self.memory(32*gib, pressure: 2), profile: .qwen35Dense9B)
         try TextMemoryAdmission.admit(weightBytes: Self.small, contextTokens: 32768, alreadyLoaded: false,
                                       memory: Self.memory(16*gib), profile: .qwen35Dense4B)
-        // Larger than half of RAM: the 9B model or 64K on a 16 GB Mac.
+        // The 9B model may be tried on a 16 GB Mac, even at 64K (about 12.6 GiB of 14 usable).
+        for context in [32768, 65536] {
+            try TextMemoryAdmission.admit(weightBytes: Self.large, contextTokens: context, alreadyLoaded: false,
+                                          memory: Self.memory(16*gib), profile: .qwen35Dense9B)
+        }
+        // Larger than RAM minus the reserve: the 9B model on 8 GB, 4B at 64K on 8 GB.
         for (weights, context, profile) in [(Self.small, 65536, TextMemoryProfile.qwen35Dense4B), (Self.large, 32768, .qwen35Dense9B)] {
             #expect(throws: TextMemoryAdmissionError.unsafe) {
                 try TextMemoryAdmission.admit(weightBytes: weights, contextTokens: context, alreadyLoaded: false,
-                                              memory: Self.memory(16*gib, free: 15*gib), profile: profile)
+                                              memory: Self.memory(8*gib, free: 7*gib), profile: profile)
             }
         }
         #expect(throws: TextMemoryAdmissionError.pressure) {
@@ -41,12 +46,12 @@ import Testing
 
     @Test func generationStopsOnlyAtCriticalPressureOrRunawayFootprint() throws {
         let gib = Self.gib
-        try TextMemoryAdmission.checkDuringGeneration(Self.memory(16*gib, free: 0, footprint: 7*gib, pressure: 2))
+        try TextMemoryAdmission.checkDuringGeneration(Self.memory(16*gib, free: 0, footprint: 12*gib, pressure: 2))
         #expect(throws: TextMemoryAdmissionError.pressure) {
             try TextMemoryAdmission.checkDuringGeneration(Self.memory(64*gib, free: 20*gib, footprint: 10*gib, pressure: 4))
         }
         #expect(throws: TextMemoryAdmissionError.pressure) {
-            try TextMemoryAdmission.checkDuringGeneration(Self.memory(64*gib, free: 20*gib, footprint: 40*gib))
+            try TextMemoryAdmission.checkDuringGeneration(Self.memory(64*gib, free: 20*gib, footprint: 57*gib))
         }
         #expect(TextMemoryAdmissionError.unsafe.errorDescription?.contains("4B text model") == true)
     }

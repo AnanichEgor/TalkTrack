@@ -5,7 +5,7 @@ entirely on your Mac. It captures other apps' audio (Zoom, Meet, Teams, a browse
 and your microphone as separate tracks, transcribes them with timestamps and speaker
 labels, and writes summaries and translations with a local language model. Nothing
 is sent to a server: the only network access is downloading the models once from
-Hugging Face.
+Hugging Face and checking GitHub for a new TalkTrack version.
 
 **Platform:** macOS 15 or later on Apple Silicon (M1 or newer). Intel Macs are not
 supported.
@@ -63,8 +63,8 @@ supported.
   audio is reported and marked on the timeline.
 
 **Settings**
-- General: library location (Move Library… with a verified, crash-safe copy) and the
-  models folder.
+- General: library location (Move Library… with a verified, crash-safe copy), the
+  models folder and update checks.
 - Audio: microphone, live transcription, default meeting language, spelling
   correction.
 - Models: download, resume, cancel and remove each model; choose the text model
@@ -98,12 +98,15 @@ Source and model licenses and attribution are in [ThirdParty/](ThirdParty/README
   testing were done on macOS 27; earlier versions are supported by the build target
   but were not tested.
 - **Memory.** The text model is chosen by RAM: 32 GB or more uses Qwen3.5 9B, less
-  uses 4B. 16 GB is the practical minimum for summaries and translation; on 8 GB Macs
-  text requests are refused (recording and transcription are not affected). You can
-  override the choice in Settings ▸ Models.
+  uses 4B. You can choose 9B on a smaller Mac in Settings ▸ Models; TalkTrack warns
+  that summaries and translations may then be much slower or stop with a memory
+  error. 16 GB is the practical minimum for summaries and translation; requests that
+  do not fit in RAM at all (for example 9B on 8 GB) are refused. Recording and
+  transcription are not affected.
 - **Disk.** About 4.2 GB for the speech models plus 3.1 GB (4B) or 6.6 GB (9B) for the
   text model, stored in `~/Library/Application Support/TalkTrack/Models`.
-- **Internet** is needed only to download models; everything else works offline.
+- **Internet** is needed only to download models and to check for updates;
+  everything else works offline.
 - **Languages:** speech recognition, summaries and translation support English and
   Russian. The interface is in English.
 - **Permissions:** Microphone and Screen & System Audio Recording. TalkTrack records
@@ -165,6 +168,15 @@ xattr -dr com.apple.quarantine /Applications/TalkTrack.app
 
 Then open TalkTrack as usual. Run the command after copying the app to
 Applications.
+
+### Updates
+
+TalkTrack checks GitHub for a new release at launch and once a day (Settings ▸
+General ▸ Updates, where automatic checks can be turned off and **Check Now** checks
+immediately). When a newer version exists, TalkTrack shows it once in an alert and
+keeps **Update Available** in the menu bar menu. Download the new `TalkTrack.dmg` and
+drag TalkTrack to Applications to replace the old copy; meetings, models and settings
+are kept. Only the release version and links are read; nothing about you is sent.
 
 **After an update** (a new `TalkTrack.dmg` replacing the app) repeat one of the
 methods. Because the signature changes with every build, macOS may also ask again
