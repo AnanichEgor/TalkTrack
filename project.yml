@@ -61,8 +61,8 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: TalkTrack
-        CFBundleShortVersionString: '0.1.0'
-        CFBundleVersion: '1'
+        CFBundleShortVersionString: '0.2.0'
+        CFBundleVersion: '2'
         LSUIElement: true
         NSMicrophoneUsageDescription: TalkTrack records your microphone as a separate meeting audio track for local transcription.
         NSScreenCaptureUsageDescription: TalkTrack records meeting audio from other apps for local transcription. It never saves screen images or video.

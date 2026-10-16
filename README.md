@@ -228,15 +228,17 @@ cd TalkTrack
 
 builds a Release app for arm64, signs it ad-hoc and writes `.build/dist/TalkTrack.dmg`
 with a `.sha256` file. The version comes from `CFBundleShortVersionString` in
-`project.yml` and appears in the disk name and the app.
+`project.yml` and appears in the disk name and the app. Raise it (and
+`CFBundleVersion`) for every release: the app's update check compares it with the
+latest release tag, so the tag must be `v` plus the same version.
 
 To publish, push the commit and create a GitHub release with a tag matching the
 version, attaching both files under exactly these names (the download links in this
 README always point to the latest release):
 
 ```sh
-gh release create v0.1.0 .build/dist/TalkTrack.dmg .build/dist/TalkTrack.dmg.sha256 \
-  --title "TalkTrack 0.1.0" --notes "What changed in this version"
+gh release create v0.2.0 .build/dist/TalkTrack.dmg .build/dist/TalkTrack.dmg.sha256 \
+  --title "TalkTrack 0.2.0" --notes "What changed in this version"
 ``` The app icon is drawn by `swift scripts/make-app-icon.swift`.
 
 With a paid Apple Developer Program membership the same script produces a
