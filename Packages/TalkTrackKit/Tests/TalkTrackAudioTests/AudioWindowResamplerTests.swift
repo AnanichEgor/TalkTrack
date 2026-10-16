@@ -42,6 +42,14 @@ import Testing
         #expect(abs(peak - 2000) <= 1)
     }
 
+    /// Loud decoded audio slightly above full scale stays within the models' ±1.
+    @Test func overshootIsLimitedToFullScale() throws {
+        let loud = (0..<48_000).map { index -> Float in index % 96 < 48 ? 1.2 : -1.2 }
+        let converted = try AudioWindowResampler.convert48K(loud)
+        #expect(converted.samples.allSatisfy { abs($0) <= 1 })
+        #expect(converted.samples.contains(1) && converted.samples.contains(-1))
+    }
+
     @Test func invalidInputIsRejectedWithoutUnboundedAllocation() throws {
         for samples: [Float] in [[], [.nan], [.infinity]] {
             #expect(throws: AudioResamplingError.invalidPCM) { try AudioWindowResampler.convert48K(samples) }

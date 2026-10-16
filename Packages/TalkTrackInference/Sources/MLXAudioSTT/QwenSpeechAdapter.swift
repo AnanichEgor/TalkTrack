@@ -77,9 +77,21 @@ public actor QwenSpeechAdapter {
         let duration = Double(samples.count) / 16000
         guard !result.items.isEmpty, result.items.allSatisfy({
             $0.startTime.isFinite && $0.endTime.isFinite && $0.startTime >= 0 &&
-            $0.endTime >= $0.startTime && $0.endTime <= duration + 0.08
+            $0.endTime >= $0.startTime && $0.endTime <= duration + Self.edgeOvershoot
         }) else { throw QwenAdapterError.invalidOutput }
-        return result.items
+        return Self.clamped(result.items, duration: duration)
+    }
+
+    /// A word cut by the window's end is timed past it (Daily 3: "приходилось"
+    /// ended at 10.32 s in a 10 s window, which failed the whole transcription).
+    /// Timings up to this far past the end are moved to it; later ones still fail.
+    static let edgeOvershoot = 2.0
+
+    static func clamped(_ items: [ForcedAlignItem], duration: Double) -> [ForcedAlignItem] {
+        items.map { item in
+            guard item.endTime > duration else { return item }
+            return ForcedAlignItem(text: item.text, startTime: min(item.startTime, duration), endTime: duration)
+        }
     }
 
     public func unload() async throws {

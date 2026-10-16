@@ -78,6 +78,9 @@ public enum AudioWindowResampler {
             guard result.count == expected, result.allSatisfy(\.isFinite) else {
                 throw AudioResamplingError.unexpectedFrameCount
             }
+            // Decoded AAC and the converter's filter overshoot full scale on loud
+            // speech (Daily 3 reached 1.117); the models take samples within ±1.
+            for index in result.indices { result[index] = min(1, max(-1, result[index])) }
             if result.count < minimumOutputFrames {
                 result.append(contentsOf: repeatElement(0, count: minimumOutputFrames - result.count))
             }
