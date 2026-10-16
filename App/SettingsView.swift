@@ -23,7 +23,7 @@ struct SettingsView: View {
                 }
             }
             Tab("Text", systemImage: "text.alignleft", value: AppModel.SettingsTab.text) {
-                TextSettings()
+                TextSettings(server: model.textServer)
             }
             Tab("Speakers", systemImage: "person.2", value: AppModel.SettingsTab.speakers) {
                 Form { SavedSpeakersView(presentation: model.speakers) }.formStyle(.grouped)
@@ -487,6 +487,7 @@ private struct ModelRow: View {
 // MARK: Text
 
 private struct TextSettings: View {
+    @Bindable var server: TextServerSettingsPresentation
     @AppStorage(ProcessingPreferences.summaryLanguageKey) private var summaryLanguage = OutputLanguage.english.rawValue
     @AppStorage(ProcessingPreferences.translationLanguageKey) private var translationLanguage = OutputLanguage.russian.rawValue
     @AppStorage(ProcessingPreferences.contextKey) private var selectedContext = ContextLimit.defaultSelection.rawValue
@@ -499,6 +500,7 @@ private struct TextSettings: View {
                 Text("Summaries are written in the summary language and transcripts are translated into the translation language, whatever language the meeting was in. Changing a language does not regenerate existing results.")
                     .font(.callout).foregroundStyle(.secondary)
             }
+            TextServerSection(server: server)
             Section("Context") {
                 Picker("Context size", selection: $selectedContext) {
                     ForEach(ContextLimit.allCases, id: \.rawValue) { limit in
@@ -509,13 +511,14 @@ private struct TextSettings: View {
                     Text("Auto chooses the smallest context that fits the complete task and its response. Available memory is checked before processing.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
-                    Text("Includes the source text, instructions and response. The maximum selectable context is 64K. Available memory is checked before processing.")
+                    Text("Includes the source text, instructions and response. The maximum selectable context is 64K. Available memory is checked before processing. A text server always uses 128K.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             }
         }
         .formStyle(.grouped)
         .onAppear {
+            server.loadKey()
             // Show (and keep) only supported values; unchanged values are not rewritten.
             selectedContext = ProcessingPreferences.context().rawValue
             let summary = ProcessingPreferences.summaryLanguage().rawValue, translation = ProcessingPreferences.translationLanguage().rawValue
@@ -527,6 +530,60 @@ private struct TextSettings: View {
     @ViewBuilder private var languages: some View {
         ForEach(OutputLanguage.allCases, id: \.rawValue) { language in
             Text(language == .english ? "English" : "Russian").tag(language.rawValue)
+        }
+    }
+}
+
+/// An OpenAI-compatible server for summaries and translations instead of the local model.
+private struct TextServerSection: View {
+    @Bindable var server: TextServerSettingsPresentation
+
+    var body: some View {
+        Section("Text Server") {
+            Toggle("Use for summaries", isOn: $server.summaries)
+            Toggle("Use for translations", isOn: $server.translations)
+            TextField("Server URL", text: $server.address, prompt: Text("https://api.openai.com/v1"))
+                .textContentType(.URL).autocorrectionDisabled()
+            SecureField("API key", text: $server.key, prompt: Text("Not needed for most local servers"))
+                .onSubmit { server.saveKey() }
+            HStack {
+                TextField("Model", text: $server.model, prompt: Text("gpt-4.1-mini, qwen3:14b…")).autocorrectionDisabled()
+                if !server.availableModels.isEmpty {
+                    Menu("Choose") {
+                        ForEach(server.availableModels, id: \.self) { name in Button(name) { server.model = name } }
+                    }
+                    .fixedSize()
+                }
+            }
+            HStack(alignment: .center, spacing: 8) {
+                status
+                Spacer()
+                Button("Check Connection") { Task { await server.checkConnection() } }
+                    .disabled(server.check == .checking || TextServer.normalizedURL(server.address) == nil)
+            }
+            if let problem = server.addressProblem {
+                Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(Color.errorText)
+            } else if server.incomplete {
+                Label("Enter the server URL and model to use the server.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+            if let error = server.keyError {
+                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(Color.errorText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Any server with the OpenAI chat completions API: OpenAI, OpenRouter, LM Studio, Ollama, vLLM. The meeting title, description and transcript of each summary or translation are sent to this server; use only one you trust. Requests are planned for a 128K-token context. The API key is kept in your Keychain. Recording and transcription always stay on this Mac.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var status: some View {
+        switch server.check {
+        case .idle: EmptyView()
+        case .checking: HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Checking…") }
+        case .succeeded(let message): Label(message, systemImage: "checkmark.circle").foregroundStyle(.secondary)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle").foregroundStyle(Color.errorText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

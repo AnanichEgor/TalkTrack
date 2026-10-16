@@ -13,7 +13,8 @@ struct SummaryTab: View {
     init(services: WorkspaceServices, meetingID: UUID, captureActive: Bool) {
         self.captureActive = captureActive
         _presentation = State(initialValue: SummaryPresentation(meetingID: meetingID, store: services.store,
-            runner: services.runner, pipeline: services.summaries, model: services.summaryModel))
+            runner: services.runner, pipeline: services.summaries, model: services.summaryModel,
+            settings: { TextServerPreferences.settings(for: .summary) }))
     }
 
     var body: some View {

@@ -13,7 +13,8 @@ struct TranslationTab: View {
     init(services: WorkspaceServices, meetingID: UUID, captureActive: Bool) {
         player = services.player; self.captureActive = captureActive
         _presentation = State(initialValue: TranslationPresentation(meetingID: meetingID, store: services.store,
-            runner: services.runner, pipeline: services.translations, model: services.translationModel))
+            runner: services.runner, pipeline: services.translations, model: services.translationModel,
+            settings: { TextServerPreferences.settings(for: .translation) }))
     }
     var body: some View {
         VStack(spacing: 0) {

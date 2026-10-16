@@ -109,3 +109,15 @@ are described in [the transcription guide](transcription.md).
 Short synthetic model probes establish compatibility, not meeting-quality
 acceptance. Speaker calibration, complete transcript/text processing, real capture,
 long recordings and native UI behavior have their own outstanding tasks.
+
+## Text server
+
+Summary and translation jobs can run on an OpenAI-compatible chat completions server
+chosen in Settings ▸ Text (`TextServer.swift`). Such a job's model snapshot has
+`preprocessingVersion` `openai-chat-1`, the base URL as `repository` and the model name
+as `revision`; `RoutedTextInference` sends it to the server and every other job to the
+local runtime. Server jobs use a fixed 128K context. The server's tokenizer is unknown,
+so tokens are estimated as one per three UTF-8 bytes, more than English or Russian text
+uses with common tokenizers. A reply with `finish_reason: "length"` counts as reaching
+the output limit. The API key is kept in the Keychain together with the address it was
+entered for and is never sent to any other address. Memory admission does not apply.

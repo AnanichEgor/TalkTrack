@@ -5,7 +5,8 @@ entirely on your Mac. It captures other apps' audio (Zoom, Meet, Teams, a browse
 and your microphone as separate tracks, transcribes them with timestamps and speaker
 labels, and writes summaries and translations with a local language model. Nothing
 is sent to a server: the only network access is downloading the models once from
-Hugging Face and checking GitHub for a new TalkTrack version.
+Hugging Face and checking GitHub for a new TalkTrack version. If you choose, summaries
+and translations can instead use your own model through an OpenAI-compatible API.
 
 **Platform:** macOS 15 or later on Apple Silicon (M1 or newer). Intel Macs are not
 supported.
@@ -69,7 +70,8 @@ supported.
   correction.
 - Models: download, resume, cancel and remove each model; choose the text model
   (Automatic, 9B or 4B).
-- Text: summary language and translation language (independent), context size.
+- Text: summary language and translation language (independent), context size,
+  and an optional text server (see below).
 - Speakers: saved voices and automatic recognition.
 
 ## Stack
@@ -106,7 +108,7 @@ Source and model licenses and attribution are in [ThirdParty/](ThirdParty/README
 - **Disk.** About 4.2 GB for the speech models plus 3.1 GB (4B) or 6.6 GB (9B) for the
   text model, stored in `~/Library/Application Support/TalkTrack/Models`.
 - **Internet** is needed only to download models and to check for updates;
-  everything else works offline.
+  everything else works offline (unless you use a text server).
 - **Languages:** speech recognition, summaries and translation support English and
   Russian. The interface is in English.
 - **Permissions:** Microphone and Screen & System Audio Recording. TalkTrack records
@@ -168,6 +170,26 @@ xattr -dr com.apple.quarantine /Applications/TalkTrack.app
 
 Then open TalkTrack as usual. Run the command after copying the app to
 Applications.
+
+### Your own text model (OpenAI-compatible API)
+
+Summaries and translations can run on any server with the OpenAI chat completions
+API instead of the local model: OpenAI, OpenRouter, or a model on your own machine
+with LM Studio, Ollama or vLLM. In Settings ▸ Text ▸ Text Server:
+
+1. Turn on **Use for summaries** and/or **Use for translations**.
+2. Enter the **Server URL**, for example `https://api.openai.com/v1`,
+   `http://localhost:1234/v1` (LM Studio) or `http://localhost:11434/v1` (Ollama).
+3. Enter the **API key** (local servers usually need none) and the **Model** name.
+   **Check Connection** lists the server's models and sends a short test request.
+
+Requests to a server are planned for a 128K-token context, whatever context is chosen
+for the local model; choose a model that accepts it. The meeting title, description
+and transcript of each summary or translation are sent to that server, so use only one
+you trust. The key is stored in your Keychain (macOS may ask to allow access after an
+update) and is sent only to the address it was entered for. Recording and
+transcription always stay on your Mac. Existing results are not regenerated when you
+switch.
 
 ### Updates
 

@@ -54,6 +54,8 @@ struct WorkspaceServices {
     let speakers: SavedSpeakersPresentation
     /// New releases on GitHub (Settings ▸ General ▸ Updates, menu bar).
     let updates = UpdateChecker(currentVersion: AppModel.version)
+    /// The user's OpenAI-compatible text server (Settings ▸ Text).
+    let textServer = TextServerSettingsPresentation()
     let setupError: String?
     private(set) var libraryMove: LibraryMove = .idle
     /// What launch recovery did with an unfinished move, shown in Settings.
@@ -175,10 +177,14 @@ struct WorkspaceServices {
                                            capture: MeetingRecorder.nativeCapture(selection: { ProcessingPreferences.microphone() }),
                                            playback: player, jobs: policy)
             let pipeline = FinalTranscriptionPipeline(store: store, library: library, inference: runtime)
-            let summaries = SummaryJobPipeline(store: store, inference: runtime,
-                missing: { try await runtime.unavailableFinalModels($0) })
-            let translations = TranslationJobPipeline(store: store, inference: runtime,
-                missing: { try await runtime.unavailableFinalModels($0) })
+            // Summaries and translations may run on the user's own text server (Settings ▸ Text);
+            // a server has nothing to download.
+            let text = RoutedTextInference(local: runtime)
+            let localMissing: @Sendable ([ModelSnapshot]) async throws -> [ModelRole] = {
+                try await runtime.unavailableFinalModels($0.filter { !TextServer.isServer($0) })
+            }
+            let summaries = SummaryJobPipeline(store: store, inference: text, missing: localMissing)
+            let translations = TranslationJobPipeline(store: store, inference: text, missing: localMissing)
             // Calibrated from the user's own confirmations; until then it
             // returns without reading audio or loading models.
             let recognition = VoiceProfileRecognition(store: store, profiles: VoiceProfileStore(home: Self.profilesHome),
@@ -199,7 +205,7 @@ struct WorkspaceServices {
             let workspace = WorkspacePresentation(store: store, recorder: recorder, runner: runner)
             workspace.unavailableModels = { snapshots in
                 var missing: [ModelRole] = []
-                for snapshot in snapshots {
+                for snapshot in snapshots where !TextServer.isServer(snapshot) {
                     // Active models answer without waiting for running inference;
                     // an older job's exact snapshot is checked by the runtime.
                     if let model = catalog.models.first(where: {
@@ -217,9 +223,13 @@ struct WorkspaceServices {
             state = .ready(workspace, WorkspaceServices(store: store, notes: NotesAutosave(store: store),
                                                         enrollment: enrollment, jobPolicy: policy, player: player,
                                                         summaries: summaries, runner: runner,
-                                                        summaryModel: { try current().model(for: .summary).snapshot(for: .summary) },
+                                                        summaryModel: {
+                                                            try TextServerPreferences.snapshot(for: .summary)
+                                                                ?? current().model(for: .summary).snapshot(for: .summary) },
                                                         translations: translations,
-                                                        translationModel: { try current().model(for: .translation).snapshot(for: .translation) }))
+                                                        translationModel: {
+                                                            try TextServerPreferences.snapshot(for: .translation)
+                                                                ?? current().model(for: .translation).snapshot(for: .translation) }))
             await workspace.start()
         } catch {
             state = .failed(error.localizedDescription, recovery: (error as? LocalizedError)?.recoverySuggestion)
