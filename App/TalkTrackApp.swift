@@ -29,6 +29,7 @@ struct TalkTrackApp: App {
                 #endif
             }
             .frame(minWidth: 760, minHeight: 500)
+            .background(WindowReader { model.mainWindow = $0 })
             .environment(model)
         }
         .defaultSize(width: 1280, height: 840)
@@ -88,7 +89,7 @@ private struct MenuBarContent: View {
 
     private func showMainWindow() {
         openWindow(id: "main")
-        NSApp.activate()
+        model.showMainWindow()
     }
 }
 

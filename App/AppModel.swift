@@ -88,17 +88,49 @@ struct WorkspaceServices {
         if let tab { settingsTab = tab }
         NSApp.activate()
         open()
-        // The window may be created by `open()`; it reports itself on appearing.
-        DispatchQueue.main.async { [weak self] in self?.settingsWindow.map(Self.bringToFront) }
+        present { [weak self] in self?.settingsWindow }
     }
 
-    /// Set by the Settings window when it appears (see `SettingsView`).
+    /// Brings the main window (opened by the caller) in front of every other window.
+    func showMainWindow() {
+        NSApp.activate()
+        present { [weak self] in self?.mainWindow }
+    }
+
+    /// Set by each window when it appears (see `WindowReader`).
+    /// Settings floats above every window in the system, also after switching
+    /// to another app; full-screen spaces show it too. Open and save panels run
+    /// at the higher modal level, so they still appear over it.
     @ObservationIgnored weak var settingsWindow: NSWindow? {
-        didSet { settingsWindow.map(Self.bringToFront) }
+        didSet {
+            guard let settingsWindow else { return }
+            settingsWindow.level = .floating
+            settingsWindow.hidesOnDeactivate = false
+            settingsWindow.collectionBehavior.insert(.fullScreenAuxiliary)
+            Self.bringToFront(settingsWindow)
+        }
+    }
+    @ObservationIgnored weak var mainWindow: NSWindow? {
+        didSet { mainWindow.map(Self.bringToFront) }
     }
 
+    /// A menu-bar action runs while its menu is still closing, SwiftUI may create
+    /// the window later, and macOS may decline or delay activation. Raising the
+    /// window again over the next moments keeps it in front in every case.
+    private func present(_ window: @escaping @MainActor () -> NSWindow?) {
+        Task { @MainActor in
+            for delay in [0, 50, 150, 400] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                window().map(Self.bringToFront)
+            }
+        }
+    }
+
+    /// `orderFrontRegardless` raises the window even when macOS keeps another
+    /// app active; it becomes key once activation completes.
     private static func bringToFront(_ window: NSWindow) {
         NSApp.activate()
+        if window.isMiniaturized { window.deminiaturize(nil) }
         window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
     }

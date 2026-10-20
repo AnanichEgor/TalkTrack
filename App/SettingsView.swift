@@ -40,7 +40,7 @@ struct SettingsView: View {
 }
 
 /// Reports the hosting window once the view is in it.
-private struct WindowReader: NSViewRepresentable {
+struct WindowReader: NSViewRepresentable {
     let found: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> NSView { Reader(found: found) }
