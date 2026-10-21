@@ -17,7 +17,8 @@ supported.
 ## Features
 
 **Recording**
-- System audio (via ScreenCaptureKit) and the microphone are recorded at the same
+- System audio (via a Core Audio process tap that leaves out TalkTrack's own playback)
+  and the microphone are recorded at the same
   time as two separate tracks, compact AAC (48 kHz mono, 64 kbit/s, about 60 MB per
   hour for both tracks).
 - A meeting can hold several recordings made at different times or on different
@@ -81,7 +82,7 @@ supported.
   audio is reported and marked on the timeline.
 
 **Settings**
-- General: permissions (status, Grant…, Open System Settings), library location
+- General: permissions (status, Grant… or Check Again, Open System Settings), library location
   (Move Library… with a verified, crash-safe copy), the models folder and update checks.
 - Audio: microphone, live transcription, default meeting language, spelling
   correction.
@@ -97,7 +98,7 @@ supported.
 - Swift 6, SwiftUI and AppKit; Swift Concurrency with strict checking.
 - [MLX Swift](https://github.com/ml-explore/mlx-swift) 0.31.6 and MLX Swift LM 3.31.4
   for all model inference on the GPU of Apple Silicon.
-- ScreenCaptureKit (system audio), Core Audio / AVFoundation (microphone, AAC,
+- Core Audio process taps (system audio), Core Audio / AVFoundation (microphone, AAC,
   playback), SQLite (meeting library), XcodeGen (project generation).
 - Models (downloaded at pinned revisions and verified by SHA-256):
 
@@ -129,11 +130,13 @@ Source and model licenses and attribution are in [ThirdParty/](ThirdParty/README
   everything else works offline (unless you use a text server).
 - **Languages:** speech recognition, summaries and translation support English and
   Russian. The interface is in English.
-- **Permissions:** Microphone and Screen & System Audio Recording. TalkTrack records
-  only audio, never the screen. Dictation additionally needs Accessibility (to check
-  the focused field and paste) and Input Monitoring (to notice the shortcut in other
-  apps); Settings ▸ General ▸ Permissions shows every permission's status.
-  Permission changes take effect after relaunching TalkTrack.
+- **Permissions:** Microphone and **System Audio Recording Only** (in System Settings ▸
+  Privacy & Security ▸ Screen & System Audio Recording). TalkTrack never asks for screen
+  access. macOS shows no prompt for system audio: switch TalkTrack on in that list
+  yourself; Record and Settings ▸ General ▸ Permissions check it with an inaudible tone.
+  Dictation additionally needs Accessibility (to check the focused field and paste) and
+  Input Monitoring (to notice the shortcut in other apps). macOS relaunches TalkTrack
+  when System Audio Recording Only changes; other changes take effect after relaunching.
 - **Speed:** final transcription and summaries run after recording and can take
   several minutes for a long meeting. Recording is never blocked by processing.
 - **Speaker separation** works best with a few clearly different voices; with many
@@ -156,9 +159,10 @@ Source and model licenses and attribution are in [ThirdParty/](ThirdParty/README
 4. TalkTrack lives in the menu bar (no Dock icon). Open its main window from the
    menu bar icon.
 5. Open **Settings ▸ Models** and download the models (about 7–11 GB).
-6. Create a meeting and press **Record**. On the first recording macOS asks for
-   Microphone and Screen & System Audio Recording access; allow both, then quit and
-   reopen TalkTrack if macOS asks you to.
+6. Open **System Settings ▸ Privacy & Security ▸ Screen & System Audio Recording** and
+   switch TalkTrack on under **System Audio Recording Only** (Settings ▸ General ▸
+   Permissions has a button that opens it). Create a meeting and press **Record**;
+   macOS asks for Microphone access on the first recording.
 
 ### Opening the unsigned app
 
@@ -229,10 +233,12 @@ are kept. Only the release version and links are read; nothing about you is sent
 
 **After an update** (a new `TalkTrack.dmg` replacing the app) repeat one of the
 methods. Because the signature changes with every build, macOS may also ask again
-for Microphone and Screen & System Audio Recording access, and dictation for
-Accessibility and Input Monitoring; if recording or Settings ▸ General ▸ Permissions reports
-that access is missing, open **System Settings ▸ Privacy & Security**, remove
-TalkTrack from those lists with **–**, reopen TalkTrack and allow access again.
+for Microphone access, and dictation for Accessibility and Input Monitoring; if recording or
+Settings ▸ General ▸ Permissions reports that access is missing, open **System Settings ▸
+Privacy & Security**, remove TalkTrack from those lists with **–**, reopen TalkTrack and allow
+access again. TalkTrack now records system audio with **System Audio Recording
+Only** instead of Screen & System Audio Recording: switch it on there once, and you can remove
+TalkTrack from the Screen & System Audio Recording list.
 
 ### Where data is stored
 

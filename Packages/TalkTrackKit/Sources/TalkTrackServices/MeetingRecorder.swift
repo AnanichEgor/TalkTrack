@@ -123,6 +123,7 @@ public actor MeetingRecorder {
     private let timeZone: @Sendable () -> String
     private let startTimeout: Duration
     private let wrapSink: (@Sendable (RecordingAudioWriter) -> any CaptureAudioSink)?
+    private let systemAudioAccess: (@Sendable () async throws -> Void)?
     private let continuation: AsyncStream<MeetingRecorderEvent>.Continuation
     private var active: Active?
     private var locked = false
@@ -139,10 +140,11 @@ public actor MeetingRecorder {
     public init(library: OpenedLibrary, store: SessionStore,
                 capture: @escaping @Sendable (MeetingCaptureCallbacks) -> any MeetingCaptureControl,
                 playback: (any CapturePlaybackExclusion)? = nil, jobs: FinalJobPolicy,
-                startTimeout: Duration = .seconds(20)) {
+                startTimeout: Duration = .seconds(20),
+                systemAudioAccess: (@Sendable () async throws -> Void)? = nil) {
         self.init(library: library, store: store, capture: capture, playback: playback, jobs: jobs,
                   startTimeout: startTimeout, hostClock: { mach_absolute_time() }, wallClock: { Date() },
-                  timeZone: { TimeZone.current.identifier }, wrapSink: nil)
+                  timeZone: { TimeZone.current.identifier }, wrapSink: nil, systemAudioAccess: systemAudioAccess)
     }
 
     init(library: OpenedLibrary, store: SessionStore,
@@ -150,14 +152,16 @@ public actor MeetingRecorder {
          playback: (any CapturePlaybackExclusion)?, jobs: FinalJobPolicy, startTimeout: Duration,
          hostClock: @escaping @Sendable () -> UInt64, wallClock: @escaping @Sendable () -> Date,
          timeZone: @escaping @Sendable () -> String,
-         wrapSink: (@Sendable (RecordingAudioWriter) -> any CaptureAudioSink)?) {
+         wrapSink: (@Sendable (RecordingAudioWriter) -> any CaptureAudioSink)?,
+         systemAudioAccess: (@Sendable () async throws -> Void)? = nil) {
         self.library = library; self.store = store; makeCapture = capture; self.playback = playback
         self.jobs = jobs; self.startTimeout = startTimeout; self.hostClock = hostClock
         self.wallClock = wallClock; self.timeZone = timeZone; self.wrapSink = wrapSink
+        self.systemAudioAccess = systemAudioAccess
         (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(64))
     }
 
-    /// Native microphone + ScreenCaptureKit system audio.
+    /// Native microphone + Core Audio process tap system audio.
     public static func nativeCapture(deviceID: UInt32? = nil) -> @Sendable (MeetingCaptureCallbacks) -> any MeetingCaptureControl {
         { CaptureCoordinator.native(deviceID: deviceID, receive: $0.receive, restarted: $0.restarted, failed: $0.failed) }
     }
@@ -179,6 +183,8 @@ public actor MeetingRecorder {
     /// Adds a new recording to an existing meeting. Earlier recordings are never
     /// reopened or joined. Throws, with nothing claimed as recording, when either
     /// source fails to start; audio that did arrive is kept as interrupted.
+    /// System audio access is confirmed first (cached once allowed), so a denied
+    /// tap never creates a recording of silence.
     @discardableResult
     public func start(meetingID: UUID, live: LiveInferenceMailbox<LiveCaptureFragment>? = nil) async throws -> Recording {
         await acquire(); defer { release() }
@@ -188,8 +194,9 @@ public actor MeetingRecorder {
         }
         set(.starting, meetingID: meetingID, recordingID: nil)
         do {
-            await playback?.stopPlaybackBeforeCapture()
             _ = try await store.meeting(meetingID)
+            try await systemAudioAccess?()
+            await playback?.stopPlaybackBeforeCapture()
             let startedAt = wallClock(), zone = timeZone()
             var recording = try Recording(meetingID: meetingID, startedAt: startedAt, timeZoneIdentifier: zone)
             let writer = try await RecordingAudioWriter.create(library: library, recording: recording)

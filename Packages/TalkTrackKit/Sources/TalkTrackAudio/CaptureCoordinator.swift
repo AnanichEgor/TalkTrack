@@ -103,12 +103,18 @@ public actor CaptureCoordinator {
                               receive: @escaping @Sendable (AudioPacket) -> Void,
                               restarted: (@Sendable (CaptureSource, String) -> Void)? = nil,
                               failed: (@Sendable (AudioCaptureError) -> Void)? = nil) -> CaptureCoordinator {
-        let capture = MicrophoneCapture(), system = SystemAudioCapture()
+        let capture = MicrophoneCapture()
         return CaptureCoordinator(microphone: CaptureDriver(source: .microphone,
             start: { try await capture.start(deviceID: try microphone(), receive: $0, failure: $1) },
-            stop: { await capture.stop() }), system: CaptureDriver(source: .system,
-            start: { try await system.start(receive: $0, failure: $1) },
-            stop: { try await system.stop() }), receive: receive, restarted: restarted, failed: failed)
+            stop: { await capture.stop() }), system: nativeSystemDriver(),
+            receive: receive, restarted: restarted, failed: failed)
+    }
+
+    /// System audio through a Core Audio process tap (System Audio Recording Only).
+    static func nativeSystemDriver() -> CaptureDriver {
+        let system = ProcessTapCapture()
+        return CaptureDriver(source: .system, start: { try await system.start(receive: $0, failure: $1) },
+                             stop: { try await system.stop() })
     }
 
     /// Resume uses the same coordinator and a fresh run generation. The durable

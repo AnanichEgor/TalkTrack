@@ -404,4 +404,36 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(S.derive(recordings: [try recording(.paused)], jobs: []) == .paused)
         #expect(S.ready.message == "Transcript ready")
     }
+
+    @Test func systemAudioHintNeedsLongExactZerosWhileTheMicrophoneHearsSpeech() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        await w.start()
+        let meeting = try await w.createMeeting(title: "Call", description: "")
+        w.selectedID = meeting.id
+        #expect(await until { w.selected?.id == meeting.id })
+        await w.record()
+        #expect(await until { w.phase == .recording })
+        #expect(w.systemAudioHint == nil)
+        // One-second packets at 10 Hz reach the ten-minute threshold without real time.
+        func second(_ source: CaptureSource, _ value: Float) {
+            w.levels.record(AudioPacket(source: source, sampleRate: 10, hostTime: 1, sampleTime: 0,
+                                        samples: (0..<10).map { value * Float(sin(Double($0))) }))
+        }
+        // A quiet but non-zero system track with a silent microphone: no hint.
+        for _ in 0..<700 { second(.system, 1e-5); second(.microphone, 0) }
+        #expect(w.systemAudioHint == nil)
+        // Exact zeros while nobody speaks: still no hint.
+        for _ in 0..<700 { second(.system, 0); second(.microphone, 0) }
+        #expect(w.systemAudioHint == nil)
+        // Exact zeros while the microphone hears speech: the hint appears.
+        for index in 0..<700 { second(.system, 0); second(.microphone, index % 10 == 0 ? 0.2 : 0) }
+        #expect(w.systemAudioHint == WorkspacePresentation.systemAudioHintText)
+        // Any real system sample clears it.
+        second(.system, 0.01)
+        #expect(w.systemAudioHint == nil)
+        await w.stop()
+        #expect(await until { w.phase == .idle })
+    }
 }

@@ -310,4 +310,50 @@ private func eventually(_ condition: @escaping @Sendable () async -> Bool) async
         normal.resolve(.success(false)); normal.resolve(.success(true))
         #expect(try await waiter.value == false)
     }
+
+    @Test func systemTapRouteChangeRestartsOnlySystemAudioWithinTheLoopGuard() async throws {
+        let mic = FakeCapture(.microphone), sessions = RouteSessions(), notes = RestartLog()
+        let system = ProcessTapCapture(worker: HALWorker(), timing: ProcessTapCapture.Timing()) { sessions.make() }
+        let coordinator = CaptureCoordinator(microphone: mic.driver(), system: CaptureDriver(source: .system,
+            start: { try await system.start(receive: $0, failure: $1) }, stop: { try await system.stop() }),
+            restartLimit: 2, receive: { _ in }, restarted: notes.add)
+        try await coordinator.start()
+        sessions.change(0)
+        try await eventually { sessions.count == 2 && sessions.stopped(0) }
+        try await eventually { await coordinator.restartCounts[.system] == 1 }
+        #expect(await coordinator.phase == .recording)
+        #expect(notes.values == ["system: The default output device changed"])
+        #expect(await mic.starts == 1); #expect(await mic.stops == 0)
+        // Late callbacks from the stopped session cannot restart again.
+        sessions.change(0)
+        sessions.change(1); try await eventually { sessions.count == 3 }
+        sessions.change(2)
+        try await eventually { await coordinator.phase == .failed }
+        #expect(await coordinator.lastError?.operation == "The default output device changed")
+        #expect(sessions.count == 3 && sessions.stopped(2))
+        await coordinator.stop()
+    }
+}
+
+/// Tap sessions that report a route change on request, like the HAL listeners.
+private final class RouteSessions: @unchecked Sendable {
+    final class Session: SystemTapSession, @unchecked Sendable {
+        let lock = NSLock()
+        var changed: (@Sendable (String) -> Void)?
+        var stops = 0
+        func prepare() throws -> Double { 48_000 }
+        func start(_ io: @escaping SystemTapIO, routeChanged: @escaping @Sendable (String) -> Void) throws {
+            lock.withLock { changed = routeChanged }
+        }
+        func stop() throws { lock.withLock { stops += 1 } }
+    }
+    private let lock = NSLock()
+    private var sessions: [Session] = []
+    func make() -> any SystemTapSession { let next = Session(); lock.withLock { sessions.append(next) }; return next }
+    var count: Int { lock.withLock { sessions.count } }
+    func stopped(_ index: Int) -> Bool { let session = lock.withLock { sessions[index] }; return session.lock.withLock { session.stops > 0 } }
+    func change(_ index: Int) {
+        let session = lock.withLock { sessions[index] }
+        session.lock.withLock { session.changed }?("The default output device changed")
+    }
 }

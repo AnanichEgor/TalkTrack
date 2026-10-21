@@ -18,7 +18,7 @@ public struct AudioPacket: Sendable {
 }
 
 public enum AudioCaptureRecovery: Sendable {
-    case retry, microphonePermission, screenRecordingPermission, selectedMicrophone
+    case retry, microphonePermission, systemAudioPermission, selectedMicrophone
 }
 
 public struct AudioCaptureError: Error, LocalizedError, Sendable {
@@ -42,7 +42,9 @@ public struct AudioCaptureError: Error, LocalizedError, Sendable {
     public var settingsURL: URL? {
         switch recovery {
         case .microphonePermission: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-        case .screenRecordingPermission: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        // System Audio Recording Only is listed in the Screen & System Audio Recording pane.
+        case .systemAudioPermission:
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
         case .retry, .selectedMicrophone: nil
         }
     }
@@ -50,8 +52,8 @@ public struct AudioCaptureError: Error, LocalizedError, Sendable {
         switch recovery {
         case .microphonePermission:
             "Allow TalkTrack in System Settings > Privacy & Security > Microphone, then restart TalkTrack."
-        case .screenRecordingPermission:
-            "Allow TalkTrack under Screen & System Audio Recording in System Settings > Privacy & Security, then restart TalkTrack."
+        case .systemAudioPermission:
+            "Switch TalkTrack on under System Audio Recording Only in System Settings > Privacy & Security > Screen & System Audio Recording, then restart TalkTrack if recording is still refused."
         case .selectedMicrophone:
             "Connect it, or choose another microphone in TalkTrack Settings, then try recording again."
         case .retry:
@@ -117,14 +119,14 @@ public final class AudioDeviceObserver: @unchecked Sendable {
     }
 }
 
-private func property(_ selector: AudioObjectPropertySelector,
+func property(_ selector: AudioObjectPropertySelector,
     scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> AudioObjectPropertyAddress {
     AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
 }
-private func check(_ status: OSStatus, _ source: CaptureSource, _ operation: String) throws {
+func check(_ status: OSStatus, _ source: CaptureSource, _ operation: String) throws {
     guard status == noErr else { throw AudioCaptureError(source: source, operation: operation, status: status) }
 }
-private func stringProperty(_ object: AudioObjectID, selector: AudioObjectPropertySelector, source: CaptureSource) throws -> String {
+func stringProperty(_ object: AudioObjectID, selector: AudioObjectPropertySelector, source: CaptureSource) throws -> String {
     var address = property(selector)
     // HAL name/UID properties return a retained CFObject (SDK contract).
     // Store the pointer without ARC's implicit raw-pointer conversion and
@@ -139,7 +141,7 @@ private func stringProperty(_ object: AudioObjectID, selector: AudioObjectProper
 /// Notifications may race teardown. Deliver at most one error per driver run,
 /// and close before unregistering listeners; teardown never occurs in a native
 /// notification callback (AVAudioEngine explicitly warns this can deadlock).
-private final class CaptureFailureRelay: @unchecked Sendable {
+final class CaptureFailureRelay: @unchecked Sendable {
     private let lock = NSLock()
     private var open = true
     private let sink: @Sendable (AudioCaptureError) -> Void

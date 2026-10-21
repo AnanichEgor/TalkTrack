@@ -85,6 +85,7 @@ private final class RecorderFixture: @unchecked Sendable {
     let beforeFailure = Locked<(@Sendable (MeetingCaptureCallbacks) -> Void)?>(nil)
     let captures = Locked<[FakeMeetingCapture]>([])
     let fullDiskAfter = Locked<UInt64?>(nil)
+    let access = Locked<SystemAudioAccess?>(nil)
     var recorder: MeetingRecorder!
 
     init() async throws {
@@ -99,6 +100,8 @@ private final class RecorderFixture: @unchecked Sendable {
     func makeRecorder() -> MeetingRecorder {
         let log = log, startError = startError, beforeFailure = beforeFailure, captures = captures
         let host = host, wall = wall, missing = missing, fullDisk = fullDiskAfter
+        var check: (@Sendable () async throws -> Void)?
+        if let gate = access.value { check = { try await gate.requireAllowed() } }
         return MeetingRecorder(library: library, store: store, capture: { callbacks in
             let capture = FakeMeetingCapture(callbacks: callbacks, log: log, startError: startError.value,
                                              beforeFailure: beforeFailure.value)
@@ -110,7 +113,7 @@ private final class RecorderFixture: @unchecked Sendable {
             wrapSink: { writer -> any CaptureAudioSink in
                 if let limit = fullDisk.value { return FullDiskSink(writer: writer, limit: limit) }
                 return writer
-            })
+            }, systemAudioAccess: check)
     }
 
     var callbacks: MeetingCaptureCallbacks { get async { await captures.value.last!.callbacks } }
@@ -167,7 +170,71 @@ private func crashedWriter(_ library: OpenedLibrary, _ recording: Recording, sec
     writer = nil
 }
 
+/// The access check's tap: TalkTrack's tone, exact zeros (denied) or nothing (no answer).
+private final class AccessProbes: @unchecked Sendable {
+    final class Probe: SystemAudioAccessProbe, @unchecked Sendable {
+        let samples: [Float]?
+        init(samples: [Float]?) { self.samples = samples }
+        func start(deliver: @escaping @Sendable (UnsafeBufferPointer<Float>) -> Void) throws {
+            guard let samples else { return }
+            // The first block arrives during start, so a loaded machine cannot miss the window.
+            samples.withUnsafeBufferPointer { deliver($0) }
+            DispatchQueue.global().async {
+                for _ in 0..<30 { samples.withUnsafeBufferPointer { deliver($0) }; Thread.sleep(forTimeInterval: 0.01) }
+            }
+        }
+        func stop() throws {}
+    }
+    private let made = Locked(0)
+    private let samples: [Float]?
+    init(samples: [Float]?) { self.samples = samples }
+    func access() -> SystemAudioAccess {
+        var timing = SystemAudioAccess.Timing()
+        timing.start = .seconds(2); timing.listen = .seconds(1); timing.zeroSpan = .milliseconds(100)
+        timing.poll = .milliseconds(5)
+        let samples = samples, made = made
+        return SystemAudioAccess(timing: timing) { made.mutate { $0 += 1 }; return Probe(samples: samples) }
+    }
+    var count: Int { made.value }
+}
+
 @Suite(.serialized) struct MeetingRecorderTests {
+    @Test func deniedOrUnconfirmedSystemAudioCreatesNoRecording() async throws {
+        let f = try await RecorderFixture()
+        defer { f.remove() }
+        for samples in [[Float](repeating: 0, count: 480), nil] {
+            f.access.value = AccessProbes(samples: samples).access()
+            f.recorder = f.makeRecorder()
+            do {
+                _ = try await f.recorder.start(meetingID: f.meeting.id)
+                Issue.record("Record should be refused")
+            } catch let error as AudioCaptureError {
+                #expect(error.recovery == .systemAudioPermission && error.source == .system)
+                #expect(error.operation.contains("System Audio Recording Only"))
+                #expect(error.settingsURL?.absoluteString.contains("Privacy_ScreenCapture") == true)
+            }
+            #expect(await f.recorder.phase == .idle)
+        }
+        #expect(try await f.store.recordings(meetingID: f.meeting.id).isEmpty)
+        #expect(((try? await RecordingAudioWriter.storedRecordingIDs(library: f.library, meetingID: f.meeting.id)) ?? []).isEmpty)
+        #expect(f.captures.value.isEmpty && !f.log.value.contains { $0.hasPrefix("playback") })
+    }
+
+    @Test func allowedSystemAudioIsCheckedOncePerLaunch() async throws {
+        let f = try await RecorderFixture()
+        defer { f.remove() }
+        let probes = AccessProbes(samples: (0..<480).map { 1e-4 * Float(sin(Double($0) * 0.13)) })
+        f.access.value = probes.access()
+        f.recorder = f.makeRecorder()
+        for _ in 0..<2 {
+            _ = try await f.recorder.start(meetingID: f.meeting.id)
+            await f.deliver(seconds: 1)
+            _ = try await f.recorder.stop()
+        }
+        #expect(probes.count == 1)
+        #expect(try await f.store.recordings(meetingID: f.meeting.id).count == 2)
+    }
+
     @Test func recordingsOnDifferentDaysStaySeparateAndEachStopQueuesFinalTranscription() async throws {
         let f = try await RecorderFixture()
         defer { f.remove() }

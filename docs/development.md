@@ -30,7 +30,7 @@ Normal builds use only the versions in `Package.resolved`
   (it does nothing on macOS) and Xcode asks to trust it once. Open
   `TalkTrack.xcodeproj`, build, choose **Trust & Enable**, then rerun the script.
 - **Signing.** Debug builds sign with an Apple Development certificate, so
-  Microphone and Screen & System Audio Recording permissions survive rebuilds
+  Microphone and System Audio Recording Only permissions survive rebuilds
   (ad-hoc builds lose them every time). Set `DEVELOPMENT_TEAM` in `project.yml`
   to your team, sign in to Xcode and run `./scripts/build.sh -allowProvisioningUpdates`
   once. Hardened runtime is on, so `App/TalkTrack.entitlements` grants audio input.

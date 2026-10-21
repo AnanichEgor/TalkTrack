@@ -22,9 +22,9 @@
 	<string>3</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>TalkTrack records meeting audio from other apps for local transcription.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>TalkTrack records your microphone as a separate meeting audio track for local transcription.</string>
-	<key>NSScreenCaptureUsageDescription</key>
-	<string>TalkTrack records meeting audio from other apps for local transcription. It never saves screen images or video.</string>
 </dict>
 </plist>

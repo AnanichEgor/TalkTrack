@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import SwiftUI
 import Observation
+import TalkTrackAudio
 import TalkTrackDomain
 import TalkTrackInferenceRuntime
 import TalkTrackServices
@@ -233,9 +234,11 @@ struct WorkspaceServices {
             })
             // The recorder stops this player before every capture.
             let player = MeetingPlayer(library: library)
+            // The tap starts even when denied, so access is confirmed before Record.
+            let systemAudioAccess: @Sendable () async throws -> Void = { try await SystemAudioAccess.shared.requireAllowed() }
             let recorder = MeetingRecorder(library: library, store: store,
                                            capture: MeetingRecorder.nativeCapture(selection: { ProcessingPreferences.microphone() }),
-                                           playback: player, jobs: policy)
+                                           playback: player, jobs: policy, systemAudioAccess: systemAudioAccess)
             let pipeline = FinalTranscriptionPipeline(store: store, library: library, inference: runtime)
             // Summaries and translations may run on the user's own text server (Settings ▸ Models);
             // a server has nothing to download.

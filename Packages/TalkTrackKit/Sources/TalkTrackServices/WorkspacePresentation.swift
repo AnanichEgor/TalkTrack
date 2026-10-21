@@ -148,6 +148,13 @@ public struct RecordControls: Equatable, Sendable {
     public private(set) var activeMeeting: Meeting?
     /// Input levels and elapsed time of the active recording, polled by the interface.
     public var levels: AudioLevelMeter { recorder.levels }
+    /// A non-blocking hint while recording when system audio has stayed at exact zeros
+    /// although the microphone heard speech; recording continues unchanged.
+    public var systemAudioHint: String? {
+        guard phase == .recording, levels.read().systemSilentWhileSpeaking else { return nil }
+        return Self.systemAudioHintText
+    }
+    public static let systemAudioHintText = "System audio is silent while you speak. Check that TalkTrack is switched on under System Audio Recording Only in System Settings > Privacy & Security."
     public private(set) var isCommandRunning = false
     public private(set) var runningJobMeetingID: UUID?
     public var issue: WorkspaceIssue?

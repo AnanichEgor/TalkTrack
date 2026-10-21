@@ -178,6 +178,12 @@ struct RecordingIndicator: View {
                 Text(PlayerBar.clock(reading.seconds)).font(.callout.monospacedDigit())
                 LevelBar(symbol: "mic.fill", level: paused ? 0 : reading.microphone, label: "Microphone")
                 LevelBar(symbol: "speaker.wave.2.fill", level: paused ? 0 : reading.system, label: "System audio")
+                if !paused, reading.systemSilentWhileSpeaking {
+                    Label(compact ? "" : "System audio silent", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout).foregroundStyle(Color.pausedText)
+                        .help(WorkspacePresentation.systemAudioHintText)
+                        .accessibilityLabel(WorkspacePresentation.systemAudioHintText)
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(paused ? "Paused" : "Recording") \(PlayerBar.clock(reading.seconds))")
