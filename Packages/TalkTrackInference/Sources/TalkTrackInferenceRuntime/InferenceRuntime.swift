@@ -8,23 +8,32 @@ import TalkTrackTextMLX
 /// Application-scoped entry point for model installation, execution and removal.
 /// Every operation snapshots its manifest/settings before entering the serial
 /// lane. No model object or local-directory capability escapes to the caller.
-public final class InferenceRuntime: ModelInstallationControl {
+public final class InferenceRuntime: ModelInstallationControl, DictationInference {
     private let scheduler = InferenceScheduler()
     private let files = ModelDownloadFiles()
     private let downloads: ModelDownloadCoordinator
     private let catalog: ModelCatalog
     private let liveModels = LiveCaptureModels()
     private let residents = ResidentModels()
+    private let dictation: DictationModelHolder<QwenSpeechAdapter>
 
     public init() throws {
         catalog = try ModelCatalog.bundled()
         downloads = ModelDownloadCoordinator(files: files)
+        dictation = DictationModelHolder(load: { [catalog, files] id in
+            let adapter = QwenSpeechAdapter()
+            try await adapter.load(catalog.model(id: id), files: files)
+            return adapter
+        }, unload: { adapter in try? await adapter.unload() })
     }
 
     public func beginCapture() async throws -> InferenceScheduler.CaptureLease {
         let lease = try await scheduler.beginCapture()
-        // Capture has priority over memory: resident job models leave first.
-        do { try await scheduler.run(priority: .capture(lease)) { [residents] in try await residents.unloadAll() } }
+        // Capture has priority over memory: resident job and dictation models leave first.
+        do { try await scheduler.run(priority: .capture(lease)) { [residents, dictation] in
+            await dictation.unloadAll()
+            try await residents.unloadAll()
+        } }
         catch { try? await scheduler.endCapture(lease); throw error }
         return lease
     }
@@ -60,7 +69,8 @@ public final class InferenceRuntime: ModelInstallationControl {
         // Cancel preparation before queuing removal, avoiding a queue dependency
         // between deletion and a download waiting for its preparation turn.
         try await downloads.cancelAndWait(manifest)
-        try await scheduler.run { [downloads, residents] in
+        try await scheduler.run { [downloads, residents, dictation] in
+            await dictation.unloadAll()
             try await residents.unloadAll()
             try await downloads.remove(manifest)
         }
@@ -84,6 +94,62 @@ public final class InferenceRuntime: ModelInstallationControl {
     }
 
     public func liveMetrics() async -> LiveInferenceMetrics { await liveModels.metrics }
+
+    // MARK: Dictation
+
+    public func isInstalled(dictationModel id: String) async -> Bool {
+        (try? await installState(id).isInstalled) ?? false
+    }
+
+    public func beginInteractive() async throws -> InferenceScheduler.InteractiveLease {
+        try await scheduler.beginInteractive()
+    }
+
+    public func prepareDictation(modelID: String, lease: InferenceScheduler.InteractiveLease) async throws {
+        try await scheduler.run(priority: .interactive(lease)) { [self] in
+            try await withDictationModel(modelID) { _ in }
+        }
+    }
+
+    /// Long audio is recognized in pieces of at most a minute, split where it
+    /// is quietest, each with the dictionary as context.
+    public func dictate(modelID: String, samples: [Float], language: MeetingLanguage, context: String,
+                        lease: InferenceScheduler.InteractiveLease) async throws -> DictationRecognition {
+        try await scheduler.run(priority: .interactive(lease)) { [self] in
+            try await withDictationModel(modelID) { adapter in
+                var texts: [String] = [], languages: [String] = []
+                for piece in DictationAudio.pieces(samples) {
+                    let result = try await adapter.transcribe(samples: Array(piece), language: language == .auto ? nil : language.title,
+                        maxTokens: 1024, allowEmpty: true, context: context)
+                    let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !text.isEmpty { texts.append(text) }
+                    if let detected = result.language { languages.append(detected) }
+                }
+                return DictationRecognition(text: texts.joined(separator: " "), language: languages.first)
+            }
+        }
+    }
+
+    public func endInteractive(_ lease: InferenceScheduler.InteractiveLease, idleMinutes: Int) async {
+        try? await scheduler.endInteractive(lease)
+        let token = await dictation.touch()
+        Task.detached { [dictation] in
+            try? await Task.sleep(for: .seconds(idleMinutes * 60))
+            await dictation.unloadIfIdle(since: token)
+        }
+    }
+
+    public func unloadDictation() async { await dictation.unloadAll() }
+
+    /// A speech model already resident for a job is used as is instead of
+    /// loading a second copy.
+    private func withDictationModel<T: Sendable>(_ id: String, _ operation: @Sendable (QwenSpeechAdapter) async throws -> T) async throws -> T {
+        let manifest = try catalog.model(id: id)
+        if try await residents.holds(manifest) {
+            return try await operation(residents.speech(manifest, files: files))
+        }
+        return try await dictation.use(id, operation)
+    }
 
     func isInstalled(_ model: ModelSnapshot) async throws -> Bool {
         let manifest = try resolve(model)
@@ -231,6 +297,8 @@ public final class InferenceRuntime: ModelInstallationControl {
         defer { scheduleIdleUnload() }
         return try await scheduler.run { [residents] in
             do { return try await operation() }
+            // Cancellation (dictation preemption, capture) leaves no model state behind.
+            catch is CancellationError { throw CancellationError() }
             // A refused budget leaves the model intact; anything else may not.
             catch let error as TextAdapterError where error == .inputBudget { throw error }
             catch let error as TextContextPlanningError { throw error }

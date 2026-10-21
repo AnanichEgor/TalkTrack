@@ -51,8 +51,7 @@ struct TalkTrackApp: App {
         MenuBarExtra {
             MenuBarContent(model: model)
         } label: {
-            Image(systemName: model.menuBarSymbol)
-                .accessibilityLabel(model.menuBarLabel)
+            MenuBarLabel(model: model)
         }
     }
 }
@@ -74,6 +73,20 @@ private struct MenuBarContent: View {
                 .disabled(!workspace.controls(for: meeting.id).primaryEnabled || workspace.controls(for: meeting.id).primary != .stop)
             Divider()
         }
+        if let dictation = model.dictation, !dictation.history.isEmpty || dictation.canRestoreClipboard {
+            if let last = dictation.history.first {
+                Button("Copy Last Transcript") { dictation.copy(last) }
+                Menu("Recent Dictations") {
+                    ForEach(dictation.history) { item in
+                        Button(Self.preview(item.text)) { dictation.copy(item) }
+                    }
+                }
+            }
+            if dictation.canRestoreClipboard {
+                Button("Restore Previous Clipboard") { dictation.restorePreviousClipboard() }
+            }
+            Divider()
+        }
         if let update = model.updates.available {
             Button("Update Available: TalkTrack \(update.version)…") { NSWorkspace.shared.open(update.pageURL) }
             Divider()
@@ -90,6 +103,25 @@ private struct MenuBarContent: View {
     private func showMainWindow() {
         openWindow(id: "main")
         model.showMainWindow()
+    }
+
+    /// One line of a dictation for the menu.
+    private static func preview(_ text: String) -> String {
+        let line = text.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return line.count > 60 ? String(line.prefix(59)) + "…" : line
+    }
+}
+
+/// The menu-bar icon. It is always rendered, so it also hands the Settings
+/// opener to the model for the dictation HUD's Open Settings action.
+private struct MenuBarLabel: View {
+    let model: AppModel
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Image(systemName: model.menuBarSymbol)
+            .accessibilityLabel(model.menuBarLabel)
+            .onAppear { model.openSettingsAction = openSettings }
     }
 }
 

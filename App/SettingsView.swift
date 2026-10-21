@@ -33,6 +33,13 @@ struct SettingsView: View {
             Tab("Speakers", systemImage: "person.2", value: AppModel.SettingsTab.speakers) {
                 Form { SavedSpeakersView(presentation: model.speakers) }.formStyle(.grouped)
             }
+            Tab("Dictation", systemImage: "mic", value: AppModel.SettingsTab.dictation) {
+                if let dictation = model.dictation {
+                    DictationSettingsView(model: model, dictation: dictation)
+                } else {
+                    Form { Text(model.setupError ?? "Dictation is unavailable.").foregroundStyle(.secondary) }.formStyle(.grouped)
+                }
+            }
         }
         .frame(width: 600, height: 560)
         .background(WindowReader { model.settingsWindow = $0 })
@@ -122,6 +129,7 @@ struct StorageSettings: View {
 
     var body: some View {
         Form {
+            PermissionsSection(dictation: model.dictation)
             Section("Meeting Library") {
                 LabeledContent("Location") {
                     if let libraryRoot { PathText(url: libraryRoot) } else { Text("Not opened") }
@@ -304,7 +312,7 @@ private struct AudioSettings: View {
         if !microphoneUID.isEmpty && !devices.contains(where: { $0.uid == microphoneUID }) {
             return "This microphone is not connected. Recording will not start until it is connected or another microphone is chosen."
         }
-        return "System audio is always recorded as a separate track. The choice applies to the next recording."
+        return "System audio is always recorded as a separate track. The choice applies to the next recording and dictation."
     }
 
     private func reload() {

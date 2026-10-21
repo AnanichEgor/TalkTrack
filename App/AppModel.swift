@@ -30,7 +30,7 @@ struct WorkspaceServices {
         case ready(WorkspacePresentation, WorkspaceServices)
     }
 
-    enum SettingsTab: Hashable { case general, audio, models, text, speakers }
+    enum SettingsTab: Hashable { case general, audio, models, text, speakers, dictation }
 
     /// Moving the library to another folder (Settings ▸ General).
     enum LibraryMove: Equatable {
@@ -57,6 +57,10 @@ struct WorkspaceServices {
     /// The user's OpenAI-compatible text server (Settings ▸ Models).
     let textServer = TextServerSettingsPresentation()
     let setupError: String?
+    /// System-wide dictation into other apps (Settings ▸ Dictation).
+    private(set) var dictation: DictationModel?
+    /// Captured from the menu-bar label, so the dictation HUD can open Settings.
+    @ObservationIgnored var openSettingsAction: OpenSettingsAction?
     private(set) var libraryMove: LibraryMove = .idle
     /// What launch recovery did with an unfinished move, shown in Settings.
     private(set) var moveRecovery: String?
@@ -79,6 +83,15 @@ struct WorkspaceServices {
             setupError = error.localizedDescription
         }
         speakers = SavedSpeakersPresentation(store: VoiceProfileStore(home: Self.profilesHome))
+        if let runtime {
+            let dictation = DictationModel(inference: runtime, meetingRecording: { [weak self] in self?.isCapturing ?? false })
+            dictation.system.hud.openModels = { [weak self] in
+                guard let self, let open = openSettingsAction else { return }
+                showMissingModels([DictationPreferences.modelRole(DictationPreferences.settings().modelID)])
+                showSettings(open, tab: .models)
+            }
+            self.dictation = dictation
+        }
     }
 
     /// Opens Settings in front of every other window. TalkTrack is a menu-bar
@@ -159,7 +172,12 @@ struct WorkspaceServices {
 
     var menuBarLabel: String {
         switch workspace?.phase ?? .idle {
-        case .idle: "TalkTrack"
+        case .idle:
+            switch dictation?.activity ?? .idle {
+            case .idle: "TalkTrack"
+            case .recording: "TalkTrack, dictating"
+            case .recognizing: "TalkTrack, recognizing dictation"
+            }
         case .paused: "TalkTrack, recording paused"
         default: "TalkTrack, recording"
         }
@@ -167,7 +185,12 @@ struct WorkspaceServices {
 
     var menuBarSymbol: String {
         switch workspace?.phase ?? .idle {
-        case .idle: "waveform"
+        case .idle:
+            switch dictation?.activity ?? .idle {
+            case .idle: "waveform"
+            case .recording: "mic.fill"
+            case .recognizing: "ellipsis.circle"
+            }
         case .paused: "pause.circle"
         default: "record.circle"
         }
@@ -178,6 +201,8 @@ struct WorkspaceServices {
     /// at a checkpoint and writes notes. Returns when exiting is safe.
     func prepareToQuit() async {
         isQuitting = true
+        // Output muted by a dictation is restored; dictation history is forgotten.
+        await dictation?.shutdown()
         async let downloads: Void = { await self.models?.cancelAll() }()
         if case .ready(let workspace, let services) = state {
             await workspace.prepareToQuit(notes: services.notes)
@@ -238,6 +263,8 @@ struct WorkspaceServices {
                 }
             }
             let workspace = WorkspacePresentation(store: store, recorder: recorder, runner: runner)
+            // A meeting takes precedence: an active dictation is cancelled before capture.
+            workspace.beforeCapture = { [weak self] in await self?.dictation?.meetingWillStart() }
             workspace.unavailableModels = { snapshots in
                 var missing: [ModelRole] = []
                 for snapshot in snapshots where !TextServer.isServer(snapshot) {

@@ -8,6 +8,7 @@ xcuserdata/
 # The default meeting library lives in this folder; never commit recordings.
 /.talktrack-library/
 /.agents/
+/.claude/
 /.idea/
 /openspec/
 
@@ -33,6 +34,7 @@ __pycache__/
 /TalkTrack.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
 !/TalkTrack.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 /Fixtures/Inference/
+/Fixtures/PermissionProbe/
 /Packages/TalkTrackKit/Sources/TalkTrackStorageFixture/
 /Packages/TalkTrackKit/Sources/TalkTrackAudioStorageFixture/
 /App/AudioCaptureCheckView.swift

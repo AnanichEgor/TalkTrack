@@ -46,6 +46,23 @@ supported.
   later meetings. Recognition calibrates itself from your own confirmations; manual
   names always win. Saved voices are managed in Settings ▸ Speakers.
 
+**Dictation**
+- Type with your voice in any app: hold Right Option (configurable), speak and
+  release, and the text appears at the cursor. Press to Toggle is available; Escape
+  cancels.
+- Recognized on the Mac with the same Qwen3-ASR models as transcription (0.6B by
+  default, 1.7B selectable), in Auto, English or Russian. The model loads when you
+  press the shortcut and is unloaded after an idle period.
+- A dictionary of names and terms guides spelling; replacement rules fix recurring
+  mistakes. Optional spoken formatting commands ("comma", "new line", "запятая",
+  "новая строка") and removal of hesitation sounds.
+- The text is pasted only into the window and field that had focus when you pressed
+  the shortcut; otherwise it stays on the clipboard to paste yourself.
+- A running summary, translation or transcription pauses for a dictation and then
+  continues. Dictation is unavailable while a meeting is recording.
+- Dictation audio and text are never saved: recent dictations are kept in the menu
+  bar (Copy Last Transcript) only until TalkTrack quits.
+
 **Workspace**
 - Meetings in the sidebar, newest first, with search. New Meeting takes a title and
   description; meetings can be renamed and deleted.
@@ -64,14 +81,16 @@ supported.
   audio is reported and marked on the timeline.
 
 **Settings**
-- General: library location (Move Library… with a verified, crash-safe copy), the
-  models folder and update checks.
+- General: permissions (status, Grant…, Open System Settings), library location
+  (Move Library… with a verified, crash-safe copy), the models folder and update checks.
 - Audio: microphone, live transcription, default meeting language, spelling
   correction.
 - Models: download, resume, cancel and remove each model; choose the text model
   (Automatic, 9B or 4B), and a text server (see below).
 - Text: summary language and translation language (independent), context size.
 - Speakers: saved voices and automatic recognition.
+- Dictation: shortcut and mode, language and model, dictionary and replacements,
+  formatting, feedback (waveform, sounds, muting other audio), clipboard and history.
 
 ## Stack
 
@@ -111,8 +130,10 @@ Source and model licenses and attribution are in [ThirdParty/](ThirdParty/README
 - **Languages:** speech recognition, summaries and translation support English and
   Russian. The interface is in English.
 - **Permissions:** Microphone and Screen & System Audio Recording. TalkTrack records
-  only audio, never the screen. Permission changes take effect after relaunching
-  TalkTrack.
+  only audio, never the screen. Dictation additionally needs Accessibility (to check
+  the focused field and paste) and Input Monitoring (to notice the shortcut in other
+  apps); Settings ▸ General ▸ Permissions shows every permission's status.
+  Permission changes take effect after relaunching TalkTrack.
 - **Speed:** final transcription and summaries run after recording and can take
   several minutes for a long meeting. Recording is never blocked by processing.
 - **Speaker separation** works best with a few clearly different voices; with many
@@ -208,9 +229,10 @@ are kept. Only the release version and links are read; nothing about you is sent
 
 **After an update** (a new `TalkTrack.dmg` replacing the app) repeat one of the
 methods. Because the signature changes with every build, macOS may also ask again
-for Microphone and Screen & System Audio Recording access; if recording reports
+for Microphone and Screen & System Audio Recording access, and dictation for
+Accessibility and Input Monitoring; if recording or Settings ▸ General ▸ Permissions reports
 that access is missing, open **System Settings ▸ Privacy & Security**, remove
-TalkTrack from both lists with **–**, reopen TalkTrack and allow access again.
+TalkTrack from those lists with **–**, reopen TalkTrack and allow access again.
 
 ### Where data is stored
 
@@ -219,7 +241,8 @@ TalkTrack from both lists with **–**, reopen TalkTrack and allow access again.
 | Meetings, audio, transcripts, notes, summaries | `~/Documents/TalkTrack/.talktrack-library` (movable in Settings ▸ General) |
 | Models | `~/Library/Application Support/TalkTrack/Models` |
 | Saved voices | `~/Library/Application Support/TalkTrack/Speakers.sqlite3` |
-| Preferences | `defaults` domain `local.talktrack.app` |
+| Preferences, including the dictation dictionary and replacement rules | `defaults` domain `local.talktrack.app` |
+| Dictation audio and text | Not stored (memory only) |
 
 ### Uninstall
 

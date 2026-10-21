@@ -157,6 +157,8 @@ public struct RecordControls: Equatable, Sendable {
     /// Answers which snapshots are not installed, without waiting for running
     /// inference. Unset, waiting jobs name all of their models.
     public var unavailableModels: (@Sendable ([ModelSnapshot]) async throws -> [ModelRole])?
+    /// Runs before a recording takes the capture lease (dictation cancels itself).
+    public var beforeCapture: (@Sendable () async -> Void)?
     /// Changes whenever the selected meeting's published transcript may have changed.
     public private(set) var transcriptGeneration = 0
 
@@ -320,6 +322,7 @@ public struct RecordControls: Equatable, Sendable {
     public func record() async {
         guard let id = selectedID else { return }
         await command {
+            await self.beforeCapture?()
             await self.runner.setCaptureActive(true)
             do { try await self.recorder.start(meetingID: id) }
             catch { await self.runner.setCaptureActive(false); throw error }

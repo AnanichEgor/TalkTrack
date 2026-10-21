@@ -54,13 +54,16 @@ public actor QwenSpeechAdapter {
         }
     }
 
-    public func transcribe(samples: [Float], language: String? = nil, maxTokens: Int = 512, allowEmpty: Bool = false) throws -> QwenTranscription {
+    /// `context` is a system prompt of terms the model should prefer (dictation's
+    /// dictionary); meeting transcription passes none, keeping its outputs unchanged.
+    public func transcribe(samples: [Float], language: String? = nil, maxTokens: Int = 512, allowEmpty: Bool = false,
+                           context: String = "") throws -> QwenTranscription {
         try validate(samples)
         guard !loading, let asr else { throw QwenAdapterError.notLoaded }
         guard language == nil || asr.config.supportLanguages.contains(language!),
               (1...2048).contains(maxTokens) else { throw QwenAdapterError.invalidOutput }
         let output = try asr.generate(audio: MLXArray(samples), maxTokens: maxTokens,
-            temperature: 0, language: language, chunkDuration: 30, minChunkDuration: 0.1,
+            temperature: 0, context: context, language: language, chunkDuration: 30, minChunkDuration: 0.1,
             repetitionPenalty: 1.1)
         try Task.checkCancellation()
         guard allowEmpty || !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
