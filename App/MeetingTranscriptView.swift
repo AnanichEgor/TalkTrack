@@ -74,7 +74,7 @@ struct MeetingTranscriptView: View {
                                 .accessibilityElement(children: .contain)
                                 .accessibilityAddTraits(item.id == current ? .isSelected : [])
                                 .modifier(RenameActions(enabled: canRename(block, in: snapshot) && !presentation.isBusy,
-                                                        namedFragment: block.isNamedFragment,
+                                                        namedFragment: block.isNamedFragment, unidentified: block.isUnidentified,
                                     rename: { Task { await presentation.beginRename(recordingID: block.recordingID, segmentID: block.segments[0].id) } },
                                     nameFragment: { Task { await presentation.beginNameFragment(recordingID: block.recordingID, segmentIDs: block.segments.map(\.id)) } },
                                     removeFragment: { Task { await presentation.removeFragmentName(recordingID: block.recordingID, segmentIDs: block.segments.map(\.id)) } }))
@@ -152,7 +152,7 @@ struct MeetingTranscriptView: View {
     /// button laid over it: same font, same first-line start, same wrapping.
     private func speech(_ block: TranscriptBlock, in snapshot: MeetingTranscriptSnapshot) -> some View {
         let renamable = canRename(block, in: snapshot)
-        let color = speakerColor(block.speaker, in: snapshot)
+        let color = block.isUnidentified ? Color.secondary : speakerColor(block.speaker, in: snapshot)
         var name = AttributedString(block.speakerLabel)
         name.font = Self.nameFont
         name.foregroundColor = color
@@ -161,6 +161,7 @@ struct MeetingTranscriptView: View {
             .lineSpacing(5)
             .textSelection(.enabled)
             .help(block.speaker == .microphone ? "Microphone speech always uses You"
+                  : block.isUnidentified ? Self.unidentifiedHelp
                   : renamable ? "Select \(block.speakerLabel) to name this voice or correct this reply"
                   : "Provisional speakers can be named after final processing")
             .overlay(alignment: .topLeading) {
@@ -174,18 +175,23 @@ struct MeetingTranscriptView: View {
                     .buttonStyle(.plain)
                     .pointerStyle(.link)
                     .disabled(presentation.isBusy)
-                    .help("Name or correct this speaker")
+                    .help(block.isUnidentified ? Self.unidentifiedHelp : "Name or correct this speaker")
                     .accessibilityLabel("Name Speaker: \(block.speakerLabel), \(block.timestamp)")
                 }
             }
     }
 
     static let nameFont = Font.title3.weight(.semibold)
+    static let unidentifiedHelp = "This phrase is too short, or overlaps another speaker, to match to a voice. Select Unidentified to choose who said it."
 
     @ViewBuilder private func annotations(_ block: TranscriptBlock, in snapshot: MeetingTranscriptSnapshot) -> some View {
         if case .system(let id) = block.speaker {
             if !snapshot.revisions.contains(where: { $0.recordingID == block.recordingID && $0.kind == .final }) {
                 Text("Provisional speaker").font(.caption).foregroundStyle(.secondary)
+            } else if block.isAssignedFragment {
+                Text("Assigned reply").font(.caption).foregroundStyle(.secondary)
+                    .help("You chose this reply's voice. Reprocessing the meeting returns it to Unidentified.")
+                    .accessibilityLabel("Assigned reply")
             } else if block.isNamedFragment {
                 Text("Named reply").font(.caption).foregroundStyle(.secondary)
                     .help("You named this reply. Apply Names joins it with this person's voice; the other replies of its voice keep their name.")
@@ -216,17 +222,43 @@ struct RenameSpeakerView: View {
     let target: SpeakerRenameTarget
     @FocusState private var nameFocused: Bool
     private var fragment: Bool { presentation.fragmentSegmentIDs != nil }
+    private var unidentified: Bool { presentation.namingUnidentified }
+
+    /// The day's voices; choosing one gives this reply to it.
+    @ViewBuilder private var dayVoices: some View {
+        let voices = presentation.dayVoices
+        if !voices.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Voices of this day").font(.callout).foregroundStyle(.secondary)
+                ForEach(voices) { voice in
+                    let chosen = presentation.chosenVoiceID == voice.id || (voice.name != nil && presentation.draftName == voice.name)
+                    Button { presentation.chooseVoice(voice) } label: {
+                        Label(voice.label, systemImage: chosen ? "checkmark.circle.fill" : "person.wave.2")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.borderless).disabled(presentation.isBusy)
+                    .help("Give this reply to \(voice.label)")
+                }
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(fragment ? "Name This Reply" : "Rename Speaker").font(.title2.bold())
+            Text(unidentified ? "Who Said This?" : fragment ? "Name This Reply" : "Rename Speaker").font(.title2.bold())
             Text("Current speaker: \(target.label)").foregroundStyle(.secondary)
-            Picker("Apply to", selection: $presentation.scope) {
-                Text("This reply").tag(MeetingTranscriptPresentation.NamingScope.reply)
-                Text("All replies of \(target.label)").tag(MeetingTranscriptPresentation.NamingScope.voice)
+            if unidentified {
+                Text("This phrase is too short, or overlaps another speaker, to match to a voice. Choose a voice of this day or enter a name; only this reply changes.")
+                    .font(.callout).foregroundStyle(.secondary)
+                dayVoices
+            } else {
+                Picker("Apply to", selection: $presentation.scope) {
+                    Text("This reply").tag(MeetingTranscriptPresentation.NamingScope.reply)
+                    Text("All replies of \(target.label)").tag(MeetingTranscriptPresentation.NamingScope.voice)
+                }
+                .pickerStyle(.segmented).disabled(presentation.isBusy)
+                .help("Correct only this reply, or name every reply of this voice on this meeting day")
             }
-            .pickerStyle(.segmented).disabled(presentation.isBusy)
-            .help("Correct only this reply, or name every reply of this voice on this meeting day")
             if case .automatic = target.assignmentOrigin {
                 Text("This name was matched automatically from a saved voice. Save your correction to make it the confirmed name for this meeting day.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -235,13 +267,15 @@ struct RenameSpeakerView: View {
                 GridRow { Text("Meeting").foregroundStyle(.secondary); Text(target.meetingTitle).textSelection(.enabled) }
                 GridRow { Text("Recording day").foregroundStyle(.secondary); Text("\(target.day.localDate) · \(target.day.timeZoneIdentifier)") }
             }
-            Text(fragment ? "Only this reply gets the name; the other replies of \(target.label) keep theirs. The correction also teaches recognition, and Apply Names moves the reply to this person's voice."
-                          : "Applies to every reply of this voice throughout this meeting day, including matching recordings.")
-                .font(.callout).foregroundStyle(.secondary)
+            if !unidentified {
+                Text(fragment ? "Only this reply gets the name; the other replies of \(target.label) keep theirs. The correction also teaches recognition, and Apply Names moves the reply to this person's voice."
+                              : "Applies to every reply of this voice throughout this meeting day, including matching recordings.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             TextField("Name", text: $presentation.draftName)
                 .textFieldStyle(.roundedBorder).focused($nameFocused)
                 .accessibilityLabel("Speaker name").disabled(presentation.isBusy)
-            savedVoices
+            if !unidentified { savedVoices }
             if presentation.isRemembering {
                 HStack {
                     ProgressView().controlSize(.small)
@@ -266,6 +300,7 @@ struct RenameSpeakerView: View {
         .interactiveDismissDisabled(presentation.isBusy)
         .onAppear { nameFocused = true }
         .onChange(of: presentation.draftName) { _, name in
+            presentation.draftNameChanged()
             // Editing away from a picked suggestion's name lets the typed name decide again.
             if let id = presentation.selectedProfileID, presentation.profiles.first(where: { $0.id == id })?.name != name {
                 presentation.clearProfileChoice()
@@ -316,6 +351,8 @@ struct RenameSpeakerView: View {
 private struct RenameActions: ViewModifier {
     let enabled: Bool
     let namedFragment: Bool
+    /// An Unidentified reply has no voice to rename.
+    let unidentified: Bool
     let rename: () -> Void
     let nameFragment: () -> Void
     let removeFragment: () -> Void
@@ -324,12 +361,12 @@ private struct RenameActions: ViewModifier {
         if enabled {
             content
                 .contextMenu {
-                    Button("Rename Speaker…", action: rename)
-                    Button("Name This Reply…", action: nameFragment)
+                    if !unidentified { Button("Rename Speaker…", action: rename) }
+                    Button(unidentified ? "Who Said This…" : "Name This Reply…", action: nameFragment)
                     if namedFragment { Button("Remove Reply Name", action: removeFragment) }
                 }
-                .accessibilityAction(named: "Rename Speaker", rename)
-                .accessibilityAction(named: "Name This Reply", nameFragment)
+                .modifier(OptionalAction(name: "Rename Speaker", enabled: !unidentified, action: rename))
+                .accessibilityAction(named: unidentified ? "Who Said This" : "Name This Reply", nameFragment)
                 .modifier(OptionalAction(name: "Remove Reply Name", enabled: namedFragment, action: removeFragment))
         } else {
             content

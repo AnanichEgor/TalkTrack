@@ -14,9 +14,17 @@ or rewritten for playback.
 - **Inside a recording.** Each track maps active time to committed AAC chunks,
   excluding persisted encoder trims. Explicit missing-source gaps (for example a
   late microphone start) are silence of the same length.
-- **Tracks.** System and microphone samples of the same frames are mixed before
-  scheduling, so they cannot drift. Speeds 1×–3× apply to the mix; positions
-  are always source time.
+- **Tracks.** The player plays Auto (default), System Only, System and Microphone,
+  or Microphone Only (`PlaybackTracks`, preference `playbackTracks`). Auto adds the
+  microphone only during the final transcript's `You` replies (padded 200 ms, 30 ms
+  fades); publication already dropped microphone words quieter than the system track
+  and replies the system track also said, so echo stays muted. Without a final
+  transcript Auto plays the system track only. System Only is the
+  default because a meeting played through speakers reaches the microphone as a
+  delayed room copy, which echoes in the mix. Chosen samples of the same frames are
+  mixed before scheduling, so they cannot drift; changing the choice while playing
+  restarts at the same position. Speeds 1×–3× apply to the mix; positions are
+  always source time.
 - **Transcript.** `TranscriptPlaybackIndex` maps speech blocks onto the same
   timeline, so the highlight and `[time]:` seeks match what is heard.
 - **Not on the timeline.** A recording still being captured joins the timeline

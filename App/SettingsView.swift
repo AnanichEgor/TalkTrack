@@ -262,6 +262,10 @@ private struct AudioSettings: View {
                     }
                 }
                 Text(microphoneHelp).font(.callout).foregroundStyle(.secondary)
+                // Speaker playback reaches a separate microphone, so the microphone track
+                // also hears the other participants (echo the transcript must filter out).
+                (Text("Note: ").bold() + Text("A headset gives the best transcription. When meeting audio plays through speakers and a separate microphone records you, the microphone also picks up the other participants, so your speech and the speakers are recognized less reliably."))
+                    .font(.callout).foregroundStyle(.secondary)
                 if let listError {
                     Label(listError, systemImage: "exclamationmark.triangle").foregroundStyle(Color.errorText)
                 }

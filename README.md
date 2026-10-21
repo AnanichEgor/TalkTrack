@@ -35,7 +35,8 @@ supported.
   timings are aligned, and the result replaces the live text. Optional spelling
   correction with the text model.
 - Speakers are separated (diarization): other participants appear as `Voice1`,
-  `Voice2`, …; microphone speech is always `You`.
+  `Voice2`, …; microphone speech is always `You`. A phrase too short, or too mixed
+  with another speaker, to match to a voice is shown as `Unidentified`.
 - Layout: centered date separators (`------------ [date] ------------`, plus
   `resumption` when a meeting continues on another day), `[time]: Speaker - text`
   blocks; the same speaker continues one block across pauses of up to two seconds.
@@ -43,6 +44,8 @@ supported.
 
 **Speakers**
 - Rename a voice for the meeting day, or name a single reply or fragment.
+- Select `Unidentified` to say who said that phrase: choose a voice of the day or
+  enter a name; only that reply changes.
 - Saved voices: names you confirm can be remembered and recognized automatically in
   later meetings. Recognition calibrates itself from your own confirmations; manual
   names always win. Saved voices are managed in Settings ▸ Speakers.
@@ -77,7 +80,10 @@ supported.
 - Translation of the final transcript to English or Russian, laid out like the
   transcript; dates, names and timestamps come from the original.
 - Player under the transcript: all recordings of a meeting play as one continuous
-  timeline with a scrubber and speeds 1×, 1.5×, 2×, 2.5×, 3×. The block being
+  timeline with a scrubber and speeds 1×, 1.5×, 2×, 2.5×, 3×. By default (Auto) it
+  plays the system track and adds the microphone only during your own replies (`You`)
+  of the final transcript, so speaker echo stays out; the track menu also offers
+  System Only, both tracks and Microphone Only. The block being
   played is highlighted, and clicking `[time]:` plays from there. Missing or damaged
   audio is reported and marked on the timeline.
 

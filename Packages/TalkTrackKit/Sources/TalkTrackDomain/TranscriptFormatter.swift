@@ -32,6 +32,10 @@ public struct TranscriptBlock: Equatable, Sendable {
     public let segments: [TranscriptSegment]
     /// The label comes from a name the user gave these fragments, not their voice.
     public var isNamedFragment = false
+    /// The user chose this reply's voice (`FragmentAnchor.voiceID`).
+    public var isAssignedFragment = false
+    /// Too short or too mixed to match to a voice; the user can say who it was.
+    public var isUnidentified = false
     public var text: String {
         "[\(timestamp)]: \(speakerLabel) - " + segments.map { $0.correctedText ?? $0.originalText }.joined(separator: " ")
     }
@@ -114,18 +118,26 @@ public enum TranscriptFormatter {
             return $0.id.uuidString < $1.id.uuidString
         }
         // A named fragment shows its own name, whatever its voice (latest wins).
+        // A reply given to a voice follows it while that voice exists.
         func fragment(_ segment: TranscriptSegment) -> FragmentAnchor? {
-            anchors.filter { $0.covers(segment) }.max { $0.createdAt < $1.createdAt }
+            anchors.filter { anchor in anchor.covers(segment) && anchor.voiceID.map { speakerMap[$0] != nil } ?? true }
+                .max { $0.createdAt < $1.createdAt }
         }
         // Same-day voices the user gave one name are one person: they share
         // blocks. Unnamed voices stay keyed by their own identity.
-        func person(_ segment: TranscriptSegment) -> String {
-            guard case .system(let id) = segment.speaker else { return "microphone" }
-            if let anchor = fragment(segment) { return "name:" + anchor.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        func voiceKey(_ id: UUID) -> String {
             if let name = names[id]?.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
                 return "name:" + name.lowercased()
             }
             return "id:\(id)"
+        }
+        func person(_ segment: TranscriptSegment) -> String {
+            guard case .system(let id) = segment.speaker else { return "microphone" }
+            if let anchor = fragment(segment) {
+                if let voice = anchor.voiceID { return voiceKey(voice) }
+                return "name:" + anchor.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            }
+            return voiceKey(id)
         }
         var result: [TranscriptDisplayItem] = []
         var current: [TranscriptSegment] = []
@@ -139,17 +151,22 @@ public enum TranscriptFormatter {
             let label: String
             let speaker: SpeakerReference
             let anchor = current.lazy.compactMap(fragment).first
+            var unidentified = false
             if first.track == .microphone { speaker = .microphone; label = "You" }
             else {
-                speaker = first.speaker
-                guard case .system(let id) = speaker, let identity = speakerMap[id] else {
-                    throw TranscriptFormattingError.missingSpeaker
-                }
-                label = anchor?.name ?? names[id]?.name ?? "Voice\(identity.number)"
+                guard case .system(let own) = first.speaker else { throw TranscriptFormattingError.missingSpeaker }
+                let id = anchor?.voiceID ?? own
+                speaker = .system(daySpeakerID: id)
+                guard let identity = speakerMap[id] else { throw TranscriptFormattingError.missingSpeaker }
+                unidentified = anchor == nil && names[id]?.name == nil && identity.unidentified
+                label = (anchor?.voiceID == nil ? anchor?.name : nil) ?? names[id]?.name
+                    ?? (identity.unidentified ? "Unidentified" : "Voice\(identity.number)")
             }
             var block = TranscriptBlock(recordingID: first.recordingID, dayID: first.dayID,
                 speaker: speaker, speakerLabel: label, timestamp: try timestamp(first.wallClockStart, day: day), segments: current)
             block.isNamedFragment = anchor != nil
+            block.isAssignedFragment = anchor?.voiceID != nil
+            block.isUnidentified = unidentified
             result.append(.speech(block))
             current = []
         }

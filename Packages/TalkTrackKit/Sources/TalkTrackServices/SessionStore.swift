@@ -673,7 +673,7 @@ public actor SessionStore {
     /// voices: a sample inside one belongs to its named person only.
     public func voiceCorrections() throws -> [VoiceCorrection] {
         try meetings().flatMap { meeting in
-            try fragmentAnchors(meetingID: meeting.id).map {
+            try fragmentAnchors(meetingID: meeting.id).filter { $0.voiceID == nil }.map {
                 VoiceCorrection(libraryID: library.manifest.libraryID, recordingID: $0.recordingID, interval: $0.interval,
                                 person: NamedSpeech.person($0.name))
             }
@@ -697,7 +697,25 @@ public actor SessionStore {
         try db.transaction { try writeFragmentNames(meetingID: meetingID, recordingID: recordingID, segmentIDs: segmentIDs, name: name, at: date) }
     }
 
-    private func writeFragmentNames(meetingID: UUID, recordingID: UUID, segmentIDs: [UUID], name: String, at date: Date) throws -> MeetingTranscriptSnapshot {
+    /// Gives final system speech blocks (an Unidentified reply) to a voice of
+    /// their day; the reply shows and groups with that voice, names nobody,
+    /// and is dropped once that voice no longer exists (after reprocessing).
+    @discardableResult
+    public func assignFragment(meetingID: UUID, recordingID: UUID, segmentIDs: [UUID], voiceID: UUID, at date: Date = Date()) throws -> MeetingTranscriptSnapshot {
+        try db.transaction {
+            let snapshot = try meetingTranscript(meetingID: meetingID)
+            guard let voice = snapshot.speakers.first(where: { $0.id == voiceID }), !voice.unidentified,
+                  let revision = snapshot.revisions.first(where: { $0.recordingID == recordingID }),
+                  segmentIDs.allSatisfy({ id in revision.segments.contains { $0.id == id && voice.recordingDayIDs.contains($0.dayID) } }) else {
+                throw SpeakerRenameError.changed
+            }
+            let label = snapshot.assignments.first { $0.daySpeakerID == voiceID }?.name ?? "Voice\(voice.number)"
+            return try writeFragmentNames(meetingID: meetingID, recordingID: recordingID, segmentIDs: segmentIDs, name: label, at: date, voiceID: voiceID)
+        }
+    }
+
+    private func writeFragmentNames(meetingID: UUID, recordingID: UUID, segmentIDs: [UUID], name: String, at date: Date,
+                                    voiceID: UUID? = nil) throws -> MeetingTranscriptSnapshot {
         let trimmed = try SpeakerRenameError.validatedName(name)
         do {
             let snapshot = try meetingTranscript(meetingID: meetingID)
@@ -715,7 +733,7 @@ public actor SessionStore {
                     try db.execute("DELETE FROM heads WHERE kind='fragmentAnchor' AND meeting_id=? AND scope=?", [.text(meetingID.uuidString), .text(old.segmentID.uuidString)])
                 }
                 let anchor = FragmentAnchor(meetingID: meetingID, recordingID: recordingID, dayID: segment.dayID, segmentID: segment.id,
-                                            interval: segment.interval, name: trimmed, createdAt: date)
+                                            interval: segment.interval, name: trimmed, createdAt: date, voiceID: voiceID)
                 try put(.fragmentAnchor, id: anchor.id, meetingID: meetingID, scope: segment.id.uuidString, value: anchor)
                 try setHead(.fragmentAnchor, meetingID: meetingID, scope: segment.id.uuidString, id: anchor.id)
             }
@@ -737,7 +755,7 @@ public actor SessionStore {
                   let day = days.first(where: { $0.id == named.dayID }) else { throw SpeakerRenameError.unavailable }
             // The person's fragments of the same capture day, in any recording.
             let fragments = snapshot.anchors.filter { anchor in
-                NamedSpeech.person(anchor.name) == person && days.contains { $0.id == anchor.dayID &&
+                anchor.voiceID == nil && NamedSpeech.person(anchor.name) == person && days.contains { $0.id == anchor.dayID &&
                     $0.localDate == day.localDate && $0.timeZoneIdentifier == day.timeZoneIdentifier }
             }
             let revisions = snapshot.revisions.filter { revision in revision.kind == .final && fragments.contains { $0.recordingID == revision.recordingID } }
@@ -781,7 +799,8 @@ public actor SessionStore {
     /// fragment names someone else. Automatic and linked names are not the
     /// user's statements and take no part.
     public func namedSpeech(meetingID: UUID) throws -> [NamedSpeech] {
-        let anchors = try fragmentAnchors(meetingID: meetingID)
+        // A reply given to a voice names nobody.
+        let anchors = try fragmentAnchors(meetingID: meetingID).filter { $0.voiceID == nil }
         var result = anchors.map { NamedSpeech(name: $0.name, recordingID: $0.recordingID, intervals: [$0.interval]) }
         for assignment in try speakerAssignments(meetingID: meetingID) where assignment.origin == .manual {
             guard let name = assignment.name else { continue }
@@ -826,7 +845,7 @@ public actor SessionStore {
         let assignment = snapshot.assignments.first { $0.daySpeakerID == id }
         return SpeakerRenameTarget(meetingID: meetingID, meetingTitle: snapshot.meeting.title,
             recordingID: recordingID, revisionID: revision.id, segmentID: segmentID, speakerID: id,
-            day: day, label: assignment?.name ?? "Voice\(speaker.number)",
+            day: day, label: assignment?.name ?? (speaker.unidentified ? "Unidentified" : "Voice\(speaker.number)"),
             name: assignment?.name, assignmentID: assignment?.id, assignmentOrigin: assignment?.origin)
     }
 

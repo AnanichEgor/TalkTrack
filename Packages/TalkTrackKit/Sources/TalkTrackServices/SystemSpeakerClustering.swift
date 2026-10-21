@@ -140,7 +140,12 @@ public struct SystemSpeakerClustering: Sendable {
     /// `speech` (seconds per cluster) enables a second step (task 5.9): a group
     /// with less than `minorSeconds` of speech has too few vectors to stand as
     /// its own voice and joins the most similar group with more speech when
-    /// their average similarity reaches `absorbFloor` and they are not apart.
+    /// their average similarity reaches `absorbFloor` and they are not apart, or
+    /// reaches `apartOverride` although apart from a group with at least
+    /// `minorSeconds` of speech: the segmentation also splits one
+    /// voice inside a window (a pause, a cut in a video), leaving a 1–2 s fragment
+    /// as a voice of its own. Such fragments measured 0.63–0.76 to their speaker,
+    /// while differently named people on the user's calls stayed at or below 0.293.
     /// On a 16.7-minute call with at most 8 people this left 10 voices instead
     /// of 28.
     ///
@@ -150,8 +155,8 @@ public struct SystemSpeakerClustering: Sendable {
     /// then merges the resulting groups at or above it, also against `apart`.
     /// It was calibrated on the standard steps' groups, so it is applied to
     /// groups, not to the streaming clusters they are built from.
-    public func consolidation(threshold: Double = 0.4, apart: [UUID: Set<UUID>] = [:], speech: [UUID: Double] = [:],
-                              minorSeconds: Double = 8, absorbFloor: Double = 0.2,
+    public func consolidation(threshold: Double = 0.4, apart: [UUID: Set<UUID>] = [:], apartOverride: Double = 0.6,
+                              speech: [UUID: Double] = [:], minorSeconds: Double = 8, absorbFloor: Double = 0.2,
                               links: [UUID: String] = [:], learned: Double? = nil) -> [UUID: UUID] {
         typealias Group = (ids: [UUID], vectors: [[Float]])
         var mapping: [UUID: UUID] = [:]
@@ -200,12 +205,17 @@ public struct SystemSpeakerClustering: Sendable {
             if !speech.isEmpty {
                 func seconds(_ group: Group) -> Double { group.ids.reduce(0) { $0 + (speech[$1] ?? 0) } }
                 var majors = groups.filter { seconds($0) >= minorSeconds }
+                // Only a voice with enough speech outweighs the segmentation's split;
+                // minors appended below never do.
+                let established = majors.count
                 // Smallest first, each against the majors as they stand; an
                 // absorbed minor's vectors join its major only afterwards.
                 var absorbed: [Int: [[Float]]] = [:]
                 for minor in groups.filter({ seconds($0) < minorSeconds }).sorted(by: { seconds($0) < seconds($1) }) {
-                    let target = majors.indices.filter { m in !separated(minor, majors[m]) && !conflict(minor, majors[m]) }
-                        .map { (index: $0, score: average(minor.vectors, majors[$0].vectors)) }.max { $0.score < $1.score }
+                    let target = majors.indices.filter { !conflict(minor, majors[$0]) }
+                        .map { (index: $0, score: average(minor.vectors, majors[$0].vectors)) }
+                        .filter { ($0.index < established && $0.score >= apartOverride) || !separated(minor, majors[$0.index]) }
+                        .max { $0.score < $1.score }
                     if let target, target.score >= absorbFloor {
                         majors[target.index].ids += minor.ids
                         absorbed[target.index, default: []] += minor.vectors

@@ -99,7 +99,7 @@ enum FinalSpeakerReconciler {
         // replaced earlier speakers (user request, 2026-10-13).
         func number(for candidate: DaySpeaker) throws -> UInt {
             let shown = speakersInUse.map { ids in existingSpeakers.filter { ids.contains($0.id) } } ?? existingSpeakers
-            let lastNumber = (shown + speakers).filter { sameCaptureDay($0, candidate) }.map(\.number).max() ?? 0
+            let lastNumber = (shown + speakers).filter { !$0.unidentified && sameCaptureDay($0, candidate) }.map(\.number).max() ?? 0
             guard lastNumber < UInt.max else { throw StoreError.invalidResult }
             return lastNumber + 1
         }
@@ -121,7 +121,8 @@ enum FinalSpeakerReconciler {
             finalIDs[candidate.id] = id
             if speakers.contains(where: { $0.id == id }) { return id }
             let speaker = DaySpeaker(id: id, meetingID: candidate.meetingID, dayID: candidate.dayID,
-                number: try number(for: candidate), recordingDayIDs: candidate.recordingDayIDs)
+                number: candidate.unidentified ? 1 : try number(for: candidate), recordingDayIDs: candidate.recordingDayIDs,
+                unidentified: candidate.unidentified)
             speakers.append(speaker)
             if let bank = banks.first(where: { $0.speakerID == candidate.id }) {
                 evidence.append(TranscriptVoiceEvidence(speakerID: id, segmentation: bank.segmentation, embedding: bank.embedding, vectors: bank.vectors))
@@ -202,6 +203,16 @@ enum FinalSpeakerReconciler {
                 recognizedPerson[block.id] = person
             }
         }
+        // Words each voice keeps once named and recognized replies went to
+        // their people: a voice left with a word or two is brief too.
+        var kept: [UUID: Int] = [:]
+        for block in ordered where block.track == .system && !echoes.contains(block.id) && block.speakerCandidates.count == 1 &&
+            namedPerson[block.id] == nil && recognizedPerson[block.id] == nil {
+            kept[block.speakerCandidates[0], default: 0] += block.words.count
+        }
+        func brief(_ id: UUID) -> Bool {
+            merged.brief.contains(id) || merged.timed && kept[id] ?? 0 < SpeakerConsolidation.briefVoiceWords
+        }
         var recognizedBlocks = 0
         var segments: [TranscriptSegment] = []
         var unknownSpeakers: [UUID: UUID] = [:]
@@ -215,7 +226,7 @@ enum FinalSpeakerReconciler {
             } else if let recognized {
                 recognizedBlocks += 1
                 reference = .system(daySpeakerID: try voice(of: recognized, day: block.day, recognized: true))
-            } else if block.speakerCandidates.count == 1,
+            } else if block.speakerCandidates.count == 1, !brief(block.speakerCandidates[0]),
                     let candidate = candidates.first(where: { $0.id == block.speakerCandidates[0] }),
                     candidate.recordingDayIDs.contains(block.day.id) {
                 reference = .system(daySpeakerID: try addSpeaker(candidate))
@@ -223,16 +234,16 @@ enum FinalSpeakerReconciler {
                 guard block.speakerCandidates.allSatisfy({ id in candidates.contains { $0.id == id && $0.recordingDayIDs.contains(block.day.id) } }) else {
                     throw StoreError.invalidResult
                 }
-                // One unidentified voice per day, not a new voice for every such block.
+                // One Unidentified speaker per day, not a new voice for every such block.
                 let id: UUID
                 if let existing = unknownSpeakers[block.day.id] { id = existing } else {
-                    id = try addSpeaker(DaySpeaker(meetingID: recording.meetingID, dayID: block.day.id, number: 1))
+                    id = try addSpeaker(DaySpeaker(meetingID: recording.meetingID, dayID: block.day.id, number: 1, unidentified: true))
                     unknownSpeakers[block.day.id] = id
                 }
                 reference = .system(daySpeakerID: id)
                 reviews.append(SpeakerReconciliationReview(id: UUID(), previousAssignmentIDs: [],
                     speakerIDs: [id], blockIDs: [block.id],
-                    reason: block.speakerCandidates.isEmpty ? .insufficientEvidence : .mixedSpeech))
+                    reason: block.speakerCandidates.count > 1 ? .mixedSpeech : .insufficientEvidence))
             }
             segments.append(TranscriptSegment(id: block.id, recordingID: recording.id, dayID: block.day.id,
                 track: block.track, interval: block.interval, wallClockStart: block.words[0].wallClockStart,
@@ -328,6 +339,14 @@ struct SpeakerConsolidation {
     /// 3 s left 24 fragment voices on a 16.7-minute call; 10 s attaches most of
     /// them while `apart` still keeps a separated neighbour's voice away.
     static let reach: Int64 = 10_000_000
+    /// A voice with less segmented speech than this (all its clusters
+    /// together) is too short to match: its replies are `Unidentified`. A
+    /// two-person video gained voices of 0.6–0.7 s.
+    static let briefVoiceSeconds = 3.0
+    /// So is a voice left with fewer words than this once named and recognized
+    /// replies went to their people: on the user's calls such voices showed a
+    /// single "huh." or "what?" and the two-person video "Дорого стоил?".
+    static let briefVoiceWords = 4
 
     /// Seconds of segmented speech per cluster, from the system windows.
     static func speech(_ windows: [FinalWindowCheckpoint]) -> [UUID: Double] {
@@ -352,6 +371,10 @@ struct SpeakerConsolidation {
     let blocks: [FinalTextBlock]
     /// Consolidated speaker → the person whose named speech it holds.
     let persons: [UUID: String]
+    /// Consolidated speakers below `briefVoiceSeconds` of segmented speech.
+    let brief: Set<UUID>
+    /// Segmentation timings exist, so brief voices can be told.
+    let timed: Bool
 
     init(clustering: SystemSpeakerClustering?, blocks input: [FinalTextBlock], windows: [FinalWindowCheckpoint] = [],
          named: [NamedSpeech] = [], learned: Double? = nil) {
@@ -361,10 +384,21 @@ struct SpeakerConsolidation {
 
     init(clustering: SystemSpeakerClustering?, blocks input: [FinalTextBlock], apart: [UUID: Set<UUID>], speech: [UUID: Double] = [:],
          links: [UUID: String] = [:], learned: Double? = nil) {
-        guard let clustering else { speakers = []; evidence = []; blocks = input; persons = [:]; return }
+        guard let clustering else { speakers = []; evidence = []; blocks = input; persons = [:]; brief = []; timed = false; return }
         let mapping = clustering.consolidation(apart: apart, speech: speech, links: links, learned: learned)
         let members = Dictionary(grouping: clustering.speakers.map(\.id), by: { mapping[$0] ?? $0 })
         self.persons = members.compactMapValues { SpeakerLinks.owner(of: $0, links: links, speech: speech) }
+        func mapped(_ block: FinalTextBlock) -> [UUID] {
+            var seen: [UUID] = []
+            for id in block.speakerCandidates { let to = mapping[id] ?? id; if !seen.contains(to) { seen.append(to) } }
+            return seen
+        }
+        // Without segmentation timings (fixtures) nothing counts as brief.
+        timed = !speech.isEmpty
+        let brief = speech.isEmpty ? [] : Set(members.filter { _, ids in
+            ids.reduce(0) { $0 + (speech[$1] ?? 0) } < Self.briefVoiceSeconds
+        }.keys)
+        self.brief = brief
         let all = clustering.voiceEvidence
         // Merged-away clusters disappear; representatives and vectorless clusters remain.
         speakers = clustering.speakers.filter { mapping[$0.id] == nil || mapping[$0.id] == $0.id }
@@ -374,13 +408,10 @@ struct SpeakerConsolidation {
             return TranscriptVoiceEvidence(speakerID: speaker.id, segmentation: members[0].segmentation,
                 embedding: members[0].embedding, vectors: Array(members.flatMap(\.vectors).prefix(8)))
         }
-        func mapped(_ block: FinalTextBlock) -> [UUID] {
-            var seen: [UUID] = []
-            for id in block.speakerCandidates { let to = mapping[id] ?? id; if !seen.contains(to) { seen.append(to) } }
-            return seen
-        }
         func voiced(_ ids: [UUID]) -> [UUID] { ids.filter { mapping[$0] != nil } }
-        let decided = input.filter { $0.track == .system && mapped($0).count == 1 && voiced(mapped($0)).count == 1 }
+        // A brief voice is no evidence for its neighbours either.
+        let decided = input.filter { $0.track == .system && mapped($0).count == 1 && voiced(mapped($0)).count == 1 &&
+            !brief.contains(mapped($0)[0]) }
         blocks = input.map { block in
             guard block.track == .system else { return block }
             var ids = mapped(block)

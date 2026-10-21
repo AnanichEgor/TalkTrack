@@ -141,6 +141,23 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
 }
 
 @Suite struct FinalTranscriptionTests {
+    /// Measured on the user's two-person test: a word at a turn change is
+    /// covered 0.9–1.0 by its speaker and at most 0.42 by the other.
+    @Test func aWordAtATurnChangeBelongsToTheSpeakerCoveringMostOfIt() throws {
+        let a = UUID(), b = UUID()
+        func span(_ start: Double, _ end: Double) throws -> MediaInterval {
+            try MediaInterval(start: MediaTime(seconds: start), end: MediaTime(seconds: end))
+        }
+        let word = try span(1.0, 1.4)
+        #expect(FinalTranscriptionPipeline.wordSpeakers(word, [(a, try span(0, 2)), (b, try span(1.232, 3))]).resolved == [a])
+        let overlapping = FinalTranscriptionPipeline.wordSpeakers(word, [(a, try span(0, 1.384)), (b, try span(1.02, 3))])
+        #expect(overlapping.all.count == 2 && overlapping.resolved == overlapping.all)
+        // One speaker's two intervals add up: 0.3 + 0.08 against 0.12.
+        let split = FinalTranscriptionPipeline.wordSpeakers(word, [(a, try span(0, 1.3)), (a, try span(1.32, 2)), (b, try span(1.28, 1.4))])
+        #expect(split.resolved == [a] && Set(split.all) == [a, b])
+        #expect(FinalTranscriptionPipeline.wordSpeakers(word, [(b, try span(5, 6))]).all.isEmpty)
+    }
+
     /// Task 5.8: system audio is primary; a microphone quieter than the system
     /// track is not recognized at all, and stored audio is untouched.
     @Test func quieterMicrophoneIsNotRecognized() async throws {

@@ -39,11 +39,16 @@ public struct FragmentAnchor: Codable, Equatable, Identifiable, Sendable {
     public let interval: MediaInterval
     public let name: String
     public let createdAt: Date
+    /// The day voice the user chose for this reply instead of a name (an
+    /// unidentified reply given to an unnamed VoiceN); `name` keeps the label
+    /// shown then. Such a reply follows that voice and names nobody.
+    public let voiceID: UUID?
 
     public init(id: UUID = UUID(), meetingID: UUID, recordingID: UUID, dayID: UUID, segmentID: UUID,
-                interval: MediaInterval, name: String, createdAt: Date = Date()) {
+                interval: MediaInterval, name: String, createdAt: Date = Date(), voiceID: UUID? = nil) {
         self.id = id; self.meetingID = meetingID; self.recordingID = recordingID; self.dayID = dayID
         self.segmentID = segmentID; self.interval = interval; self.name = name; self.createdAt = createdAt
+        self.voiceID = voiceID
     }
 
     /// Whether `segment` is this fragment's speech: same recording, and the
@@ -87,21 +92,34 @@ public struct DaySpeaker: Codable, Equatable, Identifiable, Sendable {
     /// Capture-time day UUIDs may differ between recordings of the same day.
     /// dayID remains the canonical identity scope; aliases retain provenance.
     public let recordingDayIDs: [UUID]
+    /// Replies too short, or too mixed with another speaker, to match to a
+    /// voice: shown as `Unidentified`, never as a VoiceN; its number is unused.
+    public let unidentified: Bool
 
-    public init(id: UUID = UUID(), meetingID: UUID, dayID: UUID, number: UInt, recordingDayIDs: [UUID]? = nil) {
+    public init(id: UUID = UUID(), meetingID: UUID, dayID: UUID, number: UInt, recordingDayIDs: [UUID]? = nil,
+                unidentified: Bool = false) {
         self.id = id
         self.meetingID = meetingID
         self.dayID = dayID
         self.number = number
         self.recordingDayIDs = Set((recordingDayIDs ?? []) + [dayID]).sorted { $0.uuidString < $1.uuidString }
+        self.unidentified = unidentified
     }
 
-    private enum CodingKeys: String, CodingKey { case id, meetingID, dayID, number, recordingDayIDs }
+    private enum CodingKeys: String, CodingKey { case id, meetingID, dayID, number, recordingDayIDs, unidentified }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(id: c.decode(UUID.self, forKey: .id), meetingID: c.decode(UUID.self, forKey: .meetingID),
             dayID: c.decode(UUID.self, forKey: .dayID), number: c.decode(UInt.self, forKey: .number),
-            recordingDayIDs: c.decodeIfPresent([UUID].self, forKey: .recordingDayIDs))
+            recordingDayIDs: c.decodeIfPresent([UUID].self, forKey: .recordingDayIDs),
+            unidentified: c.decodeIfPresent(Bool.self, forKey: .unidentified) ?? false)
+    }
+    /// Ordinary voices encode exactly as before the flag existed.
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(meetingID, forKey: .meetingID); try c.encode(dayID, forKey: .dayID)
+        try c.encode(number, forKey: .number); try c.encode(recordingDayIDs, forKey: .recordingDayIDs)
+        if unidentified { try c.encode(true, forKey: .unidentified) }
     }
 }
 

@@ -78,6 +78,35 @@ func clusterObservation(_ slot: Int, _ start: Double, _ end: Double, voice: Int?
         #expect(apart[ids[0]] != apart[ids[1]] && apart[ids[4]] == ids[2])
     }
 
+    /// The segmentation can split one voice inside a window (a pause or a cut in a
+    /// video), leaving a short fragment apart from its speaker. A fragment that is
+    /// very similar joins a voice with enough speech anyway; a less similar one,
+    /// or two small voices, stay apart.
+    @Test func shortFragmentSplitInsideAWindowJoinsItsVoiceWhenVerySimilar() throws {
+        let (segmentation, embedding) = try clusteringModels(), recordingID = UUID(), day = try clusterDay()
+        var state = try SystemSpeakerClustering(meetingID: UUID(), segmentation: segmentation, embedding: embedding)
+        let vectors = [clusterVector(0), clusterVector(1, second: 0, coefficient: 0.7), clusterVector(2, second: 0, coefficient: 0.5),
+                       clusterVector(5), clusterVector(6, second: 5, coefficient: 0.8)]
+        var ids: [UUID] = []
+        for (window, vector) in vectors.enumerated() {
+            let start = Double(window * 2), range = try clusterRange(start, start + 2)
+            let observation = SpeakerClusteringObservation(slot: 1, activity: [range], cleanSpeech: [range],
+                embedding: SpeakerWindowEmbedding(values: vector, model: embedding))
+            ids.append(try #require(state.process(recordingID: recordingID, day: day, context: range, owned: range,
+                                                  observations: [observation]).first).speakerID)
+        }
+        #expect(Set(ids).count == 5)
+        let apart: [UUID: Set<UUID>] = [ids[0]: [ids[1], ids[2]], ids[1]: [ids[0]], ids[2]: [ids[0]],
+                                        ids[3]: [ids[4]], ids[4]: [ids[3]]]
+        let speech: [UUID: Double] = [ids[0]: 120, ids[1]: 1.6, ids[2]: 1.2, ids[3]: 3, ids[4]: 2]
+        let mapping = state.consolidation(threshold: 0.95, apart: apart, speech: speech)
+        #expect(mapping[ids[1]] == ids[0])
+        #expect(mapping[ids[2]] == ids[2])
+        #expect(mapping[ids[3]] != mapping[ids[4]])
+        // Without the override every separated fragment keeps its own voice.
+        #expect(state.consolidation(threshold: 0.95, apart: apart, apartOverride: 1.1, speech: speech)[ids[1]] == ids[1])
+    }
+
     /// A short reply has no clean vector; it takes a nearby voice only when the
     /// segmentation never heard the two as different people in one window.
     @Test func shortReplyKeepsItsOwnVoiceNextToASeparatedSpeaker() throws {

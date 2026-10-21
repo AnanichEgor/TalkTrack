@@ -411,6 +411,47 @@ func resegment(_ input: FinalTranscriptionCheckpoint, split: Bool = false,
         #expect(result.speakers.count == 1 && result.voiceEvidence.isEmpty && result.assignments.isEmpty)
         #expect(result.reviews.count == 1 && result.reviews[0].reason == .mixedSpeech)
         #expect(result.reviews[0].speakerIDs == result.speakers.map(\.id))
+        #expect(result.speakers[0].unidentified)
+        let snapshot = try await fixture.store.meetingTranscript(meetingID: fixture.recording.meetingID)
+        let blocks = snapshot.items.compactMap { item -> TranscriptBlock? in if case .speech(let block) = item, block.speaker != .microphone { block } else { nil } }
+        #expect(!blocks.isEmpty && blocks.allSatisfy { $0.speakerLabel == "Unidentified" && $0.isUnidentified })
+        try await fixture.store.close()
+    }
+
+    /// A voice with less than `briefVoiceSeconds` of speech is too short to
+    /// match: its words are Unidentified, and it takes no VoiceN number. The
+    /// user can give such a reply to a voice of its day; it then shows and
+    /// groups as that voice and names nobody.
+    @Test func aVoiceTooShortToMatchIsUnidentifiedAndItsReplyCanBeGivenToAVoice() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let fixture = try await finalFixture(folder, seconds: 10)
+        let text = "Alex will not pay 42 rubles tomorrow and Maria will check 17 items today"
+        let staged = try resegment(try await stageFinal(fixture, text: text), split: true)
+        try await fixture.store.saveFinalCheckpoint(staged, stage: .validating)
+        let result = try await fixture.store.publishFinalTranscript(jobID: fixture.job.id)
+        let unidentified = try #require(result.speakers.first { $0.unidentified })
+        let voice = try #require(result.speakers.first { !$0.unidentified })
+        #expect(result.speakers.count == 2 && voice.number == 1)
+        #expect(!result.reviews.isEmpty && result.reviews.allSatisfy { $0.speakerIDs == [unidentified.id] })
+        #expect(result.reviews.contains { $0.reason == .insufficientEvidence })
+        let meetingID = fixture.recording.meetingID
+        var snapshot = try await fixture.store.meetingTranscript(meetingID: meetingID)
+        func blocks() -> [TranscriptBlock] {
+            snapshot.items.compactMap { item in if case .speech(let block) = item, block.speaker != .microphone { block } else { nil } }
+        }
+        let short = try #require(blocks().first { $0.isUnidentified })
+        #expect(short.speakerLabel == "Unidentified" && blocks().contains { $0.speakerLabel == "Voice1" })
+
+        snapshot = try await fixture.store.assignFragment(meetingID: meetingID, recordingID: fixture.recording.id,
+                                                          segmentIDs: short.segments.map(\.id), voiceID: voice.id)
+        let assigned = try #require(blocks().first { $0.segments.contains(short.segments[0]) })
+        #expect(assigned.speakerLabel == "Voice1" && assigned.speaker == .system(daySpeakerID: voice.id))
+        #expect(assigned.isAssignedFragment && !assigned.isUnidentified)
+        #expect(try await fixture.store.namedSpeech(meetingID: meetingID).isEmpty)
+        await #expect(throws: SpeakerRenameError.changed) {
+            try await fixture.store.assignFragment(meetingID: meetingID, recordingID: fixture.recording.id,
+                                                   segmentIDs: short.segments.map(\.id), voiceID: unidentified.id)
+        }
         try await fixture.store.close()
     }
 

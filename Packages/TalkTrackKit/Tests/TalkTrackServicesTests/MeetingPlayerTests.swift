@@ -51,21 +51,28 @@ private func rms(_ samples: ArraySlice<Float>, _ expected: (Int) -> Float) -> Do
     return sqrt(sum / Double(max(1, samples.count)))
 }
 
-private func expectedMix(_ library: OpenedLibrary, _ meetingID: UUID, _ recordings: [Recording]) async throws -> [Float] {
+private func expectedMix(_ library: OpenedLibrary, _ meetingID: UUID, _ recordings: [Recording],
+                         tracks: PlaybackTracks = .system) async throws -> [Float] {
     let source = try MeetingAudioSource(library: library, meetingID: meetingID, recordings: recordings)
     var mix: [Float] = []
     while let block = try await source.next(maximumFrames: 30_000) {
-        mix.append(contentsOf: zip(block.system, block.microphone).map { max(-1, min(1, $0 + $1)) })
+        switch tracks {
+        case .system: mix += block.system
+        case .microphone: mix += block.microphone
+        case .both, .auto: mix.append(contentsOf: zip(block.system, block.microphone).map { max(-1, min(1, $0 + $1)) })
+        }
     }
     return mix
 }
 
 @MainActor
 private func startedPlayer(_ library: OpenedLibrary, _ meetingID: UUID, _ recordings: [Recording],
-                           at time: MediaTime = .zero, speed: PlaybackSpeed = .normal) async throws -> MeetingPlayer {
+                           at time: MediaTime = .zero, speed: PlaybackSpeed = .normal,
+                           tracks: PlaybackTracks = .system) async throws -> MeetingPlayer {
     let player = MeetingPlayer(library: library, output: .offline)
     player.load(meetingID: meetingID, recordings: recordings)
     player.speed = speed
+    player.tracks = tracks
     player.seek(to: time)
     player.play()
     await player.waitUntilStarted()
@@ -137,6 +144,70 @@ private func startedPlayer(_ library: OpenedLibrary, _ meetingID: UUID, _ record
         for i in 0..<expected.count { worst = max(worst, abs(output[i] - expected[i])) }
         #expect(worst < 1e-5)
         #expect(output[expected.count...].allSatisfy { abs($0) < 1e-6 })
+    }
+
+    @MainActor @Test func eachTrackChoicePlaysExactlyItsTracksAndAChangeWhilePlayingKeepsThePosition() async throws {
+        let folder = try TemporaryFolder()
+        defer { folder.remove() }
+        let (library, meetingID, recordings) = try await playbackMeeting(folder, recordings: [(144_000, AudioTrack.allCases)])
+        #expect(MeetingPlayer(library: library, output: .offline).tracks == .auto)
+        for tracks in PlaybackTracks.allCases where tracks != .auto {
+            let expected = try await expectedMix(library, meetingID, recordings, tracks: tracks)
+            let player = try await startedPlayer(library, meetingID, recordings, tracks: tracks)
+            let output = try await player.renderOffline(frames: 48_000)
+            var worst: Float = 0
+            for i in 0..<48_000 { worst = max(worst, abs(output[i] - expected[i])) }
+            #expect(worst < 1e-5, "\(tracks)")
+        }
+        // Switching while playing drops the scheduled audio and continues from the same position.
+        let player = try await startedPlayer(library, meetingID, recordings)
+        _ = try await player.renderOffline(frames: 48_000)
+        player.tracks = .microphone
+        #expect(player.position == (try MediaTime(seconds: 1)))
+        await player.waitUntilStarted()
+        #expect(player.state == .playing)
+        let output = try await player.renderOffline(frames: 24_000)
+        let microphone = try await expectedMix(library, meetingID, recordings, tracks: .microphone)
+        var worst: Float = 0
+        for i in 0..<24_000 { worst = max(worst, abs(output[i] - microphone[48_000 + i])) }
+        #expect(worst < 1e-5)
+    }
+
+    @MainActor @Test func autoMicrophoneGainCoversOwnRepliesWithPaddingAndFades() {
+        let pad = Int(MeetingPlayer.ownSpeechPadding), fade = Int(MeetingPlayer.ownSpeechFade)
+        let gain = MeetingPlayer.microphoneGain(start: 0, count: 96_000, speech: [48_000..<52_000])
+        #expect(gain[0..<(48_000 - pad - fade)].allSatisfy { $0 == 0 })
+        #expect(gain[(48_000 - pad)..<(52_000 + pad)].allSatisfy { $0 == 1 })
+        #expect(gain[(52_000 + pad + fade)...].allSatisfy { $0 == 0 })
+        let rising = gain[(48_000 - pad - fade)..<(48_000 - pad)]
+        #expect(zip(rising, rising.dropFirst()).allSatisfy { $0 < $1 })
+        // A reply in the previous block still fades into this one.
+        let next = MeetingPlayer.microphoneGain(start: 52_000 + UInt64(pad), count: 2_000, speech: [48_000..<52_000])
+        #expect(next[0] > 0.99 && next[fade] == 0)
+    }
+
+    @MainActor @Test func autoPlaysTheMicrophoneOnlyDuringOwnReplies() async throws {
+        let folder = try TemporaryFolder()
+        defer { folder.remove() }
+        let (library, meetingID, recordings) = try await playbackMeeting(folder, recordings: [(144_000, AudioTrack.allCases)])
+        let system = try await expectedMix(library, meetingID, recordings, tracks: .system)
+        let both = try await expectedMix(library, meetingID, recordings, tracks: .both)
+        let player = MeetingPlayer(library: library, output: .offline)
+        player.load(meetingID: meetingID, recordings: recordings)
+        player.setOwnSpeech(meetingID: meetingID, intervals: [recordings[0].id: [
+            try MediaInterval(start: MediaTime(seconds: 1), end: MediaTime(seconds: 1.5))]])
+        player.tracks = .auto
+        player.play()
+        await player.waitUntilStarted()
+        let output = try await player.renderOffline(frames: 144_000)
+        func worst(_ range: Range<Int>, _ expected: [Float]) -> Float { range.map { abs(output[$0] - expected[$0]) }.max() ?? 0 }
+        let pad = Int(MeetingPlayer.ownSpeechPadding), fade = Int(MeetingPlayer.ownSpeechFade)
+        #expect(worst(0..<(48_000 - pad - fade), system) < 1e-5)
+        #expect(worst((48_000 - pad)..<(72_000 + pad), both) < 1e-5)
+        #expect(worst((72_000 + pad + fade)..<144_000, system) < 1e-5)
+        // Another meeting's replies never apply.
+        player.setOwnSpeech(meetingID: UUID(), intervals: [recordings[0].id: [try MediaInterval(start: .zero, end: MediaTime(seconds: 3))]])
+        #expect(player.ownSpeechRanges().isEmpty)
     }
 
     @MainActor @Test func speedChangesKeepSourceTimeAndCarryAcrossRecordingBoundaries() async throws {

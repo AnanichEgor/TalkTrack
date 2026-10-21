@@ -17,6 +17,24 @@ public enum PlaybackSpeed: Double, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Which captured tracks the player plays. Auto is the default: when the
+/// meeting played through speakers, the microphone holds a delayed room copy
+/// of the same sound, which makes the mix echo, so Auto adds the microphone
+/// only during the user's own replies (`MeetingPlayer.setOwnSpeech`).
+public enum PlaybackTracks: String, CaseIterable, Identifiable, Sendable {
+    case auto, system, both, microphone
+    public static let preferenceKey = "playbackTracks"
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .auto: "Auto"
+        case .system: "System Only"
+        case .both: "System and Microphone"
+        case .microphone: "Microphone Only"
+        }
+    }
+}
+
 public enum PlaybackState: Equatable, Sendable {
     /// No meeting, or a meeting with no recorded audio.
     case unavailable
@@ -58,7 +76,7 @@ public struct PlaybackRecordingInfo: Equatable, Sendable {
 
 /// The meeting player: one continuous timeline over separate recordings.
 ///
-/// Both tracks of a block are mixed into one buffer before scheduling, so they
+/// The chosen tracks of a block are mixed into one buffer before scheduling, so they
 /// cannot drift apart; one time-pitch unit applies the speed to the mix and
 /// keeps the pitch. Positions are always source time: the player node counts
 /// source frames upstream of the time-pitch unit. Decoding runs on the
@@ -86,6 +104,14 @@ public struct PlaybackRecordingInfo: Equatable, Sendable {
     public private(set) var damagedAudio: [DamagedAudio] = []
     public private(set) var checkingAudio = false
     public var speed: PlaybackSpeed = .normal { didSet { applySpeed() } }
+    /// Audio already scheduled holds the previous choice, so playing restarts at the position.
+    public var tracks: PlaybackTracks = .auto {
+        didSet { if tracks != oldValue { restartScheduled() } }
+    }
+
+    /// Microphone audio Auto plays around each own reply, and the fade beyond it.
+    static let ownSpeechPadding: UInt64 = 9_600
+    static let ownSpeechFade: UInt64 = 1_440
     /// Set while TalkTrack is capturing: playback would be recaptured.
     public var captureActive = false { didSet { if captureActive { pause() } } }
 
@@ -127,12 +153,50 @@ public struct PlaybackRecordingInfo: Equatable, Sendable {
     @ObservationIgnored private var configurationObserver: (any NSObjectProtocol)?
     @ObservationIgnored private var check: Task<Void, Never>?
     @ObservationIgnored private var checkGeneration = 0
+    /// The user's own replies by recording, in recording active time.
+    @ObservationIgnored private var ownSpeech: (meetingID: UUID, intervals: [UUID: [MediaInterval]])?
+    /// `ownSpeech` on the current timeline, in global frames; nil until computed.
+    @ObservationIgnored private var ownSpeechFrames: [Range<UInt64>]?
 
     public init(library: OpenedLibrary, output: Output = .device) {
         self.library = library; self.output = output
     }
 
     // MARK: Loading
+
+    /// The final transcript's microphone replies (`You`): publication already
+    /// left out microphone words quieter than the system track and replies the
+    /// system track also said, so these are the user's own speech, not echo.
+    public func setOwnSpeech(meetingID: UUID, intervals: [UUID: [MediaInterval]]) {
+        guard ownSpeech?.meetingID != meetingID || ownSpeech?.intervals != intervals else { return }
+        ownSpeech = (meetingID, intervals); ownSpeechFrames = nil
+        if tracks == .auto { restartScheduled() }
+    }
+
+    /// Global frame ranges of the own replies of the loaded meeting, sorted.
+    func ownSpeechRanges() -> [Range<UInt64>] {
+        if let ownSpeechFrames { return ownSpeechFrames }
+        guard let ownSpeech, ownSpeech.meetingID == meetingID, let timeline else { return [] }
+        var ranges: [Range<UInt64>] = []
+        for (recordingID, intervals) in ownSpeech.intervals {
+            for interval in intervals {
+                guard let start = try? timeline.globalTime(recordingID: recordingID, activeTime: interval.start),
+                      let end = try? timeline.globalTime(recordingID: recordingID, activeTime: interval.end) else { continue }
+                let lower = UInt64(start.microseconds) * 48 / 1_000, upper = UInt64(end.microseconds) * 48 / 1_000
+                if upper > lower { ranges.append(lower..<upper) }
+            }
+        }
+        ranges.sort { $0.lowerBound < $1.lowerBound }
+        ownSpeechFrames = ranges
+        return ranges
+    }
+
+    /// Scheduled audio holds the previous mix: playing continues from the same position.
+    private func restartScheduled() {
+        guard state == .playing else { return }
+        updatePosition()
+        seek(to: position)
+    }
 
     /// Shows `recordings` of a meeting. The same meeting keeps its position
     /// when recordings are appended; another meeting stops and starts at zero.
@@ -151,6 +215,7 @@ public struct PlaybackRecordingInfo: Equatable, Sendable {
         cancelCheck()
         if !sameMeeting { damagedAudio = [] }
         self.meetingID = meetingID; recordingsKey = usable; source = nil; exhausted = false; timeline = nil
+        ownSpeechFrames = nil
         unavailability = nil
         guard let meetingID, !usable.isEmpty else {
             duration = .zero; position = .zero; currentRecordingID = nil; state = .unavailable; damagedAudio = []
@@ -380,7 +445,9 @@ public struct PlaybackRecordingInfo: Equatable, Sendable {
             }
             guard generation == self.generation else { return }
             guard let block else { exhausted = true; return }
-            Self.schedule(Self.mix(block, format: format), on: node)
+            let gain = tracks == .auto ? Self.microphoneGain(start: block.globalStartFrame, count: block.frameCount,
+                                                            speech: ownSpeechRanges()) : nil
+            Self.schedule(Self.mix(block, tracks: tracks, microphoneGain: gain, format: format), on: node)
             scheduledEnd = block.globalStartFrame + UInt64(block.frameCount)
         }
     }
@@ -390,12 +457,38 @@ public struct PlaybackRecordingInfo: Equatable, Sendable {
         node.scheduleBuffer(buffer, completionHandler: nil)
     }
 
-    static func mix(_ block: PlaybackBlock, format: AVAudioFormat) -> AVAudioPCMBuffer {
+    /// Auto's microphone level per frame: 1 within a padded own reply, fading
+    /// linearly to 0 over `ownSpeechFade` frames outside it.
+    static func microphoneGain(start: UInt64, count: Int, speech: [Range<UInt64>]) -> [Float] {
+        var gain = [Float](repeating: 0, count: count)
+        let reach = ownSpeechPadding + ownSpeechFade, end = start + UInt64(count)
+        for range in speech where range.lowerBound < end + reach && range.upperBound + reach > start {
+            let lower = Int64(range.lowerBound) - Int64(ownSpeechPadding), upper = Int64(range.upperBound + ownSpeechPadding)
+            let fade = Int64(ownSpeechFade)
+            let first = max(0, lower - fade - Int64(start)), last = min(Int64(count), upper + fade - Int64(start))
+            guard first < last else { continue }
+            for i in Int(first)..<Int(last) {
+                let frame = Int64(start) + Int64(i)
+                let level: Float = frame < lower ? 1 - Float(lower - frame) / Float(fade)
+                    : frame >= upper ? 1 - Float(frame - upper + 1) / Float(fade) : 1
+                gain[i] = max(gain[i], level)
+            }
+        }
+        return gain
+    }
+
+    static func mix(_ block: PlaybackBlock, tracks: PlaybackTracks, microphoneGain: [Float]? = nil,
+                    format: AVAudioFormat) -> AVAudioPCMBuffer {
         let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(block.frameCount))!
         buffer.frameLength = AVAudioFrameCount(block.frameCount)
         let out = buffer.floatChannelData![0]
         for i in 0..<block.frameCount {
-            out[i] = max(-1, min(1, block.system[i] + block.microphone[i]))
+            switch tracks {
+            case .system: out[i] = block.system[i]
+            case .microphone: out[i] = block.microphone[i]
+            case .both: out[i] = max(-1, min(1, block.system[i] + block.microphone[i]))
+            case .auto: out[i] = max(-1, min(1, block.system[i] + block.microphone[i] * (microphoneGain?[i] ?? 0)))
+            }
         }
         return buffer
     }

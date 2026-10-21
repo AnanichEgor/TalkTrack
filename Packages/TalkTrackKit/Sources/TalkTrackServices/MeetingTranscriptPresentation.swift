@@ -70,6 +70,8 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
     /// A suggestion the user picked; otherwise the typed name selects a profile.
     public var selectedProfileID: UUID?
     public var replaceIncompatibleVoice = false
+    /// A voice of the day picked for an Unidentified reply instead of a name.
+    public private(set) var chosenVoiceID: UUID?
     public private(set) var savedVoices: [SavedVoice] = []
     public private(set) var profiles: [VoiceProfile] = []
     public private(set) var profileLoadError: String?
@@ -107,8 +109,42 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
     }
     public func clearProfileChoice() { selectedProfileID = nil; replaceIncompatibleVoice = false }
     public var selectedProfileNeedsNewSpeech: Bool { savedVoices.first { $0.id == effectiveProfileID }?.needsNewSpeech == true }
-    public var canSave: Bool { !isBusy && (try? SpeakerRenameError.validatedName(draftName)) != nil &&
-        (!rememberVoice || !selectedProfileNeedsNewSpeech || replaceIncompatibleVoice) }
+    public var canSave: Bool { !isBusy && (chosenVoiceID != nil || (try? SpeakerRenameError.validatedName(draftName)) != nil &&
+        (!rememberVoice || !selectedProfileNeedsNewSpeech || replaceIncompatibleVoice)) }
+
+    /// The sheet is open for an Unidentified reply: it names that reply only,
+    /// and its speech is too short or mixed to remember as a voice.
+    public var namingUnidentified: Bool {
+        guard let target = renameTarget else { return false }
+        return snapshot?.speakers.first { $0.id == target.speakerID }?.unidentified == true
+    }
+    public struct DayVoice: Equatable, Identifiable, Sendable {
+        public let id: UUID
+        public let label: String
+        /// The voice's name, when it has one; a named voice is chosen by name.
+        public let name: String?
+    }
+    /// The voices heard on the target's day, for saying who said an Unidentified reply.
+    public var dayVoices: [DayVoice] {
+        guard let target = renameTarget, let snapshot else { return [] }
+        let used = Set(snapshot.revisions.flatMap(\.segments).compactMap { segment -> UUID? in
+            if case .system(let id) = segment.speaker { id } else { nil }
+        })
+        return snapshot.speakers.filter { !$0.unidentified && used.contains($0.id) && $0.recordingDayIDs.contains(target.day.id) }
+            .sorted { $0.number < $1.number }
+            .map { speaker in
+                let name = snapshot.assignments.first { $0.daySpeakerID == speaker.id }?.name
+                return DayVoice(id: speaker.id, label: name ?? "Voice\(speaker.number)", name: name)
+            }
+    }
+    public func chooseVoice(_ voice: DayVoice) {
+        draftName = voice.label; selectedProfileID = nil; replaceIncompatibleVoice = false
+        chosenVoiceID = voice.name == nil ? voice.id : nil
+    }
+    /// Typing another name than the chosen voice's label names the reply instead.
+    public func draftNameChanged() {
+        if let id = chosenVoiceID, dayVoices.first(where: { $0.id == id })?.label != draftName { chosenVoiceID = nil }
+    }
 
     public func refresh() async {
         guard !isBusy else { return }
@@ -134,7 +170,8 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
     }
     private func fragmentName(_ ids: [UUID]) -> String? {
         let segments = snapshot?.revisions.flatMap(\.segments).filter { ids.contains($0.id) } ?? []
-        return snapshot?.anchors.filter { anchor in segments.contains(where: anchor.covers) }.max { $0.createdAt < $1.createdAt }?.name
+        return snapshot?.anchors.filter { anchor in anchor.voiceID == nil && segments.contains(where: anchor.covers) }
+            .max { $0.createdAt < $1.createdAt }?.name
     }
     private func begin(recordingID: UUID, segmentIDs: [UUID], scope requested: NamingScope?) async {
         guard !isBusy, renameTarget == nil, let first = segmentIDs.first else { return }
@@ -143,8 +180,10 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
             let target = try await store.speakerRenameTarget(meetingID: meetingID, recordingID: recordingID, segmentID: first)
             let named = fragmentName(segmentIDs)
             replySegmentIDs = segmentIDs
-            scope = requested ?? .reply
-            draftName = (scope == .reply ? named : nil) ?? target.name ?? ""; rememberVoice = true; selectedProfileID = nil
+            let unidentified = snapshot?.speakers.first { $0.id == target.speakerID }?.unidentified == true
+            scope = unidentified ? .reply : requested ?? .reply
+            draftName = (scope == .reply ? named : nil) ?? target.name ?? ""; rememberVoice = !unidentified; selectedProfileID = nil
+            chosenVoiceID = nil
             replaceIncompatibleVoice = false; savedVoices = []
             profiles = []; profileLoadError = nil; noticeMessage = nil
             if let enrollment {
@@ -194,7 +233,7 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
     public func cancelRename() {
         guard !isBusy else { return }
         renameTarget = nil; replySegmentIDs = []; scope = .voice; draftName = ""; renameError = nil; rememberVoice = true; selectedProfileID = nil
-        replaceIncompatibleVoice = false
+        replaceIncompatibleVoice = false; chosenVoiceID = nil
     }
     public func cancelRemembering() { enrollmentTask?.cancel() }
     public func saveRename() async {
@@ -202,7 +241,10 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
         isBusy = true; defer { isBusy = false }
         do {
             let place = fragmentSegmentIDs == nil ? "this meeting day" : "this reply"
-            if rememberVoice {
+            if let voice = chosenVoiceID, let ids = fragmentSegmentIDs {
+                snapshot = try await store.assignFragment(meetingID: meetingID, recordingID: target.recordingID, segmentIDs: ids, voiceID: voice)
+                noticeMessage = nil
+            } else if rememberVoice {
                 let saved: ConfirmedSpeakerRename
                 if let ids = fragmentSegmentIDs {
                     saved = try await store.nameFragmentWithConfirmation(meetingID: meetingID, recordingID: target.recordingID, segmentIDs: ids, name: draftName)
@@ -239,7 +281,7 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
                 noticeMessage = nil
             }
             renameTarget = nil; replySegmentIDs = []; scope = .voice; draftName = ""; renameError = nil; errorMessage = nil
-            rememberVoice = true; selectedProfileID = nil
+            rememberVoice = true; selectedProfileID = nil; chosenVoiceID = nil
             replaceIncompatibleVoice = false
         } catch {
             renameError = error.localizedDescription

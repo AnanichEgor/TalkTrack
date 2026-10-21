@@ -39,9 +39,26 @@ struct MeetingDetailView: View {
                       recordingElsewhere: workspace.activeMeeting.map { $0.id != meeting.id } ?? false)
         }
         .navigationTitle("TalkTrack")
+        // Auto playback adds the microphone during the final transcript's own replies.
+        .task(id: OwnSpeechKey(meetingID: meeting.id, recordings: workspace.recordings, status: workspace.selectedStatus)) {
+            await loadOwnSpeech()
+        }
         .focusedSceneValue(\.meetingActions, MeetingActions(
             meetingID: meeting.id, tab: $tab, rename: { sheet = .edit(meeting) },
             delete: { if workspace.canDelete(meeting.id) { deleting = meeting } }, canDelete: workspace.canDelete(meeting.id)))
+    }
+
+    private struct OwnSpeechKey: Equatable {
+        let meetingID: UUID; let recordings: [Recording]; let status: MeetingProcessingStatus?
+    }
+
+    private func loadOwnSpeech() async {
+        guard let snapshot = try? await services.store.meetingTranscript(meetingID: meeting.id) else { return }
+        var intervals: [UUID: [MediaInterval]] = [:]
+        for revision in snapshot.revisions where revision.kind == .final {
+            intervals[revision.recordingID] = revision.segments.filter { $0.track == .microphone }.map(\.interval)
+        }
+        services.player.setOwnSpeech(meetingID: meeting.id, intervals: intervals)
     }
 
     private var header: some View {
@@ -367,6 +384,7 @@ struct PlayerBar: View {
     let recordingElsewhere: Bool
     /// The slider value while the user drags; the player seeks on release.
     @State private var scrub: Double?
+    @AppStorage(PlaybackTracks.preferenceKey) private var tracks = PlaybackTracks.auto.rawValue
 
     private struct Marker: Identifiable { let id: UUID; let fraction: Double; let label: String? }
 
@@ -421,6 +439,20 @@ struct PlayerBar: View {
                 }
                 // After the overlay, so the slider itself carries the tooltip.
                 .help(total == 0 || player.captureActive ? playHelp : "Drag to move through the meeting")
+            Menu {
+                Picker("Play", selection: $tracks) {
+                    ForEach(PlaybackTracks.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: Self.tracksIcon(player.tracks))
+            }
+            .fixedSize()
+            .disabled(total == 0)
+            .help(total == 0 ? "Track choice is available once the meeting has recorded audio"
+                  : player.tracks == .auto ? "Tracks to play: Auto. The microphone is added only during your own replies in the final transcript, so speaker echo is left out."
+                  : "Tracks to play: \(player.tracks.label). When the meeting played through speakers, the microphone repeats it with room echo.")
+            .accessibilityLabel("Tracks to play: \(player.tracks.label)")
             Menu(player.speed.label) {
                 Picker("Playback speed", selection: Binding(get: { player.speed }, set: { player.speed = $0 })) {
                     ForEach(PlaybackSpeed.allCases) { Text($0.label).tag($0) }
@@ -436,10 +468,20 @@ struct PlayerBar: View {
         }
         .padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 12)
         .background(.bar)
+        .onChange(of: tracks, initial: true) { player.tracks = PlaybackTracks(rawValue: tracks) ?? .auto }
         .onChange(of: recordings, initial: true) { player.load(meetingID: meetingID, recordings: recordings) }
         .onChange(of: meetingID) { player.load(meetingID: meetingID, recordings: recordings) }
         .onChange(of: recordingElsewhere, initial: true) { player.captureActive = recordingElsewhere || isRecordingHere }
         .onChange(of: isRecordingHere) { player.captureActive = recordingElsewhere || isRecordingHere }
+    }
+
+    static func tracksIcon(_ tracks: PlaybackTracks) -> String {
+        switch tracks {
+        case .auto: "wand.and.stars"
+        case .system: "speaker.wave.2"
+        case .both: "waveform.and.mic"
+        case .microphone: "mic"
+        }
     }
 
     private var isRecordingHere: Bool {

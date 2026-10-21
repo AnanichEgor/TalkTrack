@@ -385,10 +385,9 @@ public actor FinalTranscriptionPipeline {
                 speakerCandidates: candidates, originalText: group.map(\.text).joined(separator: " ")))
             group.removeAll(keepingCapacity: true)
         }
+        let activity = speakers.map { ($0.speakerID, $0.active) }
         for word in words {
-            let current = window.track == .microphone ? [] : Set(speakers.filter {
-                $0.active.start < word.active.end && word.active.start < $0.active.end
-            }.map(\.speakerID)).sorted { $0.uuidString < $1.uuidString }
+            let current = window.track == .microphone ? [] : Self.wordSpeakers(word.active, activity).resolved
             if !group.isEmpty, current != candidates || group.count >= 32 ||
                 group.map(\.text).joined(separator: " ").utf8.count + word.text.utf8.count > 512 ||
                 word.active.start.microseconds - group.last!.active.end.microseconds > 2_000_000 {
@@ -398,6 +397,26 @@ public actor FinalTranscriptionPipeline {
         }
         try flush()
         return result
+    }
+
+    /// A word overlapping two speakers' activity belongs to the one covering
+    /// at least this much more of it. Words at a turn change of the user's
+    /// two-person test measured 0.9–1.0 for the speaker and 0.03–0.42 for the
+    /// other; overlapping speech stayed within 0.3 (0.96/0.95, 1.0/1.0).
+    static let wordDominance = 0.3
+
+    /// The speakers active during a word (sorted), and the speaker it belongs
+    /// to when one covers it by `wordDominance` more than any other.
+    static func wordSpeakers(_ word: MediaInterval, _ activity: [(UUID, MediaInterval)]) -> (all: [UUID], resolved: [UUID]) {
+        var covered: [UUID: Int64] = [:]
+        for (id, active) in activity where active.start < word.end && word.start < active.end {
+            covered[id, default: 0] += min(active.end, word.end).microseconds - max(active.start, word.start).microseconds
+        }
+        let all = covered.keys.sorted { $0.uuidString < $1.uuidString }
+        guard all.count > 1, word.duration.microseconds > 0 else { return (all, all) }
+        let shares = covered.map { (id: $0.key, share: Double($0.value) / Double(word.duration.microseconds)) }
+            .sorted { $0.share > $1.share }
+        return (all, shares[0].share - shares[1].share >= wordDominance ? [shares[0].id] : all)
     }
 
     static func validateCoverage(_ checkpoint: FinalTranscriptionCheckpoint, recording: Recording,
@@ -454,10 +473,11 @@ public actor FinalTranscriptionPipeline {
                           block.originalText == block.words.map(\.text).joined(separator: " "),
                           block.words.allSatisfy({ $0.active.duration > .zero && $0.active.start >= window.active.start && $0.active.end <= window.active.end }),
                           track != .microphone || block.speakerCandidates.isEmpty,
+                          // Checkpoints from before `wordDominance` keep every active speaker.
                           block.words.allSatisfy({ word in
-                              track == .microphone || Set(block.speakerCandidates) == Set(window.speakers!.filter {
-                                  $0.active.start < word.active.end && word.active.start < $0.active.end
-                              }.map(\.speakerID))
+                              guard track != .microphone else { return true }
+                              let speakers = wordSpeakers(word.active, window.speakers!.map { ($0.speakerID, $0.active) })
+                              return Set(block.speakerCandidates) == Set(speakers.resolved) || Set(block.speakerCandidates) == Set(speakers.all)
                           }),
                           !requireCorrection || block.correctedText.map({ IndexedSpellingCorrection.safe(block.originalText, $0) }) == true else {
                         throw FinalTranscriptionError.invalidCheckpoint
