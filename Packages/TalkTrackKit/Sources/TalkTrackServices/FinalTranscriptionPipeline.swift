@@ -155,15 +155,22 @@ public actor FinalTranscriptionPipeline {
         let diarization = try SystemDiarizationSession(meetingID: recording.meetingID,
             segmentation: models[.segmentation]!, embedding: models[.embedding]!,
             inference: inference, checkpoint: checkpoint.speakerCheckpoint)
-        // One native ten-second PCM window exists at a time. A resumed job
-        // revalidates the AAC receipts but skips already-checkpointed inference.
+        // At most `2 * asrBatchSize` ten-second PCM windows are read ahead. A resumed
+        // job revalidates the AAC receipts but skips already-checkpointed inference.
         var saved = ContinuousClock.now
         for track in AudioTrack.allCases {
             let reader = try await RecordingAudioWindowReader.open(library: library, recording: recording, track: track)
             do {
                 var eventIndex = 0
-                while let event = try await reader.next() {
+                // Windows read ahead for one ASR batch, and their texts by position.
+                var lookahead: [AudioWindowReadEvent] = []
+                var recognized: [Int: FinalASRText] = [:]
+                while true {
+                    let event: AudioWindowReadEvent
+                    if !lookahead.isEmpty { event = lookahead.removeFirst() }
+                    else if let next = try await reader.next() { event = next } else { break }
                     try Task.checkCancellation()
+                    let position = eventIndex
                     let candidate = makeWindow(event)
                     let existing = checkpoint.windows.indices.filter { checkpoint.windows[$0].track == track }
                     let index: Int
@@ -200,8 +207,32 @@ public actor FinalTranscriptionPipeline {
                         }
                         if checkpoint.windows[index].asr == nil {
                             try await persist(checkpoint, since: &saved, stage: .transcribing)
-                            var text = try await inference.finalText(models[.finalASR]!, samples: window.samples,
-                                language: job.snapshot.settings.meetingLanguage)
+                            if recognized[position] == nil {
+                                // This window and the next ones that need ASR, decoded together.
+                                var batch = [(position, window.samples)]
+                                func add(_ ahead: AudioWindowReadEvent, at aheadPosition: Int) {
+                                    guard batch.count < Self.asrBatchSize, recognized[aheadPosition] == nil,
+                                          case .audio(let next) = ahead else { return }
+                                    let existing = checkpoint.windows.indices.filter { checkpoint.windows[$0].track == track }
+                                    if aheadPosition < existing.count {
+                                        let earlier = checkpoint.windows[existing[aheadPosition]]
+                                        guard !earlier.complete, earlier.asr == nil else { return }
+                                    }
+                                    if track == .microphone, let levels = checkpoint.systemLevels,
+                                       MicrophoneGate.louderFrames(next.samples, start: next.active.start, system: levels).isEmpty { return }
+                                    batch.append((aheadPosition, next.samples))
+                                }
+                                for (offset, ahead) in lookahead.enumerated() { add(ahead, at: position + 1 + offset) }
+                                while batch.count < Self.asrBatchSize, lookahead.count < 2 * Self.asrBatchSize,
+                                      let ahead = try await reader.next() {
+                                    lookahead.append(ahead); add(ahead, at: position + lookahead.count)
+                                }
+                                let texts = try await inference.finalTexts(models[.finalASR]!, windows: batch.map(\.1),
+                                    language: job.snapshot.settings.meetingLanguage)
+                                guard texts.count == batch.count else { throw FinalTranscriptionError.invalidJob }
+                                for ((aheadPosition, _), text) in zip(batch, texts) { recognized[aheadPosition] = text }
+                            }
+                            var text = recognized.removeValue(forKey: position)!
                             // Auto detection can misidentify short or quiet audio (a 1.8 s
                             // tail was read as Portuguese). Meetings are English or Russian:
                             // transcribe again in the track's established language.
@@ -293,6 +324,11 @@ public actor FinalTranscriptionPipeline {
         try await store.saveFinalCheckpoint(checkpoint, stage: .validating)
         return checkpoint
     }
+
+    /// Windows recognized in one ASR decoder batch. On 60 Daily 5 windows the
+    /// text was identical at 1, 2, 4 and 8, taking 19.3, 13.5, 10.8 and 9.9 s
+    /// (peak MLX 3.27 GiB up to 4, 3.51 GiB at 8).
+    static let asrBatchSize = 4
 
     /// Window progress is saved at most this often. Each save rewrites the
     /// whole checkpoint (about 2 MB for a 22-minute call, most of it speaker

@@ -60,6 +60,16 @@ public protocol FinalTranscriptionInference: SystemSpeakerInference {
     func finalText(_ model: ModelSnapshot, samples: [Float], language: MeetingLanguage) async throws -> FinalASRText
     func finalAlignment(_ model: ModelSnapshot, samples: [Float], text: String, language: MeetingLanguage) async throws -> [FinalAlignmentItem]
     func correctIndexed(_ model: ModelSnapshot, settings: ProcessingSettings, blocks: [IndexedCorrection]) async throws -> FinalCorrectionResponse
+    /// Several windows at once, each exactly as `finalText` would recognize it.
+    func finalTexts(_ model: ModelSnapshot, windows: [[Float]], language: MeetingLanguage) async throws -> [FinalASRText]
+}
+
+extension FinalTranscriptionInference {
+    public func finalTexts(_ model: ModelSnapshot, windows: [[Float]], language: MeetingLanguage) async throws -> [FinalASRText] {
+        var results: [FinalASRText] = []
+        for samples in windows { results.append(try await finalText(model, samples: samples, language: language)) }
+        return results
+    }
 }
 
 public enum FinalTranscriptionError: Error, Equatable, LocalizedError, Sendable {

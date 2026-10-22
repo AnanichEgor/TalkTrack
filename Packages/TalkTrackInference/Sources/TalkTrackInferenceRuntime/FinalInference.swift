@@ -15,21 +15,34 @@ extension InferenceRuntime: FinalTranscriptionInference {
     }
 
     public func finalText(_ model: ModelSnapshot, samples: [Float], language: MeetingLanguage) async throws -> FinalASRText {
+        try await finalTexts(model, windows: [samples], language: language)[0]
+    }
+
+    /// Windows are decoded together in one batch; each text is identical to
+    /// recognizing the window alone (Daily 5, 60 windows at batch 2/4/8).
+    public func finalTexts(_ model: ModelSnapshot, windows: [[Float]], language: MeetingLanguage) async throws -> [FinalASRText] {
         guard model.role == .finalASR else { throw FinalTranscriptionError.invalidJob }
         // Only exact digital silence skips ASR; quiet speech is never classified
         // as a source gap or removed by a volume threshold.
-        guard (1600...160_000).contains(samples.count), samples.allSatisfy({ $0.isFinite && abs($0) <= 1 }) else {
-            throw FinalTranscriptionError.invalidJob
+        guard windows.allSatisfy({ samples in
+            (1600...160_000).contains(samples.count) && samples.allSatisfy({ $0.isFinite && abs($0) <= 1 })
+        }) else { throw FinalTranscriptionError.invalidJob }
+        let spoken = windows.indices.filter { windows[$0].contains { $0 != 0 } }
+        var results = windows.map { _ in FinalASRText(text: "", language: language) }
+        guard !spoken.isEmpty else { return results }
+        let forced = language == .auto ? nil : language == .english ? "English" : "Russian"
+        let recognized = spoken.count == 1
+            ? [try await transcribe(model, samples: windows[spoken[0]], language: forced, maxTokens: 1024, allowEmpty: true)]
+            : try await transcribeBatch(model, windows: spoken.map { windows[$0] }, language: forced, maxTokens: 1024, allowEmpty: true)
+        for (index, result) in zip(spoken, recognized) {
+            let detected: MeetingLanguage = language != .auto ? language :
+                result.language?.lowercased() == "russian" ? .russian :
+                result.language?.lowercased() == "english" ? .english : .auto
+            // `.auto` reports an undetected or unsupported language; the pipeline
+            // transcribes the window again in the track's established language.
+            results[index] = FinalASRText(text: result.text, language: detected)
         }
-        if samples.allSatisfy({ $0 == 0 }) { return FinalASRText(text: "", language: language) }
-        let result = try await transcribe(model, samples: samples, language: language == .auto ? nil : language == .english ? "English" : "Russian",
-            maxTokens: 1024, allowEmpty: true)
-        let detected: MeetingLanguage = language != .auto ? language :
-            result.language?.lowercased() == "russian" ? .russian :
-            result.language?.lowercased() == "english" ? .english : .auto
-        // `.auto` reports an undetected or unsupported language; the pipeline
-        // transcribes the window again in the track's established language.
-        return FinalASRText(text: result.text, language: detected)
+        return results
     }
 
     public func finalAlignment(_ model: ModelSnapshot, samples: [Float], text: String,

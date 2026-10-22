@@ -19,6 +19,12 @@ actor FinalProbe: FinalTranscriptionInference {
     /// What the microphone track says; nil repeats `text`, which is an echo of the system track.
     var microphoneText: String?
     var maximumFrames = 0
+    /// Windows per `finalTexts` call, in order.
+    var batches: [Int] = []
+    func finalTexts(_ model: ModelSnapshot, windows: [[Float]], language: MeetingLanguage) -> [FinalASRText] {
+        batches.append(windows.count)
+        return windows.map { finalText(model, samples: $0, language: language) }
+    }
     func unavailableFinalModels(_ models: [ModelSnapshot]) -> [ModelRole] { missing }
     func configure(missing: [ModelRole] = [], fail: Bool = false, malformed: Bool = false,
                    unsafeResult: Bool = false, partition: Bool = false, hold: Bool = false, text: String? = nil,
@@ -366,6 +372,22 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
         #expect(writes <= 4)
         try db.execute("DROP TRIGGER count_final")
         try await fixture.store.close()
+    }
+
+    @Test func windowsNeedingRecognitionAreDecodedInBatches() async throws {
+        for quiet in [false, true] {
+            let folder = try TemporaryFolder(); defer { folder.remove() }
+            let fixture = try await finalFixture(folder, seconds: 25, spelling: false, quietMicrophone: quiet)
+            let probe = FinalProbe()
+            let result = try await FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe)
+                .run(jobID: fixture.job.id)
+            #expect(result.readyForPublication && result.windows.count == 6)
+            // Three windows per track; a microphone quieter than the system track
+            // is never read into a batch.
+            #expect(await probe.batches == (quiet ? [3] : [3, 3]))
+            #expect(result.windows.filter { $0.track == .microphone }.allSatisfy { ($0.asr?.text.isEmpty ?? false) == quiet })
+            try await fixture.store.close()
+        }
     }
 
     @Test func checkpointAndStageWriteRollBackTogetherOnInjectedDatabaseFailure() async throws {

@@ -200,6 +200,14 @@ public final class InferenceRuntime: ModelInstallationControl, DictationInferenc
         }
     }
 
+    public func transcribeBatch(_ model: ModelSnapshot, windows: [[Float]], language: String?,
+        maxTokens: Int = 512, allowEmpty: Bool = false) async throws -> [QwenTranscription] {
+        let manifest = try resolve(model)
+        return try await speech(manifest) { adapter in
+            try await adapter.transcribeBatch(windows, language: language, maxTokens: maxTokens, allowEmpty: allowEmpty)
+        }
+    }
+
     public func align(_ model: ModelSnapshot, samples: [Float], text: String,
                       language: String) async throws -> [ForcedAlignItem] {
         let manifest = try resolve(model)

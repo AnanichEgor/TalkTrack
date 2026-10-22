@@ -796,7 +796,15 @@ class Qwen3ASRTextAttention: Module {
 
         // Apply RoPE using the pre-update cache offset, matching the previous
         // manual cache.update + scaledDotProductAttention sequence.
-        if let cache = cache {
+        if let cache = cache, B > 1, L == 1 {
+            // Fast RoPE gives a [B, H, 1, D] input consecutive positions along
+            // the batch (row 1 was rotated as offset + 1), so a batched decode
+            // step rotates all rows as one row of B·H heads at the same offset.
+            queries = rope(queries.reshaped(1, B * numHeads, 1, headDim), offset: cache.offset)
+                .reshaped(B, numHeads, 1, headDim)
+            keys = rope(keys.reshaped(1, B * numKvHeads, 1, headDim), offset: cache.offset)
+                .reshaped(B, numKvHeads, 1, headDim)
+        } else if let cache = cache {
             queries = rope(queries, offset: cache.offset)
             keys = rope(keys, offset: cache.offset)
         } else {
@@ -1355,6 +1363,124 @@ public class Qwen3ASRModel: Module {
         let parsed = parseGeneratedChunk(decodedText, forcedLanguage: language)
 
         return (parsed.text, parsed.language, promptTokenCount, generatedTokens.count)
+    }
+
+    // MARK: - Batched Generation
+
+    /// Greedy transcription of several clips (each at most `chunkDuration`) in
+    /// one decoder batch. Clips are grouped by prompt length so rows never need
+    /// padding or masks; every row follows exactly the single-clip algorithm
+    /// (first token unpenalized, per-row repetition penalty and stop), and a
+    /// finished row keeps decoding EOS until the whole group is done.
+    public func generateBatch(
+        audios: [MLXArray],
+        maxTokens: Int,
+        context: String = "",
+        language: String? = nil,
+        repetitionPenalty: Float = 1.0,
+        repetitionContextSize: Int = 32
+    ) throws -> [(text: String, language: String?, generationTokens: Int)] {
+        guard let tokenizer = tokenizer else {
+            throw STTError.modelNotInitialized("Tokenizer not loaded")
+        }
+        let forcedLanguage = normalizeLanguageName(language)
+        var rows: [(ids: MLXArray, embeds: MLXArray)] = []
+        for audio in audios {
+            try Task.checkCancellation()
+            let (inputFeatures, featureAttentionMask, numAudioTokens) = preprocessAudio(audio)
+            let inputIds = try buildPrompt(numAudioTokens: numAudioTokens, context: context, language: forcedLanguage)
+            let audioFeatures = getAudioFeatures(inputFeatures, featureAttentionMask: featureAttentionMask)
+            eval(audioFeatures)
+            let embeds = model.embedTokens(inputIds)
+            let merged = mergeAudioFeatures(inputsEmbeds: embeds, audioFeatures: audioFeatures.asType(embeds.dtype), inputIds: inputIds)
+            eval(merged)
+            rows.append((inputIds, merged))
+        }
+        var results = [(text: String, language: String?, generationTokens: Int)](repeating: ("", nil, 0), count: audios.count)
+        let groups = Dictionary(grouping: rows.indices) { rows[$0].ids.dim(1) }
+        for (_, members) in groups.sorted(by: { $0.key < $1.key }) {
+            let tokens = try decodeBatch(
+                inputIds: MLX.concatenated(members.map { rows[$0].ids }, axis: 0),
+                inputsEmbeds: MLX.concatenated(members.map { rows[$0].embeds }, axis: 0),
+                maxTokens: maxTokens, repetitionPenalty: repetitionPenalty, repetitionContextSize: repetitionContextSize)
+            for (row, index) in members.enumerated() {
+                let parsed = parseGeneratedChunk(tokenizer.decode(tokens: tokens[row]), forcedLanguage: forcedLanguage)
+                results[index] = (parsed.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                  Self.mergeLanguages([parsed.language]), tokens[row].count)
+            }
+            Memory.clearCache()
+        }
+        return results
+    }
+
+    private func decodeBatch(
+        inputIds: MLXArray, inputsEmbeds: MLXArray, maxTokens: Int,
+        repetitionPenalty: Float, repetitionContextSize: Int
+    ) throws -> [[Int]] {
+        let eosTokenIds = [151645, 151643]
+        let prefillStepSize = 2048
+        let batch = inputIds.dim(0)
+        let cache = makeCache()
+
+        let totalTokens = inputIds.dim(1)
+        var processedTokens = 0
+        while totalTokens - processedTokens > 1 {
+            let n = min(prefillStepSize, (totalTokens - processedTokens) - 1)
+            let chunkLogits = callAsFunction(
+                inputIds: inputIds[0..., processedTokens..<(processedTokens + n)],
+                inputEmbeddings: inputsEmbeds[0..., processedTokens..<(processedTokens + n), 0...],
+                cache: cache)
+            eval(chunkLogits)
+            Memory.clearCache()
+            processedTokens += n
+        }
+        let firstLogits = callAsFunction(
+            inputIds: inputIds[0..., processedTokens..<totalTokens],
+            inputEmbeddings: inputsEmbeds[0..., processedTokens..<totalTokens, 0...],
+            cache: cache)
+        var prevTokenArr = firstLogits[0..., -1, 0...].argMax(axis: -1)
+        asyncEval(prevTokenArr)
+
+        var generated = [[Int]](repeating: [], count: batch)
+        var done = [Bool](repeating: false, count: batch)
+        for tokenIndex in 0..<maxTokens {
+            try Task.checkCancellation()
+            let previous = prevTokenArr.asArray(Int32.self).map(Int.init)
+            for row in 0..<batch where !done[row] {
+                if eosTokenIds.contains(previous[row]) { done[row] = true; continue }
+                generated[row].append(previous[row])
+                if repetitionPenalty == 1.0 && generated[row].count >= 24 && Set(generated[row].suffix(24)).count <= 3 {
+                    done[row] = true
+                }
+            }
+            if done.allSatisfy({ $0 }) || tokenIndex == maxTokens - 1 { break }
+
+            let feed = (0..<batch).map { Int32(done[$0] ? eosTokenIds[0] : previous[$0]) }
+            let nextLogits = callAsFunction(inputIds: MLXArray(feed).reshaped(batch, 1), cache: cache)
+            var nextLast = nextLogits[0..., -1, 0...]
+            if repetitionPenalty != 1.0 {
+                let contextSize = max(1, repetitionContextSize)
+                var rowIndices: [Int32] = [], tokenIndices: [Int32] = []
+                for row in 0..<batch where !done[row] {
+                    for token in generated[row].suffix(contextSize) {
+                        rowIndices.append(Int32(row)); tokenIndices.append(Int32(token))
+                    }
+                }
+                if !rowIndices.isEmpty {
+                    let rowsArr = MLXArray(rowIndices), tokensArr = MLXArray(tokenIndices)
+                    let logitsForRecent = nextLast[rowsArr, tokensArr]
+                    let penalty = MLXArray(repetitionPenalty)
+                    nextLast[rowsArr, tokensArr] = MLX.where(
+                        logitsForRecent .> 0, logitsForRecent / penalty, logitsForRecent * penalty)
+                }
+            }
+            prevTokenArr = nextLast.argMax(axis: -1)
+            asyncEval(prevTokenArr)
+            if tokenIndex > 0 && tokenIndex % 256 == 0 {
+                Memory.clearCache()
+            }
+        }
+        return generated
     }
 
     // MARK: - Generation

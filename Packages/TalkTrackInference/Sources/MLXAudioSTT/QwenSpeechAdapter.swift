@@ -71,6 +71,26 @@ public actor QwenSpeechAdapter {
         return QwenTranscription(text: output.text, language: output.language, generatedTokens: output.generationTokens)
     }
 
+    /// Several windows in one decoder batch, with the same checks per window as
+    /// `transcribe`. Windows longer than one 30 s chunk are refused.
+    public func transcribeBatch(_ windows: [[Float]], language: String? = nil, maxTokens: Int = 512,
+                                allowEmpty: Bool = false) throws -> [QwenTranscription] {
+        for samples in windows {
+            try validate(samples)
+            guard samples.count <= 30 * 16000 else { throw QwenAdapterError.invalidOutput }
+        }
+        guard !loading, let asr else { throw QwenAdapterError.notLoaded }
+        guard !windows.isEmpty, language == nil || asr.config.supportLanguages.contains(language!),
+              (1...2048).contains(maxTokens) else { throw QwenAdapterError.invalidOutput }
+        let outputs = try asr.generateBatch(audios: windows.map { MLXArray($0) }, maxTokens: maxTokens,
+            language: language, repetitionPenalty: 1.1)
+        try Task.checkCancellation()
+        return try outputs.map { output in
+            guard allowEmpty || !output.text.isEmpty, output.generationTokens < maxTokens else { throw QwenAdapterError.invalidOutput }
+            return QwenTranscription(text: output.text, language: output.language, generatedTokens: output.generationTokens)
+        }
+    }
+
     public func align(samples: [Float], text: String, language: String) throws -> [ForcedAlignItem] {
         try validate(samples)
         guard !loading, let aligner else { throw QwenAdapterError.notLoaded }
