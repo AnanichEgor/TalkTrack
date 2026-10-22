@@ -62,6 +62,17 @@ struct WorkspaceServices {
     private(set) var dictation: DictationModel?
     /// Captured from the menu-bar label, so the dictation HUD can open Settings.
     @ObservationIgnored var openSettingsAction: OpenSettingsAction?
+    /// Captured from the menu-bar label, so a click on the Dock icon can open the main window.
+    @ObservationIgnored var openMainWindowAction: (() -> Void)?
+    /// Settings ▸ General: the Dock icon makes TalkTrack easy to find among many
+    /// open apps. On by default; off leaves only the menu-bar icon.
+    var showsDockIcon = UserDefaults.standard.object(forKey: AppModel.showsDockIconKey) as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(showsDockIcon, forKey: Self.showsDockIconKey)
+            applyDockIcon()
+        }
+    }
+    static let showsDockIconKey = "showsDockIcon"
     private(set) var libraryMove: LibraryMove = .idle
     /// What launch recovery did with an unfinished move, shown in Settings.
     private(set) var moveRecovery: String?
@@ -93,6 +104,12 @@ struct WorkspaceServices {
             }
             self.dictation = dictation
         }
+    }
+
+    /// Leaving the Dock deactivates the app; Settings, where the switch is, stays in front.
+    func applyDockIcon() {
+        NSApp.setActivationPolicy(showsDockIcon ? .regular : .accessory)
+        if let settingsWindow, settingsWindow.isVisible { present { [weak self] in self?.settingsWindow } }
     }
 
     /// Opens Settings in front of every other window. TalkTrack is a menu-bar

@@ -112,16 +112,20 @@ private struct MenuBarContent: View {
     }
 }
 
-/// The menu-bar icon. It is always rendered, so it also hands the Settings
-/// opener to the model for the dictation HUD's Open Settings action.
+/// The menu-bar icon. It is always rendered, so it also hands the Settings and
+/// main-window openers to the model (dictation HUD, Dock icon clicks).
 private struct MenuBarLabel: View {
     let model: AppModel
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Image(systemName: model.menuBarSymbol)
             .accessibilityLabel(model.menuBarLabel)
-            .onAppear { model.openSettingsAction = openSettings }
+            .onAppear {
+                model.openSettingsAction = openSettings
+                model.openMainWindowAction = { openWindow(id: "main") }
+            }
     }
 }
 
@@ -132,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Closing the window keeps the app, any recording and processing running.
     func applicationDidFinishLaunching(_ notification: Notification) {
+        model.applyDockIcon()
         #if DEBUG && TALKTRACK_DEVTOOLS
         ReviewSupport.model = model
         ReviewSupport.install()
@@ -156,6 +161,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .alertSecondButtonReturn: NSWorkspace.shared.open(update.pageURL)
         default: break
         }
+    }
+
+    /// A click on the Dock icon with no window open shows the main window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            model.openMainWindowAction?()
+            model.showMainWindow()
+        }
+        return true
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

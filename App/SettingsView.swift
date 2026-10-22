@@ -130,6 +130,11 @@ struct StorageSettings: View {
     var body: some View {
         Form {
             PermissionsSection(dictation: model.dictation)
+            Section("Appearance") {
+                Toggle("Show in Dock", isOn: Binding(get: { model.showsDockIcon }, set: { model.showsDockIcon = $0 }))
+                Text("The TalkTrack icon stays in the Dock and the app switcher (⌘Tab), so it is easy to find among other apps. When off, TalkTrack is only in the menu bar.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             Section("Meeting Library") {
                 LabeledContent("Location") {
                     if let libraryRoot { PathText(url: libraryRoot) } else { Text("Not opened") }
