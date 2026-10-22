@@ -27,8 +27,14 @@ public actor FinalTranscriptionPipeline {
         settings.spellingCorrection ? missing : missing.filter { $0 != .spelling }
     }
 
+    private let checkpointInterval: Duration
+
     public init(store: SessionStore, library: OpenedLibrary, inference: any FinalTranscriptionInference) {
-        self.store = store; self.library = library; self.inference = inference
+        self.init(store: store, library: library, inference: inference, checkpointInterval: Self.checkpointInterval)
+    }
+
+    init(store: SessionStore, library: OpenedLibrary, inference: any FinalTranscriptionInference, checkpointInterval: Duration) {
+        self.store = store; self.library = library; self.inference = inference; self.checkpointInterval = checkpointInterval
     }
 
     /// Application processing entry point. Staging remains independently
@@ -151,6 +157,7 @@ public actor FinalTranscriptionPipeline {
             inference: inference, checkpoint: checkpoint.speakerCheckpoint)
         // One native ten-second PCM window exists at a time. A resumed job
         // revalidates the AAC receipts but skips already-checkpointed inference.
+        var saved = ContinuousClock.now
         for track in AudioTrack.allCases {
             let reader = try await RecordingAudioWindowReader.open(library: library, recording: recording, track: track)
             do {
@@ -165,7 +172,7 @@ public actor FinalTranscriptionPipeline {
                         guard sameSource(checkpoint.windows[index], candidate) else { throw FinalTranscriptionError.invalidCheckpoint }
                     } else {
                         checkpoint.windows.append(candidate); index = checkpoint.windows.count - 1
-                        try await store.saveFinalCheckpoint(checkpoint, stage: .decoding)
+                        try await persist(checkpoint, since: &saved, stage: .decoding)
                     }
                     eventIndex += 1
                     // System audio is primary: its levels gate the microphone. Also
@@ -192,7 +199,7 @@ public actor FinalTranscriptionPipeline {
                             checkpoint.windows[index].asr = FinalASRText(text: "", language: job.snapshot.settings.meetingLanguage)
                         }
                         if checkpoint.windows[index].asr == nil {
-                            try await store.saveFinalCheckpoint(checkpoint, stage: .transcribing)
+                            try await persist(checkpoint, since: &saved, stage: .transcribing)
                             var text = try await inference.finalText(models[.finalASR]!, samples: window.samples,
                                 language: job.snapshot.settings.meetingLanguage)
                             // Auto detection can misidentify short or quiet audio (a 1.8 s
@@ -216,21 +223,24 @@ public actor FinalTranscriptionPipeline {
                                 throw FinalTranscriptionError.invalidAlignment
                             }
                             checkpoint.windows[index].asr = text
-                            try await store.saveFinalCheckpoint(checkpoint, stage: .aligning)
+                            try await persist(checkpoint, since: &saved, stage: .aligning)
                         }
                         let asr = checkpoint.windows[index].asr!
                         if checkpoint.windows[index].words == nil {
                             let raw = asr.text.isEmpty ? [] : try await inference.finalAlignment(models[.alignment]!,
                                 samples: window.samples, text: asr.text, language: asr.language)
                             checkpoint.windows[index].words = try alignedWords(raw, asr: asr, window: window)
-                            try await store.saveFinalCheckpoint(checkpoint, stage: .diarizing)
+                            try await persist(checkpoint, since: &saved, stage: .diarizing)
                         }
                         if checkpoint.windows[index].speakers == nil {
                             if track == .system {
-                                checkpoint.windows[index].speakers = try await diarization.process(window).segments
-                                checkpoint.speakerCheckpoint = try await diarization.checkpoint()
+                                // Both together, so a save after an error never pairs these
+                                // speakers with the previous window's speaker state.
+                                let segments = try await diarization.process(window).segments
+                                let state = try await diarization.checkpoint()
+                                checkpoint.windows[index].speakers = segments; checkpoint.speakerCheckpoint = state
                             } else { checkpoint.windows[index].speakers = [] }
-                            try await store.saveFinalCheckpoint(checkpoint, stage: .diarizing)
+                            try await persist(checkpoint, since: &saved, stage: .diarizing)
                         }
                         // The window keeps every recognized word; blocks keep the user's.
                         let all = checkpoint.windows[index].words!
@@ -240,15 +250,22 @@ public actor FinalTranscriptionPipeline {
                             speakers: checkpoint.windows[index].speakers!, earlier: checkpoint.windows.prefix(index))
                     }
                     checkpoint.windows[index].complete = true
-                    try await store.saveFinalCheckpoint(checkpoint, stage: .decoding)
+                    try await persist(checkpoint, since: &saved, stage: .decoding)
                 }
                 guard eventIndex == checkpoint.windows.filter({ $0.track == track }).count else {
                     throw FinalTranscriptionError.invalidCheckpoint
                 }
                 if !checkpoint.completedTracks.contains(track) { checkpoint.completedTracks.append(track) }
                 try await store.saveFinalCheckpoint(checkpoint, stage: .decoding)
+                saved = .now
                 await reader.close()
-            } catch { await reader.close(); throw error }
+            } catch {
+                await reader.close()
+                // Keep the progress since the last periodic save. A deleted or
+                // cancelled job refuses it, which is already authoritative.
+                try? await store.saveFinalCheckpoint(checkpoint, stage: .decoding)
+                throw error
+            }
         }
         try Self.validateCoverage(checkpoint, recording: recording, requireCorrection: false)
         while job.snapshot.settings.spellingCorrection, let first = pendingCorrections(checkpoint).first {
@@ -275,6 +292,20 @@ public actor FinalTranscriptionPipeline {
         checkpoint.readyForPublication = true
         try await store.saveFinalCheckpoint(checkpoint, stage: .validating)
         return checkpoint
+    }
+
+    /// Window progress is saved at most this often. Each save rewrites the
+    /// whole checkpoint (about 2 MB for a 22-minute call, most of it speaker
+    /// state that changes every window): saving every step took 1526 saves and
+    /// about 28 s of a 135 s job. A crash loses at most this much work; errors
+    /// and cancellation save at once.
+    static let checkpointInterval: Duration = .seconds(5)
+
+    private func persist(_ checkpoint: FinalTranscriptionCheckpoint, since saved: inout ContinuousClock.Instant,
+                         stage: JobStage) async throws {
+        guard ContinuousClock.now - saved >= checkpointInterval else { return }
+        try await store.saveFinalCheckpoint(checkpoint, stage: stage)
+        saved = .now
     }
 
     /// Blocks per correction request. With changed-rows-only output, the

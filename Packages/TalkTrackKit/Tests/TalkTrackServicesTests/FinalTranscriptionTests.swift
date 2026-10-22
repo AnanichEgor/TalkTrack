@@ -347,6 +347,27 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
         try await fixture.store.close()
     }
 
+    /// Rewriting the whole checkpoint after every window step took 28 s of a
+    /// 22-minute call; window progress is saved periodically and at track ends.
+    @Test func windowStepsDoNotRewriteTheCheckpointEachTime() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let fixture = try await finalFixture(folder, seconds: 25, spelling: false)
+        let path = "/" + DirectoryHandle.physicalComponents(fixture.library.directory).dropFirst().joined(separator: "/")
+        let db = try SQLiteConnection(path: path + "/Library.sqlite3")
+        try db.execute("CREATE TABLE checkpoint_writes(n INTEGER)")
+        try db.execute("CREATE TRIGGER count_final AFTER UPDATE ON records WHEN NEW.kind = 'finalCheckpoint' BEGIN INSERT INTO checkpoint_writes VALUES (1); END")
+        let probe = FinalProbe()
+        // An hour, so a slow machine's periodic saves cannot make this test flaky.
+        let result = try await FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe,
+                                                          checkpointInterval: .seconds(3600)).run(jobID: fixture.job.id)
+        #expect(result.readyForPublication && result.windows.count == 6)
+        // Two track ends and the ready result; every step of six windows was 36 more.
+        guard case .integer(let writes) = try db.rows("SELECT count(*) FROM checkpoint_writes").first?.first else { Issue.record(); return }
+        #expect(writes <= 4)
+        try db.execute("DROP TRIGGER count_final")
+        try await fixture.store.close()
+    }
+
     @Test func checkpointAndStageWriteRollBackTogetherOnInjectedDatabaseFailure() async throws {
         let folder = try TemporaryFolder(); defer { folder.remove() }
         let fixture = try await finalFixture(folder)
@@ -355,11 +376,14 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
         try db.execute("CREATE TRIGGER fail_final BEFORE UPDATE ON records WHEN NEW.kind = 'finalCheckpoint' BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END")
         let probe = FinalProbe()
         await #expect(throws: StoreError.self) {
-            try await FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe).run(jobID: fixture.job.id)
+            try await FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe,
+                                                 checkpointInterval: .seconds(3600)).run(jobID: fixture.job.id)
         }
         #expect(try await fixture.store.job(fixture.job.id).stage == .failed)
         #expect(try await fixture.store.finalCheckpoint(jobID: fixture.job.id)?.windows.isEmpty == true)
-        #expect(await probe.textCalls == 0)
+        // Window steps are saved periodically: the first update, at the end of
+        // the system track, fails after its one window was recognized.
+        #expect(await probe.textCalls == 1)
         try db.execute("DROP TRIGGER fail_final")
         _ = try await fixture.store.retryJob(fixture.job.id)
         #expect(try await FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe).run(jobID: fixture.job.id).readyForPublication)
@@ -510,13 +534,16 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
         let folder = try TemporaryFolder(); defer { folder.remove() }
         let fixture = try await finalFixture(folder)
         let probe = FinalProbe(); await probe.configure(hold: true)
-        let first = FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe)
+        let first = FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe,
+                                               checkpointInterval: .seconds(3600))
         let second = FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe)
         let work = Task { try await first.run(jobID: fixture.job.id) }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while await !probe.held, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         await #expect(throws: FinalTranscriptionError.busy) { try await second.run(jobID: fixture.job.id) }
-        #expect(try await fixture.store.job(fixture.job.id).stage == .aligning)
+        // Still the stage saved at the start: window steps are saved at most
+        // every `checkpointInterval`.
+        #expect(try await fixture.store.job(fixture.job.id).stage == .decoding)
         await probe.configure()
         #expect(try await work.value.readyForPublication)
         #expect(try await second.run(jobID: fixture.job.id).readyForPublication)
