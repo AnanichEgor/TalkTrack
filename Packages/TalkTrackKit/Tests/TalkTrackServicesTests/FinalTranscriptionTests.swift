@@ -115,7 +115,7 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
             // The microphone is louder than the system track (the user speaking),
             // which also lets the probe tell the tracks apart. `quietMicrophone`
             // models loudspeaker echo, which the level gate keeps from recognition.
-            let amplitude = track == .microphone ? (quietMicrophone ? 0.06 : 0.18) : 0.12
+            let amplitude = track == .microphone ? (quietMicrophone ? 0.06 : 0.3) : 0.12
             let samples = (offset..<(offset + count)).map { Float(amplitude * sin(Double($0) / 48_000 * 2 * .pi * 440)) }
             try await writer.append(track: track, samples: samples, activeStartFrame: UInt64(offset),
                 hostTimeStart: origin + AVAudioTime.hostTime(forSeconds: resumed && offset >= frames / 2 ?

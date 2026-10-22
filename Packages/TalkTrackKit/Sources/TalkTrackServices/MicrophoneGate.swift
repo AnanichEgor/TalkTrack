@@ -8,28 +8,45 @@ import TalkTrackDomain
 /// of 100 ms frames. Stored audio is never changed: only recognized words.
 public enum MicrophoneGate {
     public static let frame: Int64 = 100_000
-    /// Frames kept on each side of a louder frame, so word edges survive.
-    static let hangover = 1
+    /// Frames kept on each side of a louder stretch, so word edges survive.
+    static let hangover = 3
     /// About −46 dBFS. While the system track is silent, room noise alone is
     /// "louder"; on a real call such frames let echo fragments through.
     static let floor: Float = 0.005
+    /// The microphone must be this many times (6 dB) louder than the system
+    /// track, for at least `minimumRun` consecutive frames. Merely louder single
+    /// frames were mostly loudspeaker echo: on four real calls (2026-10-22) they
+    /// kept 82–464 echo words each and left 90% of windows to recognize; this
+    /// keeps 3–19 echo words and as many of the user's own.
+    static let margin: Float = 2
+    static let minimumRun = 3
 
     /// Records the RMS of every whole or partial grid frame the window covers.
     public static func record(_ samples: [Float], start: MediaTime, into levels: inout [Float]) {
-        for (index, rms) in frames(samples, start: start) {
+        for (index, rms, whole) in frames(samples, start: start) {
+            // A window's partial first frame keeps the previous window's whole measurement.
+            if !whole, index < levels.count, levels[index] > 0 { continue }
             if levels.count <= index { levels += Array(repeating: 0, count: index + 1 - levels.count) }
             levels[index] = rms
         }
     }
 
-    /// Grid frames where the microphone is louder than the system track, with
-    /// `hangover` neighbours. Empty when nothing in the window qualifies.
+    /// Grid frames of stretches where the microphone is clearly louder than the
+    /// system track, with `hangover` neighbours. Empty when nothing in the
+    /// window qualifies, and then the window is not recognized at all.
     public static func louderFrames(_ samples: [Float], start: MediaTime, system: [Float]) -> Set<Int> {
-        let measured = frames(samples, start: start)
-        var keep: Set<Int> = []
-        for frame in measured where frame.rms > floor && frame.rms > (system.indices.contains(frame.index) ? system[frame.index] : 0) {
-            for index in (frame.index - hangover)...(frame.index + hangover) { keep.insert(index) }
+        var keep: Set<Int> = [], run: [Int] = []
+        func flush() {
+            if run.count >= minimumRun, let first = run.first, let last = run.last {
+                for index in (first - hangover)...(last + hangover) { keep.insert(index) }
+            }
+            run.removeAll()
         }
+        for frame in frames(samples, start: start) {
+            let other = system.indices.contains(frame.index) ? system[frame.index] : 0
+            if frame.rms > floor && frame.rms > margin * other { run.append(frame.index) } else { flush() }
+        }
+        flush()
         return keep
     }
 
@@ -51,17 +68,20 @@ public enum MicrophoneGate {
         while lower < count {
             let time = start.microseconds + Int64(lower) * 1_000_000 / rate
             let next = (time / frame + 1) * frame
-            let upper = min(count, max(lower + 1, Int((next - start.microseconds) * rate / 1_000_000)))
+            // The first sample at or after the frame boundary. Rounding down left
+            // one sample of the next frame overwriting each level whenever the
+            // window did not start on the sample grid.
+            let upper = min(count, max(lower + 1, Int(((next - start.microseconds) * rate + 999_999) / 1_000_000)))
             result.append(lower..<upper); lower = upper
         }
         return result
     }
 
-    private static func frames(_ samples: [Float], start: MediaTime) -> [(index: Int, rms: Float)] {
+    private static func frames(_ samples: [Float], start: MediaTime) -> [(index: Int, rms: Float, whole: Bool)] {
         ranges(samples.count, start: start).map { range in
             let time = start.microseconds + Int64(range.lowerBound) * 1_000_000 / rate
             let energy = range.reduce(Float(0)) { $0 + samples[$1] * samples[$1] }
-            return (Int(time / frame), (energy / Float(range.count)).squareRoot())
+            return (Int(time / frame), (energy / Float(range.count)).squareRoot(), Int64(range.count) >= frame * rate / 1_000_000)
         }
     }
 }
