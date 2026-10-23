@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import TalkTrackDomain
 import TalkTrackServices
 import UniformTypeIdentifiers
@@ -60,5 +61,18 @@ import UniformTypeIdentifiers
             return String(cString: strerror(Int32(underlying.code)))
         }
         return error.localizedDescription
+    }
+}
+
+/// `Export…` at the left of a tab's action row; off while the tab is empty.
+struct ExportButton: View {
+    let tab: MeetingTab
+    let enabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button("Export…", systemImage: "square.and.arrow.up", action: action)
+            .disabled(!enabled)
+            .help(enabled ? "Save this tab as a Markdown file" : tab.nothingToExport)
     }
 }

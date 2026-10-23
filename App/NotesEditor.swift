@@ -630,9 +630,14 @@ final class NotesTextView: NSTextView {
 struct NotesToolbar: View {
     @ObservedObject var controller: NotesEditorController
     let isEnabled: Bool
+    var export: ExportButton?
 
     var body: some View {
         HStack(spacing: 4) {
+            if let export {
+                export
+                Divider().frame(height: 18).padding(.horizontal, 4)
+            }
             Picker("Text size", selection: Binding(get: { controller.size }, set: { controller.setSize($0) })) {
                 ForEach(NotesTextSize.allCases) { Text($0.rawValue).tag($0) }
             }

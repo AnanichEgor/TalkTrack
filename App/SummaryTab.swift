@@ -9,9 +9,10 @@ struct SummaryTab: View {
     @Environment(\.openSettings) private var openSettings
     @State private var presentation: SummaryPresentation
     let captureActive: Bool
+    let export: ExportButton
 
-    init(services: WorkspaceServices, meetingID: UUID, captureActive: Bool) {
-        self.captureActive = captureActive
+    init(services: WorkspaceServices, meetingID: UUID, captureActive: Bool, export: ExportButton) {
+        self.captureActive = captureActive; self.export = export
         _presentation = State(initialValue: SummaryPresentation(meetingID: meetingID, store: services.store,
             runner: services.runner, pipeline: services.summaries, model: services.summaryModel,
             settings: { SummaryModelOptions.settings(for: $0) }))
@@ -37,6 +38,7 @@ struct SummaryTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
+                export
                 Picker("Summary type", selection: $presentation.type) {
                     ForEach(SummaryTemplates.current, id: \.type) { Text($0.title).tag($0.type) }
                 }

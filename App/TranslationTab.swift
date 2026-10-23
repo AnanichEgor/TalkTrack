@@ -9,9 +9,10 @@ struct TranslationTab: View {
     @State private var index: TranscriptPlaybackIndex?
     let player: MeetingPlayer
     let captureActive: Bool
+    let export: ExportButton
 
-    init(services: WorkspaceServices, meetingID: UUID, captureActive: Bool) {
-        player = services.player; self.captureActive = captureActive
+    init(services: WorkspaceServices, meetingID: UUID, captureActive: Bool, export: ExportButton) {
+        player = services.player; self.captureActive = captureActive; self.export = export
         _presentation = State(initialValue: TranslationPresentation(meetingID: meetingID, store: services.store,
             runner: services.runner, pipeline: services.translations, model: services.translationModel,
             settings: { TextServerPreferences.settings(for: .translation) }))
@@ -20,6 +21,7 @@ struct TranslationTab: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
+                    export
                     Button(presentation.output == nil ? "Translate Transcript" : "Translate Again", systemImage: "character.book.closed") {
                         Task { await presentation.generate() }
                     }

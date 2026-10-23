@@ -33,18 +33,10 @@ struct MeetingDetailView: View {
             }
             header
                 .padding(.horizontal, 32).padding(.top, 20).padding(.bottom, 12)
-            HStack {
-                Picker("Content", selection: $tab) {
-                    ForEach(MeetingTab.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                Spacer(minLength: 16)
-                Button("Export…", systemImage: "square.and.arrow.up") {
-                    Task { await MarkdownExporter.export(meetingID: meeting.id, section: tab.export, services: services, workspace: workspace) }
-                }
-                .disabled(!exportable.contains(tab.export))
-                .help(exportable.contains(tab.export) ? "Save this tab as a Markdown file" : tab.nothingToExport)
+            Picker("Content", selection: $tab) {
+                ForEach(MeetingTab.allCases) { Text($0.rawValue).tag($0) }
             }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
             .padding(.horizontal, 32)
             if let status = workspace.selectedStatus {
                 StatusRow(workspace: workspace, status: status, policy: services.jobPolicy)
@@ -138,6 +130,12 @@ struct MeetingDetailView: View {
         return "\(count) recording\(count == 1 ? "" : "s") · \(PlayerBar.clock(seconds))"
     }
 
+    private func exportButton(_ tab: MeetingTab) -> ExportButton {
+        ExportButton(tab: tab, enabled: exportable.contains(tab.export)) {
+            Task { await MarkdownExporter.export(meetingID: meeting.id, section: tab.export, services: services, workspace: workspace) }
+        }
+    }
+
     @ViewBuilder private var content: some View {
         switch tab {
         case .transcript:
@@ -146,16 +144,16 @@ struct MeetingDetailView: View {
                     description: Text("Press Record to capture system audio and your microphone as separate tracks."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TranscriptTab(services: services, workspace: workspace, meetingID: meeting.id)
+                TranscriptTab(services: services, workspace: workspace, meetingID: meeting.id, export: exportButton(.transcript))
                     .id("\(meeting.id)-\(workspace.transcriptGeneration)")
             }
         case .notes:
-            NotesTab(notes: services.notes, store: services.store, meetingID: meeting.id).id(meeting.id)
+            NotesTab(notes: services.notes, store: services.store, meetingID: meeting.id, export: exportButton(.notes)).id(meeting.id)
         case .summary:
-            SummaryTab(services: services, meetingID: meeting.id, captureActive: workspace.phase != .idle)
+            SummaryTab(services: services, meetingID: meeting.id, captureActive: workspace.phase != .idle, export: exportButton(.summary))
                 .id("\(meeting.id)-\(workspace.recordingDeletions)")
         case .translation:
-            TranslationTab(services: services, meetingID: meeting.id, captureActive: workspace.phase != .idle)
+            TranslationTab(services: services, meetingID: meeting.id, captureActive: workspace.phase != .idle, export: exportButton(.translation))
                 .id("\(meeting.id)-\(workspace.recordingDeletions)")
         }
     }
@@ -373,10 +371,12 @@ struct TranscriptTab: View {
     @State private var presentation: MeetingTranscriptPresentation
     let player: MeetingPlayer
     let workspace: WorkspacePresentation
+    let export: ExportButton
 
-    init(services: WorkspaceServices, workspace: WorkspacePresentation, meetingID: UUID) {
+    init(services: WorkspaceServices, workspace: WorkspacePresentation, meetingID: UUID, export: ExportButton) {
         player = services.player
         self.workspace = workspace
+        self.export = export
         _presentation = State(initialValue: MeetingTranscriptPresentation(store: services.store, meetingID: meetingID,
                                                                          enrollment: services.enrollment))
     }
@@ -384,7 +384,7 @@ struct TranscriptTab: View {
     var body: some View {
         MeetingTranscriptView(presentation: presentation, player: player,
                               deleteRecording: { await workspace.deleteRecording($0) },
-                              deleteRefusal: { workspace.deleteRefusal(recordingID: $0) })
+                              deleteRefusal: { workspace.deleteRefusal(recordingID: $0) }, export: export)
             .padding(.top, 4)
     }
 }
@@ -394,6 +394,7 @@ struct NotesTab: View {
     let notes: NotesAutosave
     let store: SessionStore
     let meetingID: UUID
+    let export: ExportButton
     @StateObject private var controller = NotesEditorController()
     @State private var document = NotesDocument(paragraphs: [])
     @State private var loadID = UUID()
@@ -402,7 +403,7 @@ struct NotesTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            NotesToolbar(controller: controller, isEnabled: loaded)
+            NotesToolbar(controller: controller, isEnabled: loaded, export: export)
             if let error {
                 Text(error).font(.callout).foregroundStyle(Color.errorText).textSelection(.enabled)
             }

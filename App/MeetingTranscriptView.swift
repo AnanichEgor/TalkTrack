@@ -14,23 +14,28 @@ struct MeetingTranscriptView: View {
     var deleteRecording: ((UUID) async -> Void)?
     /// Why a recording cannot be deleted now (it is capturing), or nil.
     var deleteRefusal: (UUID) -> String? = { _ in nil }
+    /// Shown at the left of the action row.
+    var export: ExportButton?
     @State private var index: TranscriptPlaybackIndex?
     @State private var confirmClearNames = false
     @State private var deleting: Recording?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if presentation.hasSpeakerNames {
+            if presentation.hasSpeakerNames || export != nil {
                 HStack {
+                    export
                     Spacer()
-                    Button("Apply Names", systemImage: "person.2.wave.2") { Task { await presentation.applyNames() } }
-                        .disabled(!presentation.canApplyNames)
-                        .help(presentation.applicableRecordings.isEmpty
-                              ? "Names can be applied after this meeting's recordings are processed with the current version. Reprocess the meeting first."
-                              : "Rebuild voices from your names without transcribing again: one name becomes one voice, different names stay apart, named replies move to their person.")
-                    Button("Clear Speaker Names", systemImage: "person.crop.circle.badge.xmark") { confirmClearNames = true }
-                        .disabled(presentation.isBusy)
-                        .help("Remove every speaker and reply name in this meeting. Voices show as Voice1, Voice2… until you name them again.")
+                    if presentation.hasSpeakerNames {
+                        Button("Apply Names", systemImage: "person.2.wave.2") { Task { await presentation.applyNames() } }
+                            .disabled(!presentation.canApplyNames)
+                            .help(presentation.applicableRecordings.isEmpty
+                                  ? "Names can be applied after this meeting's recordings are processed with the current version. Reprocess the meeting first."
+                                  : "Rebuild voices from your names without transcribing again: one name becomes one voice, different names stay apart, named replies move to their person.")
+                        Button("Clear Speaker Names", systemImage: "person.crop.circle.badge.xmark") { confirmClearNames = true }
+                            .disabled(presentation.isBusy)
+                            .help("Remove every speaker and reply name in this meeting. Voices show as Voice1, Voice2… until you name them again.")
+                    }
                 }
                 .padding(.horizontal, 32)
             }
