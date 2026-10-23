@@ -41,8 +41,6 @@ public enum TextConfigurationValidation {
               let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let modelType = root["model_type"] as? String else { throw TextAdapterError.configuration }
         if modelType == "qwen3" { return try validateQwen3Dense4B(root) }
-        if modelType == "gemma3" { return try validateGemma3Dense4B(root) }
-        if modelType == "gemma4" { return try validateGemma4E4B(root) }
         guard ["qwen3_5_moe", "qwen3_5"].contains(modelType),
               root["auto_map"] == nil,
               // Text-only conversions keep the text settings at the top level.
@@ -96,36 +94,6 @@ public enum TextConfigurationValidation {
               let quant = root["quantization"] as? [String: Any], quant.count == 2,
               quant["bits"] as? Int == 4, quant["group_size"] as? Int == 128 else { throw TextAdapterError.configuration }
         return .qwen3Dense4B
-    }
-
-    /// mlx-community/gemma-3-4b-it-qat-4bit (an mlx-vlm conversion; the loader
-    /// keeps `language_model` and drops the vision tower), comparison only.
-    private static func validateGemma3Dense4B(_ root: [String: Any]) throws -> TextMemoryProfile {
-        let dimensions = ["hidden_size": 2560, "num_hidden_layers": 34, "num_attention_heads": 8,
-            "num_key_value_heads": 4, "head_dim": 256, "intermediate_size": 10240,
-            "vocab_size": 262208, "sliding_window": 1024, "sliding_window_pattern": 6]
-        guard root["auto_map"] == nil, let config = root["text_config"] as? [String: Any],
-              config["model_type"] as? String == "gemma3_text",
-              dimensions.allSatisfy({ config[$0.key] as? Int == $0.value }),
-              let quant = root["quantization"] as? [String: Any], quant.count == 2,
-              quant["bits"] as? Int == 4, quant["group_size"] as? Int == 64 else { throw TextAdapterError.configuration }
-        return .gemma3Dense4B
-    }
-
-    /// mlx-community/gemma-4-e4b-it-4bit (vision/audio towers are dropped on load), comparison only.
-    private static func validateGemma4E4B(_ root: [String: Any]) throws -> TextMemoryProfile {
-        let dimensions = ["hidden_size": 2560, "num_hidden_layers": 42, "num_attention_heads": 8,
-            "num_key_value_heads": 2, "head_dim": 256, "global_head_dim": 512, "intermediate_size": 10240,
-            "vocab_size": 262144, "sliding_window": 512, "num_kv_shared_layers": 18]
-        guard root["auto_map"] == nil, let config = root["text_config"] as? [String: Any],
-              config["model_type"] as? String == "gemma4_text", config["enable_moe_block"] as? Bool == false,
-              dimensions.allSatisfy({ config[$0.key] as? Int == $0.value }),
-              let layers = config["layer_types"] as? [String], layers.count == 42,
-              layers.prefix(24).filter({ $0 == "full_attention" }).count == 4,
-              let quant = root["quantization"] as? [String: Any],
-              quant["bits"] as? Int == 4, quant["group_size"] as? Int == 64,
-              quant["mode"] == nil || quant["mode"] as? String == "affine" else { throw TextAdapterError.configuration }
-        return .gemma4E4B
     }
 }
 

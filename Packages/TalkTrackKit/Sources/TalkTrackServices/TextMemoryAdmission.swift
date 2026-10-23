@@ -72,16 +72,9 @@ public enum TextMemoryProfile: String, Codable, Sendable {
     case qwen36MoE35B, qwen35Dense9B, qwen35Dense4B
     /// Qwen3-4B (all layers full attention); comparison candidates only.
     case qwen3Dense4B
-    /// Gemma 3 4B: 5 of 34 layers attend globally; the 29 sliding layers keep
-    /// 1,024 tokens (~0.12 GiB), counted as one more layer. Comparison only.
-    case gemma3Dense4B
-    /// Gemma 4 E4B: only the first 24 of 42 layers keep K/V (the rest share it);
-    /// 4 of those attend globally (head 512, 2 KV heads), the 20 sliding layers
-    /// keep 512 tokens (~0.04 GiB, within the workspace). Comparison only.
-    case gemma4E4B
-    var attentionLayers: UInt64 { switch self { case .qwen35Dense9B, .qwen35Dense4B: 8; case .qwen36MoE35B: 10; case .qwen3Dense4B: 36; case .gemma3Dense4B: 6; case .gemma4E4B: 4 } }
-    var keyValueHeads: UInt64 { switch self { case .qwen35Dense9B, .qwen35Dense4B, .gemma3Dense4B: 4; case .qwen36MoE35B, .gemma4E4B: 2; case .qwen3Dense4B: 8 } }
-    var headDimension: UInt64 { switch self { case .qwen3Dense4B: 128; case .gemma4E4B: 512; default: 256 } }
+    var attentionLayers: UInt64 { switch self { case .qwen35Dense9B, .qwen35Dense4B: 8; case .qwen36MoE35B: 10; case .qwen3Dense4B: 36 } }
+    var keyValueHeads: UInt64 { switch self { case .qwen35Dense9B, .qwen35Dense4B: 4; case .qwen36MoE35B: 2; case .qwen3Dense4B: 8 } }
+    var headDimension: UInt64 { self == .qwen3Dense4B ? 128 : 256 }
     /// Prefill workspace above weights and KV. Qwen3.5-4B measured 1.64 GiB at
     /// 32K and 2.76 GiB at 64K beyond weights and KV; the others keep 4 GiB.
     var workspaceGiB: UInt64 { self == .qwen35Dense4B ? 3 : 4 }
