@@ -50,7 +50,7 @@ import TalkTrackDomain
         try fixture.execute("PRAGMA user_version = 999")
         let before = try Data(contentsOf: file)
         let directory = try DirectoryHandle.openAbsolute(library.directory)
-        #expect(try SQLiteConnection.closedHeader(in: directory).version == 2)
+        #expect(try SQLiteConnection.closedHeader(in: directory).version == 3)
         await #expect(throws: StoreError.unsupportedSchema(999)) { try await SessionStore.open(library) }
         #expect(try Data(contentsOf: file) == before)
         #expect(try fixture.integer("PRAGMA user_version") == 999)
@@ -92,6 +92,7 @@ import TalkTrackDomain
             let fixture = try SQLiteConnection(path: file.path)
             try fixture.execute("DROP TABLE pending_edits")
             try fixture.execute("DROP INDEX records_meeting")
+            try fixture.execute("DROP TABLE recording_tombstones")
             try fixture.execute("PRAGMA user_version = 1")
         }
         let before = Set(try FileManager.default.contentsOfDirectory(atPath: library.directory.path))
@@ -110,6 +111,28 @@ import TalkTrackDomain
         try await reopened.close()
     }
 
+    @Test func versionTwoUpgradeAddsRecordingTombstonesAndKeepsData() async throws {
+        let folder = try TemporaryFolder()
+        defer { folder.remove() }
+        let library = try await OwnedLibrary().open(root: folder.url)
+        let store = try await SessionStore.open(library)
+        let meeting = try await store.createMeeting(MeetingDraft(title: "Before tombstones"))
+        try await store.close()
+        let file = databaseURL(library)
+        do {
+            let fixture = try SQLiteConnection(path: file.path)
+            try fixture.execute("DROP TABLE recording_tombstones")
+            try fixture.execute("PRAGMA user_version = 2")
+        }
+        let upgraded = try await SessionStore.open(library)
+        #expect(try await upgraded.meeting(meeting.id) == meeting)
+        #expect(try await upgraded.isDeletedRecording(UUID()) == false)
+        try await upgraded.close()
+        let fixture = try SQLiteConnection(path: file.path, readOnly: true)
+        #expect(try fixture.integer("PRAGMA user_version") == 3)
+        #expect(try fixture.integer("SELECT count(*) FROM sqlite_master WHERE name='recording_tombstones'") == 1)
+    }
+
     @Test func failedUpgradeRollsBackSchemaAndLeavesRecoveryBackup() async throws {
         let folder = try TemporaryFolder()
         defer { folder.remove() }
@@ -121,6 +144,7 @@ import TalkTrackDomain
         do {
             let fixture = try SQLiteConnection(path: file.path)
             try fixture.execute("DROP TABLE pending_edits")
+            try fixture.execute("DROP TABLE recording_tombstones")
             // Keeping the existing index injects failure after CREATE TABLE.
             try fixture.execute("PRAGMA user_version = 1")
         }

@@ -284,6 +284,9 @@ struct WorkspaceServices {
             }
             await pipeline.setProgressHandler { [weak runner] in runner?.report($0) }
             let workspace = WorkspacePresentation(store: store, recorder: recorder, runner: runner)
+            workspace.stopPlayback = { [weak player] meetingID in
+                if player?.meetingID == meetingID { player?.pause() }
+            }
             // A meeting takes precedence: an active dictation is cancelled before capture.
             workspace.beforeCapture = { [weak self] in await self?.dictation?.meetingWillStart() }
             workspace.unavailableModels = { snapshots in

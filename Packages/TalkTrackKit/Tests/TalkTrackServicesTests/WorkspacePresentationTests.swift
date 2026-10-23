@@ -320,6 +320,52 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(w.canReprocess)
     }
 
+    @Test func deletingARecordingStopsItsWorkAndPlaybackAndIsRefusedWhileCapturing() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        // Transcription runs until cancelled, like the pipeline.
+        f.behavior.value = { id, store in
+            try await store.updateJob(id, stage: .transcribing)
+            do { try await Task.sleep(for: .seconds(60)) } catch {
+                try? await store.updateJob(id, stage: .interrupted, error: "Cancelled")
+                throw error
+            }
+        }
+        let stopped = Box<[UUID]>([])
+        w.stopPlayback = { stopped.value.append($0) }
+        await w.start()
+        let meeting = try await w.createMeeting(title: "Two takes", description: "")
+        await w.record()
+        #expect(await until { w.phase == .recording })
+        await f.deliver(seconds: 1)
+        await w.stop()
+        #expect(await until { w.phase == .idle && w.queueStates[meeting.id] == .running })
+        let first = try #require(w.recordings.first)
+        // The second take is capturing: it cannot be deleted.
+        await w.record()
+        #expect(await until { w.phase == .recording && w.recordings.count == 2 })
+        let second = try #require(w.recordings.first { $0.id != first.id })
+        #expect(w.deleteRefusal(recordingID: second.id) == "Stop recording before deleting this recording.")
+        await w.deleteRecording(second.id)
+        #expect(w.issue != nil && w.recordings.count == 2)
+        w.issue = nil
+        await f.deliver(seconds: 1)
+        await w.stop()
+        #expect(await until { w.phase == .idle })
+
+        // Deleting the first take stops playback and its running transcription.
+        #expect(w.deleteRefusal(recordingID: first.id) == nil)
+        await w.deleteRecording(first.id)
+        #expect(w.issue == nil && stopped.value == [meeting.id])
+        #expect(w.recordings.map(\.id) == [second.id])
+        #expect(try await f.store.jobs(meetingID: meeting.id).allSatisfy { $0.snapshot.recordingID == second.id })
+        // The second take's transcription runs next.
+        #expect(await until { f.processed.value.count == 2 && w.queueStates[meeting.id] == .running })
+        #expect(!FileManager.default.fileExists(atPath: f.folder.url
+            .appendingPathComponent(".talktrack-library/Meetings/\(meeting.id)/Recordings/\(first.id)").path))
+    }
+
     @Test func aMeetingWaitingBehindAnotherShowsItsPlaceInTheQueue() async throws {
         let f = try await WorkspaceFixture()
         defer { f.remove() }

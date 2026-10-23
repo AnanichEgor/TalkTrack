@@ -395,6 +395,8 @@ public actor MeetingRecorder {
                 results.append(await recover(meetingID: meeting.id, recordingID: previous.id, previous: previous))
             }
             for id in folders where !known.contains(id) {
+                // A deleted recording whose folder could not be removed yet stays deleted.
+                if (try? await store.isDeletedRecording(id)) != false { continue }
                 results.append(await recover(meetingID: meeting.id, recordingID: id, previous: nil))
             }
         }

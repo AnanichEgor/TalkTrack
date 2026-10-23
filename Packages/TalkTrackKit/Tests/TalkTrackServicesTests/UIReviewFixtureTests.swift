@@ -78,8 +78,10 @@ import TalkTrackDomain
             description: "Длинная встреча на два дня с несколькими участниками. Проверяем перенос длинных строк, прокрутку длинной расшифровки и поведение плеера.",
             language: .russian))
 
-        // Two recordings on different days: 60 and 30 minutes of silence.
-        let plan: [(minutes: Int, date: String)] = [(60, "2026-10-05T09:00:00Z"), (30, "2026-10-08T14:30:00Z")]
+        // Three recordings of silence: 60 and 20 minutes on one day, each with its own
+        // separator, then 30 minutes three days later (a resumption).
+        let plan: [(minutes: Int, date: String)] = [(60, "2026-10-05T09:00:00Z"), (20, "2026-10-05T13:00:00Z"),
+                                                    (30, "2026-10-08T14:30:00Z")]
         var recordings: [Recording] = []
         for (index, item) in plan.enumerated() {
             let date = ISO8601DateFormatter().date(from: item.date)!
@@ -153,6 +155,14 @@ import TalkTrackDomain
             """)
         try await store.stageNotes(notes)
         try await store.commitNotes(notes)
+
+        // A summary per recording, so deleting one shows in the Summary tab.
+        let summaryModel = try ModelCatalog.bundled().model(for: .summary).snapshot(for: .summary)
+        for recording in recordings {
+            let job = try await store.enqueueSummary(meetingID: meeting.id, recordingID: recording.id,
+                settings: ProcessingSettings(summaryLanguage: .russian, contextLimit: .defaultSelection), model: summaryModel)
+            try await SummaryJobPipeline(store: store, inference: SummaryJobInference()).run(jobID: job.id)
+        }
 
         let model = ModelSnapshot(role: .translation, repository: "fixture", revision: "1",
                                   directory: try RelativePath("fixture/1"), preprocessingVersion: "1")

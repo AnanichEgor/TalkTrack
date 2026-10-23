@@ -3,7 +3,7 @@ import CryptoKit
 import TalkTrackDomain
 
 public actor SessionStore {
-    static let schemaVersion = 2
+    static let schemaVersion = 3
     static let applicationID = 0x54414C4B
     public nonisolated let library: OpenedLibrary
     private var connection: SQLiteConnection?
@@ -65,6 +65,8 @@ public actor SessionStore {
         try db.execute("PRAGMA synchronous = FULL")
         connection = db
         _ = try recoverInterruptedJobs()
+        // Files of recordings deleted just before a crash; a failure is retried next launch.
+        for (meetingID, recordingID) in try deletedRecordings() { try? removeRecordingFolder(meetingID: meetingID, recordingID: recordingID) }
     }
 
     private func validateDatabase(_ db: SQLiteConnection) throws {
@@ -83,6 +85,14 @@ public actor SessionStore {
                 try db.execute("CREATE TABLE pending_edits (meeting_id TEXT PRIMARY KEY REFERENCES meetings(id) ON DELETE CASCADE, payload BLOB NOT NULL)")
                 try db.execute("CREATE INDEX records_meeting ON records(meeting_id,kind,scope)")
                 try db.execute("PRAGMA user_version = 2")
+            }
+        }
+        if try db.integer("PRAGMA user_version") == 2 {
+            try db.transaction {
+                // A deleted recording's id, so a leftover audio folder is removed
+                // instead of being recovered as an orphan recording.
+                try db.execute("CREATE TABLE recording_tombstones (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE, deleted_at REAL NOT NULL)")
+                try db.execute("PRAGMA user_version = 3")
             }
         }
     }
@@ -156,6 +166,7 @@ public actor SessionStore {
     public func saveRecording(_ recording: Recording) throws {
         try db.transaction {
             var owner = try meeting(recording.meetingID)
+            guard try !isDeletedRecording(recording.id) else { throw RecordingDeletionError.missing }
             if let previous: Recording = try record(.recording, id: recording.id) {
                 if previous == recording { return }
                 guard previous.meetingID == recording.meetingID, previous.startedAt == recording.startedAt,
@@ -184,6 +195,128 @@ public actor SessionStore {
             try db.execute("DELETE FROM meetings WHERE id = ?", [.text(id.uuidString)])
         }
         try cleanupDeletedMeeting(id)
+    }
+
+    /// Permanently removes one stopped recording: its audio, transcripts,
+    /// checkpoints, jobs, summary and fragment names, and day speakers of capture
+    /// days no other recording shares. The meeting translation is trimmed to the
+    /// other recordings without a model. A tombstone commits with the rows, then
+    /// the folder is removed; a crash or failure before that is finished at the next launch.
+    /// Notes, other recordings and saved global voices stay.
+    public func deleteRecording(meetingID: UUID, recordingID: UUID, at date: Date = Date()) throws {
+        try db.transaction {
+            var owner = try meeting(meetingID)
+            guard let recording = try recordings(meetingID: meetingID).first(where: { $0.id == recordingID }) else {
+                throw RecordingDeletionError.missing
+            }
+            guard [.complete, .interrupted].contains(recording.state) else { throw RecordingDeletionError.capturing }
+            let m = SQLValue.text(meetingID.uuidString), r = SQLValue.text(recordingID.uuidString)
+            try db.execute("INSERT INTO recording_tombstones VALUES (?,?,?)", [r, m, .real(date.timeIntervalSince1970)])
+            // Translation first: it reads the transcript and speakers that go next.
+            try trimTranslation(meetingID: meetingID, removing: recording)
+            // Jobs of this recording with their sources and publication heads.
+            let jobs = try jobs(meetingID: meetingID).filter { $0.snapshot.recordingID == recordingID }
+            for job in jobs {
+                let id = SQLValue.text(job.id.uuidString)
+                try db.execute("DELETE FROM records WHERE meeting_id=? AND id=? AND kind IN ('job','summarySource','translationSource','finalCheckpoint')", [m, id])
+                try db.execute("DELETE FROM heads WHERE meeting_id=? AND scope=?", [m, id])
+            }
+            // Fragment names and voices given to its replies.
+            let anchors: [FragmentAnchor] = try records(.fragmentAnchor, meetingID: meetingID)
+            for anchor in anchors where anchor.recordingID == recordingID {
+                try db.execute("DELETE FROM records WHERE kind='fragmentAnchor' AND id=?", [.text(anchor.id.uuidString)])
+                try db.execute("DELETE FROM heads WHERE kind='fragmentAnchor' AND meeting_id=? AND scope=?", [m, .text(anchor.segmentID.uuidString)])
+            }
+            // Day speakers whose capture days only this recording had.
+            let remaining = Set(try recordings(meetingID: meetingID).filter { $0.id != recordingID }.flatMap { $0.days.map(\.id) })
+            let speakers: [DaySpeaker] = try records(.daySpeaker, meetingID: meetingID)
+            for speaker in speakers where Set(speaker.recordingDayIDs).union([speaker.dayID]).isDisjoint(with: remaining)
+                && !Set(speaker.recordingDayIDs).union([speaker.dayID]).isDisjoint(with: recording.days.map(\.id)) {
+                let id = SQLValue.text(speaker.id.uuidString)
+                try db.execute("DELETE FROM records WHERE kind='daySpeaker' AND id=?", [id])
+                try db.execute("DELETE FROM records WHERE meeting_id=? AND kind IN ('assignment','automaticVoiceMatch') AND scope=?", [m, id])
+                try db.execute("DELETE FROM heads WHERE meeting_id=? AND scope=?", [m, id])
+            }
+            // The recording, its transcripts, publications, checkpoints and summaries.
+            try db.execute("DELETE FROM records WHERE meeting_id=? AND scope=?", [m, r])
+            try db.execute("DELETE FROM heads WHERE meeting_id=? AND scope=?", [m, r])
+            // A translation still running covers this recording; it cannot publish.
+            for var job in try self.jobs(meetingID: meetingID) where job.snapshot.kind == .translation
+                && ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains(job.stage) {
+                job.stage = .cancelled; job.lastError = "A recording of this meeting was deleted."
+                try saveJob(job)
+            }
+            owner.generation += 1
+            owner.latestRecordingStartedAt = try recordings(meetingID: meetingID).map(\.startedAt).max()
+            try update(owner)
+        }
+        voiceGroups = [:]; replyClusters = [:]
+        // The deletion is committed; files left by a failure are removed at the next launch.
+        try? removeRecordingFolder(meetingID: meetingID, recordingID: recordingID)
+    }
+
+    /// Recordings deleted in this library, for recovery to skip.
+    public func isDeletedRecording(_ id: UUID) throws -> Bool {
+        !(try db.rows("SELECT id FROM recording_tombstones WHERE id = ?", [.text(id.uuidString)])).isEmpty
+    }
+
+    private func deletedRecordings() throws -> [(UUID, UUID)] {
+        try db.rows("SELECT meeting_id, id FROM recording_tombstones").compactMap {
+            guard case .text(let m) = $0[0], case .text(let r) = $0[1], let meeting = UUID(uuidString: m),
+                  let recording = UUID(uuidString: r) else { return nil }
+            return (meeting, recording)
+        }
+    }
+
+    /// Removes `Meetings/<meeting>/Recordings/<recording>`; only a tombstoned recording.
+    func removeRecordingFolder(meetingID: UUID, recordingID: UUID) throws {
+        guard try isDeletedRecording(recordingID) else { throw StoreError.invalidResult }
+        let meetings = try DirectoryHandle.openAbsolute(library.directory).directory("Meetings")
+        guard meetings.exists(meetingID.uuidString) else { return }
+        let meeting = try meetings.directory(meetingID.uuidString)
+        guard meeting.exists("Recordings") else { return }
+        try meeting.directory("Recordings").removeTree(recordingID.uuidString)
+    }
+
+    /// Keeps the translated utterances of the other recordings, with a frozen
+    /// source and snapshot that no longer include this one, so the result is
+    /// exactly as current (or outdated) as before. Nothing left: no translation.
+    private func trimTranslation(meetingID: UUID, removing recording: Recording) throws {
+        guard let output: GeneratedOutput = try head(.translation, meetingID: meetingID),
+              let source: TranslationSource = try record(.translationSource, id: output.job.id) else { return }
+        let revisions = source.revisions.filter { $0.recordingID != recording.id }
+        guard revisions.count != source.revisions.count else { return }
+        guard revisions.contains(where: { !$0.segments.isEmpty }) else {
+            try db.execute("DELETE FROM heads WHERE meeting_id=? AND kind='translation' AND scope=''", [.text(meetingID.uuidString)])
+            return
+        }
+        let removedSegments = Set(source.revisions.filter { $0.recordingID == recording.id }.flatMap(\.segments).map(\.id))
+        let removedRevisions = Set(source.revisions.filter { $0.recordingID == recording.id }.map(\.id))
+        let recordings = source.recordings.filter { $0.id != recording.id }
+        // Voices the remaining text still uses, and the names given to them.
+        let voices = Set(revisions.flatMap(\.segments).compactMap { segment -> UUID? in
+            if case .system(let id) = segment.speaker { id } else { nil }
+        })
+        let removedDays = Set(recording.days.map(\.id)).subtracting(recordings.flatMap { $0.days.map(\.id) })
+        let speakers = source.speakers.filter { voices.contains($0.id) || Set($0.recordingDayIDs).union([$0.dayID]).isDisjoint(with: removedDays) }
+        let kept = Set(speakers.map(\.id))
+        let old = output.job, snapshot = old.source
+        var generations = snapshot.recordingGenerations
+        generations[recording.id] = nil
+        let job = ProcessingJobSnapshot(kind: old.kind, recordingID: old.recordingID,
+            source: SourceSnapshot(meetingID: snapshot.meetingID, meetingGeneration: snapshot.meetingGeneration,
+                cancellationGeneration: snapshot.cancellationGeneration, recordingGenerations: generations,
+                transcriptRevisionIDs: snapshot.transcriptRevisionIDs.filter { !removedRevisions.contains($0) },
+                notesRevisionID: snapshot.notesRevisionID),
+            settings: old.settings, models: old.models, createdAt: old.createdAt)
+        let trimmed = TranslationSource(job: job, recordings: recordings, revisions: revisions, speakers: speakers,
+                                        assignments: source.assignments.filter { kept.contains($0.daySpeakerID) })
+        let segments = output.translatedSegments.filter { !removedSegments.contains($0.sourceSegmentID) }
+        let text = try trimmed.items(translations: segments).map(\.text).joined(separator: "\n\n")
+        let result = GeneratedOutput(kind: .translation, job: job, text: text, translatedSegments: segments, createdAt: output.createdAt)
+        try put(.translationSource, id: job.id, meetingID: meetingID, value: trimmed)
+        try put(.translation, id: result.id, meetingID: meetingID, value: result)
+        try setHead(.translation, meetingID: meetingID, id: result.id)
     }
 
     public func cleanupDeletedMeeting(_ id: UUID) throws {
@@ -842,6 +975,30 @@ public actor SessionStore {
         return result.sorted { ($0.recordingID.uuidString, $0.person) < ($1.recordingID.uuidString, $1.person) }
     }
 
+    /// Why a recording with audio shows no text, so its separator (and its delete
+    /// action) still appears in the transcript.
+    private func emptyRecordingNotes(meetingID: UUID, recordings: [Recording],
+                                     revisions: [TranscriptRevision]) throws -> [UUID: String] {
+        let jobs = try jobs(meetingID: meetingID).filter { $0.snapshot.kind == .finalTranscription }
+        var notes: [UUID: String] = [:]
+        for recording in recordings where !revisions.contains(where: { $0.recordingID == recording.id && !$0.segments.isEmpty }) {
+            switch recording.state {
+            case .preparing, .recording, .paused: notes[recording.id] = "Recording…"
+            default:
+                guard !recording.chunks.isEmpty else { continue }
+                let latest = jobs.last { $0.snapshot.recordingID == recording.id }
+                if revisions.contains(where: { $0.recordingID == recording.id && $0.kind == .final }) || latest?.stage == .completed {
+                    notes[recording.id] = "No speech found"
+                } else if latest?.stage == .failed {
+                    notes[recording.id] = "Transcription failed"
+                } else {
+                    notes[recording.id] = "Not transcribed"
+                }
+            }
+        }
+        return notes
+    }
+
     /// One actor turn reads current heads and derives labels from assignments.
     public func meetingTranscript(meetingID: UUID) throws -> MeetingTranscriptSnapshot {
         let owner = try meeting(meetingID)
@@ -851,7 +1008,8 @@ public actor SessionStore {
         let assignments = try speakerAssignments(meetingID: meetingID)
         let anchors = try fragmentAnchors(meetingID: meetingID)
         let items = try TranscriptFormatter.format(meetingID: meetingID, recordings: recordings,
-            segments: revisions.flatMap(\.segments), speakers: speakers, assignments: assignments, anchors: anchors)
+            segments: revisions.flatMap(\.segments), speakers: speakers, assignments: assignments, anchors: anchors,
+            emptyNotes: try emptyRecordingNotes(meetingID: meetingID, recordings: recordings, revisions: revisions))
         return MeetingTranscriptSnapshot(meeting: owner, recordings: recordings, revisions: revisions,
             speakers: speakers, assignments: assignments, anchors: anchors, items: items)
     }
@@ -1327,6 +1485,24 @@ public actor SessionStore {
         try db.rows("SELECT payload FROM records WHERE kind=? AND meeting_id=?", [.text(kind.rawValue), .text(meetingID.uuidString)]).map {
             guard case .blob(let data) = $0[0] else { throw StoreError.database("Invalid stored record") }
             return try DomainCodec.decode(T.self, from: data)
+        }
+    }
+}
+
+public enum RecordingDeletionError: Error, Equatable, LocalizedError, Sendable {
+    case missing, capturing
+
+    public var errorDescription: String? {
+        switch self {
+        case .missing: "This recording has been deleted or is unavailable."
+        case .capturing: "This recording is still being recorded."
+        }
+    }
+
+    public var recoverySuggestion: String? {
+        switch self {
+        case .missing: nil
+        case .capturing: "Stop the recording before deleting it."
         }
     }
 }

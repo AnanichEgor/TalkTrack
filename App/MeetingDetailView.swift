@@ -121,17 +121,17 @@ struct MeetingDetailView: View {
                     description: Text("Press Record to capture system audio and your microphone as separate tracks."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TranscriptTab(services: services, meetingID: meeting.id)
+                TranscriptTab(services: services, workspace: workspace, meetingID: meeting.id)
                     .id("\(meeting.id)-\(workspace.transcriptGeneration)")
             }
         case .notes:
             NotesTab(notes: services.notes, store: services.store, meetingID: meeting.id).id(meeting.id)
         case .summary:
             SummaryTab(services: services, meetingID: meeting.id, captureActive: workspace.phase != .idle)
-                .id(meeting.id)
+                .id("\(meeting.id)-\(workspace.recordingDeletions)")
         case .translation:
             TranslationTab(services: services, meetingID: meeting.id, captureActive: workspace.phase != .idle)
-                .id(meeting.id)
+                .id("\(meeting.id)-\(workspace.recordingDeletions)")
         }
     }
 }
@@ -347,15 +347,20 @@ struct StatusRow: View {
 struct TranscriptTab: View {
     @State private var presentation: MeetingTranscriptPresentation
     let player: MeetingPlayer
+    let workspace: WorkspacePresentation
 
-    init(services: WorkspaceServices, meetingID: UUID) {
+    init(services: WorkspaceServices, workspace: WorkspacePresentation, meetingID: UUID) {
         player = services.player
+        self.workspace = workspace
         _presentation = State(initialValue: MeetingTranscriptPresentation(store: services.store, meetingID: meetingID,
                                                                          enrollment: services.enrollment))
     }
 
     var body: some View {
-        MeetingTranscriptView(presentation: presentation, player: player).padding(.top, 4)
+        MeetingTranscriptView(presentation: presentation, player: player,
+                              deleteRecording: { await workspace.deleteRecording($0) },
+                              deleteRefusal: { workspace.deleteRefusal(recordingID: $0) })
+            .padding(.top, 4)
     }
 }
 

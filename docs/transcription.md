@@ -223,13 +223,22 @@ the microphone as `You`, even when a named system speaker is supplied:
 [09:00:00]: You - Voice1 said no 42.
 ```
 
-The midnight/resumption fixture emits these exact separators, in this order:
+Every recording starts with its own separator showing its capture-time date and
+start time; same-day recordings are separated too, without `resumption`. The
+midnight/resumption fixture (one recording crossing midnight, then one three days
+later) emits these exact separators, in this order:
 
 ```text
------------- [September 24, 2026] ------------
+------------ [September 24, 2026 · 23:59] ------------
 ------------ [September 25, 2026] ------------
------------- [September 27, 2026] resumption ------------
+------------ [September 27, 2026 · 23:59] resumption ------------
 ```
+
+A recording with saved audio but no text keeps its place in capture order as a
+separator with a note: `Recording…`, `Not transcribed`, `Transcription failed`
+or `No speech found` (`SessionStore.meetingTranscript`, `emptyNotes`). In the
+Transcript tab a recording's separator carries its trash button (see
+[storage](storage.md#deleting-one-recording)).
 
 Same-speaker speech merges at exactly 2.000 seconds; 2.000001 seconds starts
 another block. Different speakers, recordings and capture days remain separate;

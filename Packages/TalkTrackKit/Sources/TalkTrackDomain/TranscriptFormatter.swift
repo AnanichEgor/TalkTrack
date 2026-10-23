@@ -4,12 +4,27 @@ public enum TranscriptFormattingError: Error, Equatable, Sendable {
     case inconsistentMetadata, missingRecording, missingDay, missingSpeaker, invalidWallClock
 }
 
+/// Starts every recording (`time` is its capture-time start, `HH:mm`) and every
+/// later capture day inside one continuous recording (no time).
 public struct TranscriptDateSeparator: Equatable, Sendable {
     public let recordingID: UUID
     public let dayID: UUID
     public let date: String
     public let isResumption: Bool
-    public var text: String { "------------ [\(Self.display(date))]\(isResumption ? " resumption" : "") ------------" }
+    public let time: String?
+    /// Why a recording with saved audio has no text (not transcribed, failed, no speech).
+    public let note: String?
+
+    public init(recordingID: UUID, dayID: UUID, date: String, isResumption: Bool, time: String? = nil, note: String? = nil) {
+        self.recordingID = recordingID; self.dayID = dayID; self.date = date
+        self.isResumption = isResumption; self.time = time; self.note = note
+    }
+
+    /// The first separator of a recording, which carries its actions.
+    public var isRecordingStart: Bool { time != nil }
+    public var text: String {
+        "------------ [\(Self.display(date))\(time.map { " · " + $0 } ?? "")]\(isResumption ? " resumption" : "") ------------"
+    }
 
     /// "2026-09-24" → "September 24, 2026". The frozen capture-day string is
     /// formatted as a calendar date, independent of the current time zone.
@@ -60,9 +75,11 @@ public enum TranscriptDisplayItem: Equatable, Identifiable, Sendable {
 public enum TranscriptFormatter {
     /// Supply current speaker assignments, not their revision history. All
     /// inputs belong to one meeting; missing provenance is an explicit error.
+    /// A recording without segments appears, as a separator with its note, only
+    /// when `emptyNotes` names it.
     public static func format(meetingID: UUID, recordings: [Recording], segments: [TranscriptSegment],
                               speakers: [DaySpeaker], assignments: [SpeakerAssignment] = [],
-                              anchors: [FragmentAnchor] = []) throws -> [TranscriptDisplayItem] {
+                              anchors: [FragmentAnchor] = [], emptyNotes: [UUID: String] = [:]) throws -> [TranscriptDisplayItem] {
         guard recordings.allSatisfy({ $0.meetingID == meetingID }), anchors.allSatisfy({ $0.meetingID == meetingID }),
               speakers.allSatisfy({ $0.meetingID == meetingID && $0.number > 0 }),
               assignments.allSatisfy({ $0.meetingID == meetingID }),
@@ -144,6 +161,28 @@ public enum TranscriptFormatter {
         var furthestActiveEnd = MediaTime.zero
         var furthestWallEnd = Date.distantPast
         var previousDate: String?
+        var previousRecording: UUID?
+        let withText = Set(segments.map(\.recordingID))
+        var pendingEmpty = orderedRecordings.filter { !withText.contains($0.id) && emptyNotes[$0.id] != nil }
+
+        /// A recording's first separator: its start date and time in its frozen
+        /// zone; `resumption` when it starts on a later day than shown before.
+        func start(_ recording: Recording, day: RecordingDay?, note: String?) throws {
+            let date = day?.localDate ?? Self.localDate(recording.startedAt, zone: TimeZone(identifier: recording.timeZoneIdentifier))
+            let zone = day.flatMap { TimeZone(secondsFromGMT: $0.utcOffsetSeconds) } ?? TimeZone(identifier: recording.timeZoneIdentifier)
+            result.append(.date(TranscriptDateSeparator(recordingID: recording.id, dayID: day?.id ?? recording.id, date: date,
+                isResumption: previousDate.map { date > $0 } ?? false,
+                time: try time(recording.startedAt, zone: zone), note: note)))
+            previousDate = date
+            previousRecording = recording.id
+        }
+        /// Text-less recordings ordered before `recording` (all of them when nil).
+        func emitEmpty(before recording: Recording?) throws {
+            while let next = pendingEmpty.first, recording.map({ order[next.id]! < order[$0.id]! }) ?? true {
+                pendingEmpty.removeFirst()
+                try start(next, day: next.days.first, note: emptyNotes[next.id])
+            }
+        }
 
         func flush() throws {
             guard let first = current.first else { return }
@@ -185,11 +224,16 @@ public enum TranscriptFormatter {
                     try flush()
                 }
             }
-            if previousDate != day.localDate {
+            if previousRecording != recording.id {
                 try flush()
-                let resumption = previousDate.map { day.localDate > $0 && day.id == recording.days.first?.id } ?? false
+                try emitEmpty(before: recording)
+                try start(recording, day: recording.days.first, note: nil)
+            }
+            if previousDate != day.localDate {
+                // Continuous capture crossing midnight: a plain date, never a resumption.
+                try flush()
                 result.append(.date(TranscriptDateSeparator(recordingID: recording.id, dayID: day.id,
-                    date: day.localDate, isResumption: resumption)))
+                    date: day.localDate, isResumption: false)))
                 previousDate = day.localDate
             }
             let wallEnd = segment.wallClockStart.addingTimeInterval(segment.interval.duration.seconds)
@@ -201,7 +245,24 @@ public enum TranscriptFormatter {
             current.append(segment)
         }
         try flush()
+        try emitEmpty(before: nil)
         return result
+    }
+
+    private static func time(_ date: Date, zone: TimeZone?) throws -> String {
+        guard let zone else { throw TranscriptFormattingError.invalidWallClock }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        guard let hour = parts.hour, let minute = parts.minute else { throw TranscriptFormattingError.invalidWallClock }
+        return String(format: "%02d:%02d", hour, minute)
+    }
+
+    private static func localDate(_ date: Date, zone: TimeZone?) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone ?? .current
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
 
     private static func timestamp(_ date: Date, day: RecordingDay) throws -> String {

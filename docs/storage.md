@@ -104,6 +104,36 @@ Deletion commits a tombstone and removes dependent records before cleaning only
 `cleanupDeletedMeeting`; symlinks within that owned folder are removed without
 following their targets. Late saves and job results cannot recreate the parent.
 
+### Deleting one recording
+
+`SessionStore.deleteRecording(meetingID:recordingID:)` permanently removes one
+`complete` or `interrupted` recording (`RecordingDeletionError.capturing` otherwise)
+in one transaction:
+
+1. Inserts `recording_tombstones (id, meeting_id, deleted_at)`.
+2. Trims the meeting translation head without a model: a new `GeneratedOutput`
+   and `translationSource` under a new job snapshot that drops the recording's
+   generation, revision, translated segments and removed voices. It is exactly as
+   current or outdated as before. With no remaining text the head is removed.
+3. Deletes the recording's jobs (`job`, `summarySource`, `translationSource`,
+   `finalCheckpoint` rows by job id, and heads scoped to those job ids), its
+   fragment anchors and their heads, and day speakers (with `assignment`,
+   `automaticVoiceMatch` rows and heads) whose capture days no remaining recording
+   has.
+4. Deletes every record and head scoped to the recording id: the recording,
+   transcript revisions, final publications, checkpoints and summaries.
+5. Cancels unfinished translation jobs of the meeting (they cover the recording)
+   and bumps `meeting.generation`; `cancellationGeneration` is unchanged, so other
+   recordings' queued work continues.
+
+After the commit `Meetings/<meeting>/Recordings/<recording>` is removed. A failure
+there is not reported: opening the store removes folders of all tombstoned
+recordings, `MeetingRecorder.recoverAfterRelaunch` skips them, and `saveRecording`
+refuses a tombstoned id, so late writers cannot bring the recording back. Notes,
+other recordings and saved global voices (`Speakers.sqlite3`) are not touched.
+Deleting the meeting removes its tombstones with it. The workspace pauses the
+player and cancels the recording's running work first.
+
 Notes have immutable revisions and a separately stored visible head. Edits first
 write a recovery file, then stage a database entry. A failed database write
 retains the file; a failed filesystem write retains the editor's in-memory text
@@ -133,8 +163,9 @@ payloads without changing schema version 2.
 ## Schema upgrades and recovery
 
 Manifest format and domain payload format are version 1. SQLite schema is
-version 2: version 1 contains meetings, tombstones, revision records and heads;
-version 2 adds pending notes and the meeting-record index. An unsupported newer
+version 3: version 1 contains meetings, tombstones, revision records and heads;
+version 2 adds pending notes and the meeting-record index; version 3 adds
+`recording_tombstones`. An unsupported newer
 manifest/database version is refused. For a closed WAL-mode database without sidecars, a bounded descriptor-relative
 header check refuses newer versions before opening the normal connection;
 SQLite then verifies schema/application/library identity before application

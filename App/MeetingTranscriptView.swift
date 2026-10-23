@@ -10,8 +10,13 @@ struct MeetingTranscriptView: View {
     /// The workspace player. With it, timestamps play from their speech and the
     /// block under the playhead is highlighted; fixtures pass nil.
     var player: MeetingPlayer?
+    /// Deletes one recording after confirmation; nil hides the trash buttons.
+    var deleteRecording: ((UUID) async -> Void)?
+    /// Why a recording cannot be deleted now (it is capturing), or nil.
+    var deleteRefusal: (UUID) -> String? = { _ in nil }
     @State private var index: TranscriptPlaybackIndex?
     @State private var confirmClearNames = false
+    @State private var deleting: Recording?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -53,9 +58,7 @@ struct MeetingTranscriptView: View {
                         ForEach(snapshot.items) { item in
                             switch item {
                             case .date(let day):
-                                Text(day.text).font(.callout).foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, alignment: .center)
-                                    .padding(.vertical, 8)
+                                separator(day, in: snapshot)
                             case .speech(let block):
                                 // The name flows with the speech, so long names and
                                 // text wrap under the timestamp instead of a narrow column.
@@ -93,6 +96,16 @@ struct MeetingTranscriptView: View {
                 }
             } else if presentation.isBusy { ProgressView("Loading transcript…") }
         }
+        .alert("Delete Recording?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+               presenting: deleting) { recording in
+            Button("Delete", role: .destructive) {
+                Task { await deleteRecording?(recording.id) }
+            }
+            Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: { recording in
+            Text(deletionMessage(recording))
+        }
         .confirmationDialog("Clear all speaker names in this meeting?", isPresented: $confirmClearNames) {
             Button("Clear Names", role: .destructive) { Task { await presentation.clearSpeakerNames() } }
         } message: {
@@ -106,6 +119,49 @@ struct MeetingTranscriptView: View {
         .task { await presentation.refresh() }
         .onChange(of: IndexKey(items: presentation.snapshot?.items, meetingID: player?.meetingID, duration: player?.duration),
                   initial: true) { rebuildIndex() }
+    }
+
+    /// A recording's separator carries its delete action; a plain date separator
+    /// (continuous capture past midnight) does not.
+    @ViewBuilder private func separator(_ day: TranscriptDateSeparator, in snapshot: MeetingTranscriptSnapshot) -> some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                Text(day.text).font(.callout).foregroundStyle(.secondary)
+                if day.isRecordingStart, deleteRecording != nil,
+                   let recording = snapshot.recordings.first(where: { $0.id == day.recordingID }) {
+                    let refusal = deleteRefusal(recording.id)
+                    Button { deleting = recording } label: { Image(systemName: "trash") }
+                        .buttonStyle(.borderless).controlSize(.small).foregroundStyle(.secondary)
+                        .disabled(refusal != nil || presentation.isBusy)
+                        .help(refusal ?? "Delete Recording")
+                        .accessibilityLabel("Delete recording of \(TranscriptDateSeparator.display(day.date)) at \(day.time ?? "")")
+                }
+            }
+            if let note = day.note {
+                Text(note).font(.callout).italic().foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, 8)
+    }
+
+    /// Names the recording by position, date, start time and length, and says what goes and what stays.
+    private func deletionMessage(_ recording: Recording) -> String {
+        let recordings = (presentation.snapshot?.recordings ?? []).sorted {
+            $0.startedAt == $1.startedAt ? $0.id.uuidString < $1.id.uuidString : $0.startedAt < $1.startedAt
+        }
+        let position = (recordings.firstIndex { $0.id == recording.id } ?? 0) + 1
+        // The same capture-time date and start as its separator shows.
+        let start = presentation.snapshot?.items.lazy.compactMap { item -> TranscriptDateSeparator? in
+            if case .date(let day) = item, day.recordingID == recording.id, day.isRecordingStart { day } else { nil }
+        }.first
+        let date = start.map { TranscriptDateSeparator.display($0.date) } ?? ""
+        let time = start?.time ?? ""
+        let seconds = Int(recording.activeDuration.seconds.rounded())
+        let length = seconds < 60 ? "\(seconds) s" : "\(Int((Double(seconds) / 60).rounded())) min"
+        return "Recording \(position) of \(recordings.count) · \(date) at \(time) · \(length). "
+            + "Its audio, transcript, summary and speaker names for that day are deleted permanently and cannot be recovered. "
+            + "The translation keeps only the other recordings. Notes and saved voices stay."
     }
 
     private struct IndexKey: Equatable { let items: [TranscriptDisplayItem]?; let meetingID: UUID?; let duration: MediaTime? }

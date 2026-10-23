@@ -90,7 +90,7 @@ private func dates(_ items: [TranscriptDisplayItem]) -> [TranscriptDateSeparator
         #expect(blocks(result).count == 2)
     }
 
-    @Test func recordingBoundaryNeverMergesEvenOnTheSameDay() throws {
+    @Test func everyRecordingStartsWithItsOwnSeparatorEvenOnTheSameDay() throws {
         let fixture = try TranscriptFixture()
         var second = try Recording(meetingID: fixture.meetingID,
             startedAt: fixture.recording.startedAt.addingTimeInterval(2), timeZoneIdentifier: "UTC")
@@ -102,7 +102,44 @@ private func dates(_ items: [TranscriptDisplayItem]) -> [TranscriptDateSeparator
             recordings: [second, fixture.recording], segments: [segment, fixture.segment(0, 1_000_000, text: "First file.")],
             speakers: [fixture.speaker])
         #expect(blocks(result).count == 2)
-        #expect(dates(result).count == 1)
+        // Each recording has its own separator with its start time; same day, no resumption.
+        #expect(dates(result).map(\.text) == ["------------ [September 24, 2026 · 12:00] ------------",
+                                              "------------ [September 24, 2026 · 12:00] ------------"])
+        #expect(dates(result).map(\.recordingID) == [fixture.recording.id, second.id])
+        #expect(dates(result).allSatisfy { $0.isRecordingStart && !$0.isResumption })
+        #expect(Set(result.map(\.id)).count == result.count)
+    }
+
+    @Test func recordingsWithoutTextKeepTheirPlaceWithANote() throws {
+        let fixture = try TranscriptFixture()
+        func recording(after hours: Double) throws -> Recording {
+            var value = try Recording(meetingID: fixture.meetingID,
+                startedAt: fixture.recording.startedAt.addingTimeInterval(hours * 3600), timeZoneIdentifier: "UTC")
+            value.days = fixture.recording.days
+            return value
+        }
+        let failed = try recording(after: 1), third = try recording(after: 3)
+        let unnoted = try recording(after: 2)
+        let last = TranscriptSegment(recordingID: third.id, dayID: fixture.speaker.dayID, track: .system,
+            interval: try MediaInterval(start: .zero, end: MediaTime(seconds: 1)), wallClockStart: third.startedAt,
+            speaker: .system(daySpeakerID: fixture.speaker.id), originalText: "Third.")
+        let result = try TranscriptFormatter.format(meetingID: fixture.meetingID,
+            recordings: [third, unnoted, failed, fixture.recording],
+            segments: [last, fixture.segment(0, 1_000_000, text: "First.")], speakers: [fixture.speaker],
+            emptyNotes: [failed.id: "Transcription failed"])
+        // The failed middle recording sits between the others' text; one without a note is left out.
+        #expect(result.map(\.text) == [
+            "------------ [September 24, 2026 · 12:00] ------------",
+            "[12:00:00]: Voice1 - First.",
+            "------------ [September 24, 2026 · 13:00] ------------",
+            "------------ [September 24, 2026 · 15:00] ------------",
+            "[15:00:00]: Voice1 - Third."
+        ])
+        #expect(dates(result)[1].note == "Transcription failed" && dates(result)[1].recordingID == failed.id)
+        // A transcript of only text-less recordings still lists them.
+        let empty = try TranscriptFormatter.format(meetingID: fixture.meetingID, recordings: [failed], segments: [],
+            speakers: [], emptyNotes: [failed.id: "Not transcribed"])
+        #expect(dates(empty).map(\.note) == ["Not transcribed"])
     }
 
     @Test func midnightIsOrdinaryButLaterRecordingGetsResumption() throws {
@@ -123,10 +160,11 @@ private func dates(_ items: [TranscriptDisplayItem]) -> [TranscriptDateSeparator
         let result = try TranscriptFormatter.format(meetingID: fixture.meetingID, recordings: [resumed, fixture.recording],
             segments: [resumeSegment, continuing, fixture.segment(0, 1_000_000, text: "First day.")], speakers: [fixture.speaker])
         #expect(dates(result).map(\.isResumption) == [false, false, true])
+        #expect(dates(result).map(\.isRecordingStart) == [true, false, true])
         #expect(dates(result).map(\.text) == [
-            "------------ [September 24, 2026] ------------",
+            "------------ [September 24, 2026 · 23:59] ------------",
             "------------ [September 25, 2026] ------------",
-            "------------ [September 27, 2026] resumption ------------"
+            "------------ [September 27, 2026 · 23:59] resumption ------------"
         ])
         #expect(blocks(result).count == 3)
     }

@@ -177,6 +177,10 @@ public struct RecordControls: Equatable, Sendable {
     public var unavailableModels: (@Sendable ([ModelSnapshot]) async throws -> [ModelRole])?
     /// Runs before a recording takes the capture lease (dictation cancels itself).
     public var beforeCapture: (@Sendable () async -> Void)?
+    /// Stops playback of a meeting before one of its recordings is deleted.
+    public var stopPlayback: ((UUID) -> Void)?
+    /// Changes when a recording is deleted, so summary and translation views reload.
+    public private(set) var recordingDeletions = 0
     /// Changes whenever the selected meeting's published transcript may have changed.
     public private(set) var transcriptGeneration = 0
     /// Meetings whose final transcription runs or waits, for the sidebar and status.
@@ -322,6 +326,41 @@ public struct RecordControls: Equatable, Sendable {
         if selectedID == id {
             selectedID = meetings.isEmpty ? nil : meetings[min(index ?? 0, meetings.count - 1)].id
         }
+    }
+
+    // MARK: Deleting a recording
+
+    /// Why a recording of the selected meeting cannot be deleted now, or nil.
+    public func deleteRefusal(recordingID: UUID) -> String? {
+        if isQuitting { return "TalkTrack is quitting." }
+        guard let recording = recordings.first(where: { $0.id == recordingID }) else { return "This recording is unavailable." }
+        if [.preparing, .recording, .paused, .stopping].contains(recording.state) {
+            return "Stop recording before deleting this recording."
+        }
+        return nil
+    }
+
+    /// Stops playback and the recording's work (and a translation covering it),
+    /// then permanently deletes it from the selected meeting.
+    public func deleteRecording(_ recordingID: UUID) async {
+        guard let meetingID = selected?.id else { return }
+        if let refusal = deleteRefusal(recordingID: recordingID) {
+            issue = WorkspaceIssue(message: "This recording cannot be deleted now.", recovery: refusal)
+            return
+        }
+        stopPlayback?(meetingID)
+        let active: (ProcessingJob) -> Bool = { ![.completed, .failed, .interrupted, .cancelled].contains($0.stage) }
+        for job in (try? await store.jobs(meetingID: meetingID)) ?? []
+            where active(job) && (job.snapshot.recordingID == recordingID || job.snapshot.kind == .translation) {
+            try? await runner.cancel(jobID: job.id)
+        }
+        do { try await store.deleteRecording(meetingID: meetingID, recordingID: recordingID) }
+        catch { issue = WorkspaceIssue(error) }
+        recordingDeletions += 1
+        transcriptGeneration += 1
+        await refreshQueue()
+        await reloadMeetings()
+        await loadSelection()
     }
 
     // MARK: Recording
