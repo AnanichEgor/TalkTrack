@@ -6,7 +6,6 @@ import TalkTrackTextMLX
 extension InferenceRuntime: FinalTranscriptionInference {
     public func unavailableFinalModels(_ models: [ModelSnapshot]) async throws -> [ModelRole] {
         var missing: [ModelRole] = []
-        let catalog = try ModelCatalog.bundled()
         for model in models {
             _ = try catalog.model(for: model)
             if try await !isInstalled(model) { missing.append(model.role) }

@@ -41,6 +41,8 @@ public enum TextConfigurationValidation {
               let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let modelType = root["model_type"] as? String else { throw TextAdapterError.configuration }
         if modelType == "qwen3" { return try validateQwen3Dense4B(root) }
+        if modelType == "gemma3" { return try validateGemma3Dense4B(root) }
+        if modelType == "gemma4" { return try validateGemma4E4B(root) }
         guard ["qwen3_5_moe", "qwen3_5"].contains(modelType),
               root["auto_map"] == nil,
               // Text-only conversions keep the text settings at the top level.
@@ -95,6 +97,36 @@ public enum TextConfigurationValidation {
               quant["bits"] as? Int == 4, quant["group_size"] as? Int == 128 else { throw TextAdapterError.configuration }
         return .qwen3Dense4B
     }
+
+    /// mlx-community/gemma-3-4b-it-qat-4bit (an mlx-vlm conversion; the loader
+    /// keeps `language_model` and drops the vision tower), comparison only.
+    private static func validateGemma3Dense4B(_ root: [String: Any]) throws -> TextMemoryProfile {
+        let dimensions = ["hidden_size": 2560, "num_hidden_layers": 34, "num_attention_heads": 8,
+            "num_key_value_heads": 4, "head_dim": 256, "intermediate_size": 10240,
+            "vocab_size": 262208, "sliding_window": 1024, "sliding_window_pattern": 6]
+        guard root["auto_map"] == nil, let config = root["text_config"] as? [String: Any],
+              config["model_type"] as? String == "gemma3_text",
+              dimensions.allSatisfy({ config[$0.key] as? Int == $0.value }),
+              let quant = root["quantization"] as? [String: Any], quant.count == 2,
+              quant["bits"] as? Int == 4, quant["group_size"] as? Int == 64 else { throw TextAdapterError.configuration }
+        return .gemma3Dense4B
+    }
+
+    /// mlx-community/gemma-4-e4b-it-4bit (vision/audio towers are dropped on load), comparison only.
+    private static func validateGemma4E4B(_ root: [String: Any]) throws -> TextMemoryProfile {
+        let dimensions = ["hidden_size": 2560, "num_hidden_layers": 42, "num_attention_heads": 8,
+            "num_key_value_heads": 2, "head_dim": 256, "global_head_dim": 512, "intermediate_size": 10240,
+            "vocab_size": 262144, "sliding_window": 512, "num_kv_shared_layers": 18]
+        guard root["auto_map"] == nil, let config = root["text_config"] as? [String: Any],
+              config["model_type"] as? String == "gemma4_text", config["enable_moe_block"] as? Bool == false,
+              dimensions.allSatisfy({ config[$0.key] as? Int == $0.value }),
+              let layers = config["layer_types"] as? [String], layers.count == 42,
+              layers.prefix(24).filter({ $0 == "full_attention" }).count == 4,
+              let quant = root["quantization"] as? [String: Any],
+              quant["bits"] as? Int == 4, quant["group_size"] as? Int == 64,
+              quant["mode"] == nil || quant["mode"] as? String == "affine" else { throw TextAdapterError.configuration }
+        return .gemma4E4B
+    }
 }
 
 /// Token selection. Production uses greedy decoding; sampled settings exist
@@ -111,29 +143,21 @@ public struct TextSampling: Sendable, Equatable {
     public var penaltyContextSize = 20
     public var seed: UInt64 = 1
     public static let greedy = TextSampling()
-    /// Summaries: on the task 7.1 review, temperature 0.2 with repetition
-    /// penalty 1.05 stopped notes facts from becoming action items (0/18 runs
-    /// over two seeds, against 5/9 greedy) without changing names or numbers.
-    /// The fixed seed keeps a regenerated summary reproducible.
+    /// Summaries: on the task 7.1 review, temperature 0.2 with a repetition
+    /// penalty stopped notes facts from becoming action items (0/18 runs over
+    /// two seeds, against 5/9 greedy) without changing names or numbers.
+    /// The fixed seed keeps a regenerated summary reproducible. Top-p 0.9 and
+    /// top-k 40 (user choice, 2026-10-23) cut the tail of the distribution.
+    /// Penalty 1.05 over the library's 20-token window let Qwen3.5-4B and then
+    /// 9B repeat one Decisions line until the output limit on a real 22-minute
+    /// Russian standup: one summary line is longer than the window. A 64-token
+    /// window with penalty 1.1 ended every run; a longer window or a stronger
+    /// penalty dropped the required citations.
     public static let summary: TextSampling = {
-        var value = TextSampling(); value.temperature = 0.2; value.repetitionPenalty = 1.05; value.seed = 1
+        var value = TextSampling(); value.temperature = 0.2; value.topP = 0.9; value.topK = 40
+        value.repetitionPenalty = 1.1; value.penaltyContextSize = 64; value.seed = 1
         return value
     }()
-
-    /// Qwen3.5-4B repeated one Decisions line until the output limit on a real
-    /// 22-minute Russian standup with the settings above: the library's default
-    /// 20-token penalty window is shorter than one summary line. A 64-token
-    /// window with penalty 1.1 ended every run (5 of 7 attempts in format); a
-    /// longer window or a stronger penalty dropped the required citations.
-    public static let compactSummary: TextSampling = {
-        var value = summary; value.repetitionPenalty = 1.1; value.penaltyContextSize = 64
-        return value
-    }()
-
-    /// The summary settings validated for that checkpoint.
-    public static func summary(repository: String) -> TextSampling {
-        repository == "mlx-community/Qwen3.5-4B-OptiQ-4bit" ? compactSummary : summary
-    }
     public init() {}
 
     var parameters: GenerateParameters {

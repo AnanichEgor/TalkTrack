@@ -12,15 +12,16 @@ public final class InferenceRuntime: ModelInstallationControl, DictationInferenc
     private let scheduler = InferenceScheduler()
     private let files = ModelDownloadFiles()
     private let downloads: ModelDownloadCoordinator
-    private let catalog: ModelCatalog
+    let catalog: ModelCatalog
     private let liveModels = LiveCaptureModels()
     private let residents = ResidentModels()
     private let dictation: DictationModelHolder<QwenSpeechAdapter>
 
-    public init() throws {
-        catalog = try ModelCatalog.bundled()
+    /// `catalog` replaces the bundled one only in measurement fixtures (comparison candidates).
+    public init(catalog: ModelCatalog? = nil) throws {
+        self.catalog = try catalog ?? ModelCatalog.bundled()
         downloads = ModelDownloadCoordinator(files: files)
-        dictation = DictationModelHolder(load: { [catalog, files] id in
+        dictation = DictationModelHolder(load: { [catalog = self.catalog, files] id in
             let adapter = QwenSpeechAdapter()
             try await adapter.load(catalog.model(id: id), files: files)
             return adapter

@@ -20,7 +20,7 @@ extension InferenceRuntime: SummaryTextInference {
         guard model.role == .summary else { throw SummaryGenerationError.invalidRequest }
         do {
             // Each attempt is reproducible; a retry after an invalid format samples anew.
-            var sampling = TextSampling.summary(repository: model.repository); sampling.seed += UInt64(max(0, attempt))
+            var sampling = TextSampling.summary; sampling.seed += UInt64(max(0, attempt))
             let result = try await generate(model, settings: settings, system: system, prompt: prompt,
                                             maxTokens: outputTokens, sampling: sampling)
             return SummaryTextResponse(text: result.text, contextPlan: result.contextPlan, generatedTokens: result.generatedTokens)
