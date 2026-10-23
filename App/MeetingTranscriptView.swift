@@ -194,6 +194,7 @@ struct MeetingTranscriptView: View {
         if let player, let start = index?.start(of: id) {
             Button { player.play(from: start, meetingID: presentation.meetingID) } label: { label }
                 .buttonStyle(.plain)
+                .pointerStyle(player.canPlay ? .link : nil)
                 .disabled(!player.canPlay)
                 .help(player.captureActive ? "Playback is unavailable while TalkTrack is recording" : "Play from \(block.timestamp)")
                 .accessibilityLabel("Play from \(block.timestamp)")
