@@ -130,11 +130,15 @@ struct MeetingTranscriptView: View {
                 if day.isRecordingStart, deleteRecording != nil,
                    let recording = snapshot.recordings.first(where: { $0.id == day.recordingID }) {
                     let refusal = deleteRefusal(recording.id)
-                    Button { deleting = recording } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless).controlSize(.small).foregroundStyle(.secondary)
-                        .disabled(refusal != nil || presentation.isBusy)
-                        .help(refusal ?? "Delete Recording")
-                        .accessibilityLabel("Delete recording of \(TranscriptDateSeparator.display(day.date)) at \(day.time ?? "")")
+                    let enabled = refusal == nil && !presentation.isBusy
+                    Button { deleting = recording } label: {
+                        Image(systemName: "trash").font(.callout).frame(width: 20, height: 20).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).foregroundStyle(enabled ? .secondary : .tertiary)
+                    .pointerStyle(enabled ? .link : nil)
+                    .disabled(!enabled)
+                    .help(refusal ?? "Delete Recording")
+                    .accessibilityLabel("Delete recording of \(TranscriptDateSeparator.display(day.date)) at \(day.time ?? "")")
                 }
             }
             if let note = day.note {
