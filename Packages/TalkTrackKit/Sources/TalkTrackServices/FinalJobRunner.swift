@@ -6,6 +6,8 @@ public enum FinalJobRunnerEvent: Sendable, Equatable {
     /// `error` is nil after a successful publication. The job's stored stage
     /// (failed, interrupted, waitingForModels) carries the durable outcome.
     case finished(jobID: UUID, meetingID: UUID, error: String?)
+    /// Audio progress of the running final transcription.
+    case progress(FinalJobProgress)
 }
 
 /// Runs the configured durable job kinds one at a time, oldest first. Jobs left
@@ -35,6 +37,9 @@ public actor FinalJobRunner {
     public static func pipeline(_ pipeline: FinalTranscriptionPipeline) -> @Sendable (UUID) async throws -> Void {
         { _ = try await pipeline.runAndPublish(jobID: $0) }
     }
+
+    /// Forwards the running job's progress, for `FinalTranscriptionPipeline.setProgressHandler`.
+    public nonisolated func report(_ progress: FinalJobProgress) { continuation.yield(.progress(progress)) }
 
     /// Looks for queued work. Safe to call at any time and repeatedly.
     public func wake() {

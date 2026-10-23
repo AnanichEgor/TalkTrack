@@ -185,7 +185,7 @@ struct MeetingSidebar: View {
                     List(selection: $workspace.selectedID) {
                         ForEach(workspace.meetings) { meeting in
                             MeetingRow(meeting: meeting, isRecording: workspace.activeMeeting?.id == meeting.id,
-                                       isPaused: workspace.phase == .paused)
+                                       isPaused: workspace.phase == .paused, queue: workspace.queueStates[meeting.id])
                                 .tag(meeting.id)
                                 .contextMenu {
                                     Button("Rename…") { sheet = .edit(meeting) }
@@ -217,6 +217,8 @@ struct MeetingRow: View {
     let meeting: Meeting
     let isRecording: Bool
     let isPaused: Bool
+    /// Final transcription running or waiting, shown while another meeting is selected.
+    var queue: FinalQueueState?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -228,6 +230,10 @@ struct MeetingRow: View {
                 if isRecording {
                     Label(isPaused ? "Paused" : "Recording", systemImage: isPaused ? "pause.circle.fill" : "record.circle.fill")
                         .labelStyle(.titleAndIcon).foregroundStyle(isPaused ? Color.pausedText : Color.errorText)
+                } else if let queue {
+                    Image(systemName: queue == .running ? "waveform" : "clock")
+                        .accessibilityLabel(queue.accessibilityLabel)
+                        .help(queue == .running ? "Transcribing" : queue.message)
                 }
             }
             .font(.caption).foregroundStyle(.secondary)

@@ -266,12 +266,43 @@ struct StatusRow: View {
     let status: MeetingProcessingStatus
     let policy: FinalJobPolicy
 
+    /// While the bar shows progress, the stage saved every few seconds would only
+    /// flicker between reading, recognizing and speakers.
+    private var message: String {
+        if workspace.selectedProgress != nil, case .processing(let stage) = status,
+           [.queued, .decoding, .transcribing, .aligning, .diarizing].contains(stage) { return "Transcribing…" }
+        return workspace.selectedQueueMessage ?? status.message
+    }
+
     var body: some View {
+        // The hidden button reserves the height of the row's buttons in every
+        // state, so the transcript below never moves when they come and go.
+        ZStack(alignment: .leading) {
+            Button("Cancel") {}.controlSize(.small).hidden().accessibilityHidden(true)
+            row
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: 8) {
             icon.accessibilityHidden(true)
             // Recreated per message: selectable text keeps a stale accessibility value.
-            Text(status.message).font(.callout).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
-                .id(status.message)
+            Text(message).font(.callout).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
+                .layoutPriority(1)
+                .id(message)
+            if let progress = workspace.selectedProgress {
+                ProgressView(value: progress.fraction).progressViewStyle(.linear).controlSize(.small)
+                    .frame(width: 120)
+                    .accessibilityLabel("Transcription progress")
+                if let remaining = progress.remaining {
+                    Text(remaining).font(.callout).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
+                }
+            }
+            if workspace.canCancelProcessing, status.isQueuedOrProcessing {
+                Button("Cancel") { Task { await workspace.cancelProcessing() } }
+                    .controlSize(.small)
+                    .help("Stop transcribing this meeting. The current transcript and audio stay.")
+            }
             if case .waitingForModels(_, let roles) = status, !roles.isEmpty {
                 Button("Download Models…") {
                     app.showMissingModels(roles)
@@ -304,7 +335,8 @@ struct StatusRow: View {
         case .ready: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .recording: Image(systemName: "record.circle.fill").foregroundStyle(.red)
         case .paused: Image(systemName: "pause.circle.fill").foregroundStyle(.orange)
-        case .queued, .processing: ProgressView().controlSize(.small)
+        case .queued: Image(systemName: "clock").foregroundStyle(.secondary)
+        case .processing: ProgressView().controlSize(.small)
         case .waitingForModels: Image(systemName: "arrow.down.circle.fill").foregroundStyle(.orange)
         case .failed, .interrupted: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
         case .notProcessed, .noRecordings: Image(systemName: "info.circle").foregroundStyle(.secondary)

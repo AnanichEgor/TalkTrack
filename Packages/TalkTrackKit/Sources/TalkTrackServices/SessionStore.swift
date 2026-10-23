@@ -443,6 +443,34 @@ public actor SessionStore {
                 ? $0.id.uuidString < $1.id.uuidString : $0.snapshot.createdAt < $1.snapshot.createdAt }
     }
 
+    /// Final transcriptions of all meetings in the order the runner takes them:
+    /// running ones first, then queued ones oldest first.
+    public func finalQueue() throws -> [ProcessingJob] {
+        let order: (ProcessingJob, ProcessingJob) -> Bool = { $0.snapshot.createdAt == $1.snapshot.createdAt
+            ? $0.id.uuidString < $1.id.uuidString : $0.snapshot.createdAt < $1.snapshot.createdAt }
+        let jobs = try meetings().flatMap { meeting -> [ProcessingJob] in try records(.job, meetingID: meeting.id) }
+            .filter { $0.snapshot.kind == .finalTranscription
+                && ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains($0.stage) }
+        return jobs.filter { $0.stage != .queued }.sorted(by: order) + jobs.filter { $0.stage == .queued }.sorted(by: order)
+    }
+
+    /// The user's Cancel: the meeting's queued and running final transcriptions
+    /// become `cancelled`, so a running one stops at its next save. Other job
+    /// kinds, the audio and published transcripts stay. Returns the cancelled jobs.
+    public func cancelFinalTranscription(meetingID: UUID) throws -> [UUID] {
+        try db.transaction {
+            var cancelled: [UUID] = []
+            for var job in try jobs(meetingID: meetingID) where job.snapshot.kind == .finalTranscription
+                && ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains(job.stage) {
+                job.stage = .cancelled
+                job.lastError = "Cancelled."
+                try saveJob(job)
+                cancelled.append(job.id)
+            }
+            return cancelled
+        }
+    }
+
     public func updateJob(_ id: UUID, stage: JobStage, checkpoint: RelativePath? = nil, error: String? = nil) throws {
         try db.transaction {
             var value = try activeJob(id)

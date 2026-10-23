@@ -364,9 +364,17 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
         try db.execute("CREATE TRIGGER count_final AFTER UPDATE ON records WHEN NEW.kind = 'finalCheckpoint' BEGIN INSERT INTO checkpoint_writes VALUES (1); END")
         let probe = FinalProbe()
         // An hour, so a slow machine's periodic saves cannot make this test flaky.
-        let result = try await FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe,
-                                                          checkpointInterval: .seconds(3600)).run(jobID: fixture.job.id)
+        let pipeline = FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe,
+                                                  checkpointInterval: .seconds(3600))
+        let reports = LockedReports()
+        await pipeline.setProgressHandler { reports.append($0) }
+        let result = try await pipeline.run(jobID: fixture.job.id)
         #expect(result.readyForPublication && result.windows.count == 6)
+        // Progress counts both tracks' audio, only grows and reaches the total.
+        let progress = reports.values
+        #expect(progress.count == 6 && progress.allSatisfy { $0.jobID == fixture.job.id && abs($0.total - 27.5) < 0.1 && $0.resumed == 0 })
+        #expect(zip(progress, progress.dropFirst()).allSatisfy { $0.processed < $1.processed })
+        #expect(progress.last.map { abs($0.processed - $0.total) < 0.001 } == true)
         // Two track ends and the ready result; every step of six windows was 36 more.
         guard case .integer(let writes) = try db.rows("SELECT count(*) FROM checkpoint_writes").first?.first else { Issue.record(); return }
         #expect(writes <= 4)
@@ -615,4 +623,11 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
         #expect(accepted.corrections.map(\.text) == ["Alex will not pay 42", "We meet tomorrow"] && accepted.rejected == 1)
         #expect(try IndexedSpellingCorrection.response(accepted.corrections, originals: rows) == fixed)
     }
+}
+
+private final class LockedReports: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [FinalJobProgress] = []
+    func append(_ value: FinalJobProgress) { lock.withLock { stored.append(value) } }
+    var values: [FinalJobProgress] { lock.withLock { stored } }
 }

@@ -51,6 +51,13 @@ public enum MeetingProcessingStatus: Equatable, Sendable {
         }
     }
 
+    public var isQueuedOrProcessing: Bool {
+        switch self {
+        case .queued, .processing: true
+        default: false
+        }
+    }
+
     public var retryJobID: UUID? {
         switch self {
         case .waitingForModels(let id, _), .interrupted(let id), .failed(let id, _): id
@@ -99,7 +106,11 @@ public enum MeetingProcessingStatus: Equatable, Sendable {
                 states.append(.waitingForModels(jobID: job.id, roles: roles))
             case .interrupted: states.append(.interrupted(jobID: job.id))
             case .failed: states.append(.failed(jobID: job.id, message: job.lastError ?? "Unknown error"))
-            case .cancelled: states.append(.notProcessed(recordingID: recording.id))
+            case .cancelled:
+                // Cancel keeps an earlier final transcript, which is still current.
+                let transcribed = jobs.contains { $0.snapshot.kind == .finalTranscription
+                    && $0.snapshot.recordingID == recording.id && $0.stage == .completed }
+                states.append(transcribed ? .ready : .notProcessed(recordingID: recording.id))
             default: states.append(.processing(job.stage))
             }
         }
@@ -168,6 +179,32 @@ public struct RecordControls: Equatable, Sendable {
     public var beforeCapture: (@Sendable () async -> Void)?
     /// Changes whenever the selected meeting's published transcript may have changed.
     public private(set) var transcriptGeneration = 0
+    /// Meetings whose final transcription runs or waits, for the sidebar and status.
+    public private(set) var queueStates: [UUID: FinalQueueState] = [:]
+    /// Progress and remaining time of the running final transcription, by meeting.
+    public private(set) var progressDisplays: [UUID: FinalProgressDisplay] = [:]
+    private var finalQueue: [ProcessingJob] = []
+    /// The job the runner started last, which may not have left `queued` in storage yet.
+    private var runningJobID: UUID?
+    private var running: RunningFinalJob?
+    /// Track audio of a meeting's jobs finished earlier in the same run of work, so
+    /// its progress bar does not restart at each recording.
+    private var finishedAudio: [UUID: Double] = [:]
+    public static let finalTranscriptionRateKey = "finalTranscriptionRate"
+
+    private struct RunningFinalJob {
+        let jobID: UUID
+        let meetingID: UUID
+        /// Set by the first report: what came before (loading models, the first
+        /// window) is not representative of the rest.
+        var started: ContinuousClock.Instant?
+        var baseline: Double = 0
+        /// Weighted audio seconds of the meeting's recordings, by recording.
+        let audio: [UUID: Double]
+        var progress: FinalJobProgress
+        var elapsed: Double = 0
+        var shownMinutes: Int?
+    }
 
     public let store: SessionStore
     private let recorder: MeetingRecorder
@@ -203,6 +240,7 @@ public struct RecordControls: Equatable, Sendable {
         } catch { issue = WorkspaceIssue(error) }
         await reloadMeetings()
         if selectedID == nil { selectedID = meetings.first?.id }
+        await refreshQueue()
         isLoaded = true
         await runner.wake()
     }
@@ -278,6 +316,7 @@ public struct RecordControls: Equatable, Sendable {
         do {
             try await store.deleteMeeting(id)
         } catch { issue = WorkspaceIssue(error) }
+        await refreshQueue()
         let index = meetings.firstIndex { $0.id == id }
         await reloadMeetings()
         if selectedID == id {
@@ -326,6 +365,109 @@ public struct RecordControls: Equatable, Sendable {
         return status
     }
 
+    /// `In queue: 2nd, after “Daily 5”` while the selected meeting waits behind another.
+    public var selectedQueueMessage: String? {
+        guard case .queued? = selectedStatus, let id = selected?.id, case .queued? = queueStates[id] else { return nil }
+        return queueStates[id]?.message
+    }
+
+    /// Progress of the selected meeting's running final transcription.
+    public var selectedProgress: FinalProgressDisplay? {
+        guard let id = selected?.id, case .processing? = selectedStatus else { return nil }
+        return progressDisplays[id]
+    }
+
+    /// Whether the selected meeting has final transcription to cancel.
+    public var canCancelProcessing: Bool {
+        guard let id = selected?.id else { return false }
+        return queueStates[id] != nil
+    }
+
+    /// Stops the selected meeting's queued and running final transcriptions. The
+    /// audio and any published transcript stay; a transcribed recording is ready again.
+    public func cancelProcessing() async {
+        guard let id = selected?.id else { return }
+        do {
+            for jobID in try await store.cancelFinalTranscription(meetingID: id) {
+                try? await runner.cancel(jobID: jobID)
+            }
+        } catch { issue = WorkspaceIssue(error) }
+        await refreshQueue()
+        await loadSelection()
+    }
+
+    /// Reloads the order of all meetings' final transcriptions.
+    func refreshQueue() async {
+        guard let queue = try? await store.finalQueue() else { return }
+        finalQueue = queue
+        // A search may hide meetings from the list; their titles are read directly.
+        var titles = Dictionary(meetings.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
+        for meetingID in Set(queue.map(\.snapshot.source.meetingID)) where titles[meetingID] == nil {
+            titles[meetingID] = try? await store.meeting(meetingID).title
+        }
+        queueStates = FinalQueueState.states(queue: queue, titles: titles, runningJobID: runningJobID)
+        finishedAudio = finishedAudio.filter { queueStates[$0.key] != nil }
+        if let running, queueStates[running.meetingID] == nil { self.running = nil }
+        progressDisplays = progressDisplays.filter { queueStates[$0.key] == .running }
+    }
+
+    private var storedRate: Double {
+        let value = defaults.double(forKey: Self.finalTranscriptionRateKey)
+        return value > 0 ? value : FinalTranscriptionEstimate.defaultRate
+    }
+
+    private func startProgress(jobID: UUID, meetingID: UUID) async {
+        guard let job = finalQueue.first(where: { $0.id == jobID }), let recordingID = job.snapshot.recordingID,
+              let recordings = try? await store.recordings(meetingID: meetingID) else { return }
+        let audio = Dictionary(recordings.map { ($0.id, FinalJobProgress.audio($0.activeDuration)) },
+                               uniquingKeysWith: { a, _ in a })
+        running = RunningFinalJob(jobID: jobID, meetingID: meetingID, audio: audio,
+            progress: FinalJobProgress(jobID: jobID, processed: 0, total: audio[recordingID] ?? 0))
+        updateDisplay()
+    }
+
+    private func updateProgress(_ progress: FinalJobProgress) {
+        guard var current = running, current.jobID == progress.jobID else { return }
+        guard let started = current.started else {
+            current.started = .now; current.baseline = progress.processed; current.progress = progress
+            running = current; updateDisplay(); return
+        }
+        let elapsed = ContinuousClock.now - started
+        current.elapsed = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
+        current.progress = progress
+        running = current
+        updateDisplay()
+    }
+
+    private func updateDisplay() {
+        guard var current = running else { return }
+        let queued = finalQueue.filter { $0.snapshot.source.meetingID == current.meetingID && $0.stage == .queued && $0.id != current.jobID }
+            .map { $0.snapshot.recordingID.flatMap { current.audio[$0] } ?? 0 }
+        let seconds = FinalTranscriptionEstimate.remaining(progress: current.progress, elapsed: current.elapsed,
+                                                           stored: storedRate, baseline: current.baseline, queuedAudio: queued)
+        let minutes = FinalTranscriptionEstimate.minutes(seconds, shown: current.shownMinutes)
+        current.shownMinutes = minutes
+        running = current
+        let done = finishedAudio[current.meetingID] ?? 0
+        let total = done + current.progress.total + queued.reduce(0, +)
+        progressDisplays[current.meetingID] = FinalProgressDisplay(
+            fraction: total > 0 ? (done + current.progress.processed) / total : 0,
+            remaining: FinalTranscriptionEstimate.label(minutes: minutes))
+    }
+
+    /// A completed job teaches the stored rate the first estimate of the next one uses.
+    private func finishProgress(jobID: UUID, succeeded: Bool) {
+        guard let current = running, current.jobID == jobID else { return }
+        running = nil
+        progressDisplays[current.meetingID] = nil
+        finishedAudio[current.meetingID, default: 0] += current.progress.total
+        let measured = current.progress.processed - max(current.progress.resumed, current.baseline)
+        if succeeded, measured >= FinalTranscriptionEstimate.minimumMeasured {
+            defaults.set(FinalTranscriptionEstimate.updated(stored: storedRate, measured: current.elapsed / measured),
+                         forKey: Self.finalTranscriptionRateKey)
+        }
+    }
+
     public func record() async {
         guard let id = selectedID else { return }
         await command {
@@ -351,6 +493,7 @@ public struct RecordControls: Equatable, Sendable {
 
     public func retry(jobID: UUID) async {
         do { try await runner.retry(jobID: jobID) } catch { issue = WorkspaceIssue(error) }
+        await refreshQueue()
         await loadSelection()
     }
 
@@ -395,6 +538,7 @@ public struct RecordControls: Equatable, Sendable {
                     error: "Missing: " + MeetingProcessingStatus.titles(missing))
             }
         }
+        await refreshQueue()
         await runner.wake()
     }
 
@@ -466,17 +610,26 @@ public struct RecordControls: Equatable, Sendable {
             }
             await runner.wake()
             await reloadMeetings()
+            await refreshQueue()
             if selectedID == result.recording.meetingID { await loadSelection() }
         }
     }
 
     private func handle(_ event: FinalJobRunnerEvent) async {
         switch event {
-        case let .started(_, meetingID):
+        case let .started(jobID, meetingID):
             runningJobMeetingID = meetingID
+            runningJobID = jobID
+            await refreshQueue()
+            await startProgress(jobID: jobID, meetingID: meetingID)
             if selectedID == meetingID { await loadSelection() }
-        case let .finished(_, meetingID, error):
+        case let .progress(progress):
+            updateProgress(progress)
+        case let .finished(jobID, meetingID, error):
             runningJobMeetingID = nil
+            runningJobID = nil
+            finishProgress(jobID: jobID, succeeded: error == nil)
+            await refreshQueue()
             if selectedID == meetingID {
                 await loadSelection()
                 if error == nil { transcriptGeneration += 1 }

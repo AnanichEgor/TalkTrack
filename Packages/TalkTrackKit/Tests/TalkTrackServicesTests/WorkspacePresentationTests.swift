@@ -281,6 +281,80 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
             .appendingPathComponent(".talktrack-library/Meetings/\(meeting.id)").path))
     }
 
+    @Test func cancelStopsTheRunningAndQueuedTranscriptionsOfTheMeeting() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        // Like the pipeline: a cancelled run tries to mark itself interrupted, which a
+        // job the user cancelled refuses.
+        f.behavior.value = { id, store in
+            try await store.updateJob(id, stage: .transcribing)
+            do { try await Task.sleep(for: .seconds(60)) } catch {
+                try? await store.updateJob(id, stage: .interrupted, error: "Cancelled")
+                throw error
+            }
+        }
+        await w.start()
+        let meeting = try await w.createMeeting(title: "Long call", description: "")
+        for _ in 0..<2 {
+            await w.record()
+            #expect(await until { w.phase == .recording })
+            await f.deliver(seconds: 1)
+            await w.stop()
+            #expect(await until { w.phase == .idle })
+        }
+        // The first recording runs, the second waits behind it.
+        #expect(await until { f.processed.value.count == 1 && w.queueStates[meeting.id] == .running })
+        #expect(w.canCancelProcessing && w.selectedStatus?.isQueuedOrProcessing == true)
+        #expect(w.selectedProgress != nil)
+
+        await w.cancelProcessing()
+        #expect(await until { w.runningJobMeetingID == nil })
+        let stages = try await f.store.jobs(meetingID: meeting.id).map(\.stage)
+        #expect(stages == [.cancelled, .cancelled])
+        #expect(w.queueStates.isEmpty && !w.canCancelProcessing && w.selectedProgress == nil)
+        // Nothing else starts; without an earlier transcript the audio can be transcribed again.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(f.processed.value.count == 1)
+        if case .notProcessed? = w.selectedStatus {} else { Issue.record("\(String(describing: w.selectedStatus))") }
+        #expect(w.canReprocess)
+    }
+
+    @Test func aMeetingWaitingBehindAnotherShowsItsPlaceInTheQueue() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        let released = Box<Set<UUID>>([])
+        f.behavior.value = { id, store in
+            try await store.updateJob(id, stage: .transcribing)
+            while !released.value.contains(id) { try await Task.sleep(for: .milliseconds(10)) }
+            try await store.updateJob(id, stage: .validating)
+        }
+        await w.start()
+        var meetings: [Meeting] = []
+        for title in ["Daily 5", "Weekly"] {
+            let meeting = try await w.createMeeting(title: title, description: "")
+            meetings.append(meeting)
+            await w.record()
+            #expect(await until { w.phase == .recording })
+            await f.deliver(seconds: 1)
+            await w.stop()
+            #expect(await until { w.phase == .idle })
+        }
+        let (a, b) = (meetings[0], meetings[1])
+        #expect(await until { w.queueStates == [a.id: .running, b.id: .queued(position: 2, after: "Daily 5")] })
+        // Weekly is selected: it names its place and what it waits for.
+        #expect(w.selectedID == b.id && w.selectedStatus == .queued)
+        #expect(w.selectedQueueMessage == "In queue: 2nd, after “Daily 5”" && w.selectedProgress == nil)
+
+        // Daily 5 finishes: Weekly runs with progress, Daily 5 leaves the queue.
+        released.value.insert(try #require(f.processed.value.first))
+        #expect(await until { w.queueStates == [b.id: .running] })
+        #expect(await until { w.selectedProgress != nil && w.selectedQueueMessage == nil })
+        released.value.insert(try #require(f.processed.value.last))
+        #expect(await until { w.queueStates.isEmpty && w.selectedProgress == nil })
+    }
+
     @Test func quittingSavesCaptureKeepsProcessingForTheNextLaunchAndWritesNotes() async throws {
         let f = try await WorkspaceFixture()
         defer { f.remove() }
@@ -402,6 +476,9 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         // The latest job per recording decides: a retried, completed run replaces an old failure.
         #expect(S.derive(recordings: [a], jobs: [failed, job(a, .completed)]) == .ready)
         #expect(S.derive(recordings: [try recording(.paused)], jobs: []) == .paused)
+        // A cancelled reprocess leaves a transcribed recording ready, an untranscribed one not processed.
+        #expect(S.derive(recordings: [a], jobs: [job(a, .completed), job(a, .cancelled)]) == .ready)
+        #expect(S.derive(recordings: [a], jobs: [job(a, .cancelled)]) == .notProcessed(recordingID: a.id))
         #expect(S.ready.message == "Transcript ready")
     }
 

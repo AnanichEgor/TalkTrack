@@ -282,6 +282,7 @@ struct WorkspaceServices {
                 case .translation: try await translations.run(jobID: id)
                 }
             }
+            await pipeline.setProgressHandler { [weak runner] in runner?.report($0) }
             let workspace = WorkspacePresentation(store: store, recorder: recorder, runner: runner)
             // A meeting takes precedence: an active dictation is cancelled before capture.
             workspace.beforeCapture = { [weak self] in await self?.dictation?.meetingWillStart() }

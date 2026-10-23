@@ -28,6 +28,10 @@ public actor FinalTranscriptionPipeline {
     }
 
     private let checkpointInterval: Duration
+    private var onProgress: (@Sendable (FinalJobProgress) -> Void)?
+
+    /// Receives audio progress after every window step; never touches the database.
+    public func setProgressHandler(_ handler: (@Sendable (FinalJobProgress) -> Void)?) { onProgress = handler }
 
     public init(store: SessionStore, library: OpenedLibrary, inference: any FinalTranscriptionInference) {
         self.init(store: store, library: library, inference: inference, checkpointInterval: Self.checkpointInterval)
@@ -158,6 +162,14 @@ public actor FinalTranscriptionPipeline {
         // At most `2 * asrBatchSize` ten-second PCM windows are read ahead. A resumed
         // job revalidates the AAC receipts but skips already-checkpointed inference.
         var saved = ContinuousClock.now
+        let total = FinalJobProgress.audio(recording.activeDuration)
+        var processed = 0.0, resumed = 0.0
+        func advance(_ window: FinalWindowCheckpoint, resumedWindow: Bool) {
+            let audio = FinalJobProgress.weight(window.track) * window.owned.duration.seconds
+            processed += audio
+            if resumedWindow { resumed += audio }
+            onProgress?(FinalJobProgress(jobID: jobID, processed: processed, total: total, resumed: resumed))
+        }
         for track in AudioTrack.allCases {
             let reader = try await RecordingAudioWindowReader.open(library: library, recording: recording, track: track)
             do {
@@ -189,7 +201,7 @@ public actor FinalTranscriptionPipeline {
                         MicrophoneGate.record(window.samples, start: window.active.start, into: &levels)
                         checkpoint.systemLevels = levels
                     }
-                    if checkpoint.windows[index].complete { continue }
+                    if checkpoint.windows[index].complete { advance(checkpoint.windows[index], resumedWindow: true); continue }
                     switch event {
                     case .gap(let gap):
                         if track == .system {
@@ -282,6 +294,7 @@ public actor FinalTranscriptionPipeline {
                     }
                     checkpoint.windows[index].complete = true
                     try await persist(checkpoint, since: &saved, stage: .decoding)
+                    advance(checkpoint.windows[index], resumedWindow: false)
                 }
                 guard eventIndex == checkpoint.windows.filter({ $0.track == track }).count else {
                     throw FinalTranscriptionError.invalidCheckpoint

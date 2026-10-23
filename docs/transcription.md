@@ -87,7 +87,7 @@ at staging and must not be used as a final-success signal.
 | `completed` | The publication transaction committed the revision, speaker provenance, affected head and job completion together. |
 | `failed` | Staging raised a non-cancellation error; previous text/audio and the last durable checkpoint remain. Inspect the error before retrying. |
 | `interrupted` | Staging was task-cancelled, or unfinished active work was found when opening the store. It can be retried if its source remains valid. |
-| `cancelled` | Explicit meeting-job invalidation cancelled unfinished jobs. The old snapshot cannot be retried; a later operation needs a new job. |
+| `cancelled` | Explicit meeting-job invalidation cancelled unfinished jobs, or the user pressed Cancel in the status row. The old snapshot cannot be retried; a later operation needs a new job. A recording with an earlier completed final job still shows `Transcript ready`. |
 
 Decoding/ASR/alignment/diarization repeat for each source window; stages are not
 monotonic percentages. `generating` and `publishing` exist in the shared enum,
@@ -117,6 +117,44 @@ about a name is separate from incomplete/invalid text. Repeating publication of
 an already completed job returns its original artifact and does not replace a
 newer head again. Low-level `publishTranscript` is retained for persistence
 fixtures; application final processing must consume validated staging.
+
+## Progress, estimate and queue
+
+The workspace shows final transcription from the runner, not from the stored
+stage, which is saved only every few seconds:
+
+- **Progress.** `FinalTranscriptionPipeline` reports `FinalJobProgress` after
+  every window step (in memory, no database writes): weighted audio seconds,
+  system audio fully and microphone audio by 0.1, because most microphone windows
+  skip recognition. A resumed checkpoint's windows count as processed but not as
+  measured. `FinalJobRunner` forwards these as `progress` events.
+- **Status row.** While the selected meeting's job runs, the row reads
+  `Transcribing…` with a bar over the meeting's run of work (earlier finished
+  recordings, the running one and its queued ones) and `about N min left` or
+  `less than a minute left`. Correction and saving keep their own messages.
+- **Estimate.** `FinalTranscriptionEstimate` measures from the job's first report
+  (loading models and the first window are not extrapolated). It starts from the
+  stored `finalTranscriptionRate` preference (default 0.14 s per weighted second)
+  and moves linearly to the job's own rate over the first 10 % of its new audio,
+  adding 5 s per job for correction and saving. Minutes round up and rise only
+  when the estimate exceeds what is shown by half a minute. A completed job with
+  at least 30 s of measured audio averages its rate into the preference. The
+  estimate is approximate and corrects itself as the job runs.
+- **Queue.** `SessionStore.finalQueue()` lists final jobs of all meetings in
+  runner order. Only the runner's current job counts as running; a job left in
+  `validating` by a failed publication neither runs nor waits. A meeting behind
+  another shows `In queue: 2nd, after “Daily 5”` with a clock icon, or
+  `Waiting to transcribe` with nothing ahead (for example while recording).
+  Sidebar rows show `waveform` (running) or `clock` (queued) with accessibility
+  labels.
+- **Cancel.** In place of Reprocess while queued or running.
+  `SessionStore.cancelFinalTranscription(meetingID:)` marks the meeting's queued
+  and running final jobs `cancelled`, then the runner cancels the running task;
+  summaries, translations, audio and published transcripts stay, and the
+  cancellation generation is unchanged. Quitting still interrupts and requeues
+  the running job instead.
+- **Layout.** The row reserves the height of its small buttons in every state,
+  so the transcript below does not move when they change.
 
 ## Retry and relaunch
 
