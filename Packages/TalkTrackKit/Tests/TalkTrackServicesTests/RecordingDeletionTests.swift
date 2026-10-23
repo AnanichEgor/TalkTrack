@@ -5,7 +5,7 @@ import TalkTrackDomain
 
 /// A meeting with three transcribed, summarized and translated recordings.
 /// Recordings 2 and 3 share a capture day, and with it its voice; every voice is named.
-private struct DeletionFixture {
+struct DeletionFixture {
     let library: OpenedLibrary
     let store: SessionStore
     let meeting: Meeting

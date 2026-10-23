@@ -86,6 +86,12 @@ supported.
   System Only, both tracks and Microphone Only. The block being
   played is highlighted, and clicking `[time]:` plays from there. Missing or damaged
   audio is reported and marked on the timeline.
+- Markdown export: **Export…** beside the tabs saves the open tab (transcript,
+  notes, summaries or translation) as a `.md` file; it is off while the tab is
+  empty. Right-click a meeting in the sidebar and choose **Export All…** for one
+  file with the title, description, notes, summaries, transcript and translation.
+  Exports show the same separators, timestamps and names as the tabs, mark
+  provisional and outdated text, and never change the library.
 
 **Settings**
 - General: permissions (status, Grant… or Check Again, Open System Settings), library location

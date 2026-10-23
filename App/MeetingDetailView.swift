@@ -5,6 +5,15 @@ import TalkTrackServices
 enum MeetingTab: String, CaseIterable, Identifiable {
     case transcript = "Transcript", notes = "Notes", summary = "Summary", translation = "Translation"
     var id: String { rawValue }
+    var export: MeetingExportSection { MeetingExportSection(rawValue: rawValue)! }
+    var nothingToExport: String {
+        switch self {
+        case .transcript: "No transcript to export yet"
+        case .notes: "No notes to export yet"
+        case .summary: "No summaries to export yet"
+        case .translation: "No translation to export yet"
+        }
+    }
 }
 
 struct MeetingDetailView: View {
@@ -14,6 +23,8 @@ struct MeetingDetailView: View {
     @Binding var sheet: MeetingSheet?
     @Binding var deleting: Meeting?
     @SceneStorage("meetingTab") private var tab: MeetingTab = .transcript
+    /// Tabs with content to export, reread while the meeting is shown.
+    @State private var exportable: Set<MeetingExportSection> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -22,10 +33,18 @@ struct MeetingDetailView: View {
             }
             header
                 .padding(.horizontal, 32).padding(.top, 20).padding(.bottom, 12)
-            Picker("Content", selection: $tab) {
-                ForEach(MeetingTab.allCases) { Text($0.rawValue).tag($0) }
+            HStack {
+                Picker("Content", selection: $tab) {
+                    ForEach(MeetingTab.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                Spacer(minLength: 16)
+                Button("Export…", systemImage: "square.and.arrow.up") {
+                    Task { await MarkdownExporter.export(meetingID: meeting.id, section: tab.export, services: services, workspace: workspace) }
+                }
+                .disabled(!exportable.contains(tab.export))
+                .help(exportable.contains(tab.export) ? "Save this tab as a Markdown file" : tab.nothingToExport)
             }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
             .padding(.horizontal, 32)
             if let status = workspace.selectedStatus {
                 StatusRow(workspace: workspace, status: status, policy: services.jobPolicy)
@@ -40,6 +59,12 @@ struct MeetingDetailView: View {
         }
         .navigationTitle("TalkTrack")
         // Auto playback adds the microphone during the final transcript's own replies.
+        .task(id: meeting.id) {
+            while !Task.isCancelled {
+                exportable = (try? await services.store.exportableSections(meetingID: meeting.id)) ?? []
+                do { try await Task.sleep(for: .seconds(1)) } catch { break }
+            }
+        }
         .task(id: OwnSpeechKey(meetingID: meeting.id, recordings: workspace.recordings, status: workspace.selectedStatus)) {
             await loadOwnSpeech()
         }

@@ -99,7 +99,7 @@ struct WorkspaceSplitView: View {
 
     var body: some View {
         NavigationSplitView {
-            MeetingSidebar(workspace: workspace, sheet: $sheet, deleting: $deleting)
+            MeetingSidebar(workspace: workspace, services: services, sheet: $sheet, deleting: $deleting)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 440)
         } detail: {
             if let meeting = workspace.selected {
@@ -154,6 +154,7 @@ struct WorkspaceSplitView: View {
 struct MeetingSidebar: View {
     @Environment(AppModel.self) private var app
     @Bindable var workspace: WorkspacePresentation
+    let services: WorkspaceServices
     @Binding var sheet: MeetingSheet?
     @Binding var deleting: Meeting?
 
@@ -189,6 +190,9 @@ struct MeetingSidebar: View {
                                 .tag(meeting.id)
                                 .contextMenu {
                                     Button("Rename…") { sheet = .edit(meeting) }
+                                    Button("Export All…") {
+                                        Task { await MarkdownExporter.export(meetingID: meeting.id, section: nil, services: services, workspace: workspace) }
+                                    }
                                     Button("Delete…", role: .destructive) { deleting = meeting }
                                         .disabled(!workspace.canDelete(meeting.id))
                                 }
