@@ -143,7 +143,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Scripted reviews and checks launch with options; an alert would block them.
         if ProcessInfo.processInfo.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) { return }
         #endif
-        model.updates.start { [weak self] update in self?.announce(update) }
+        // A modal run inside the checker's main-actor task would hold the main
+        // queue: the alert's buttons and quit tasks never run. Show it from the run loop.
+        model.updates.start { [weak self] update in
+            RunLoop.main.perform { MainActor.assumeIsolated { self?.announce(update) } }
+        }
     }
 
     /// Once per version, and never over a recording (the menu bar still shows it).
