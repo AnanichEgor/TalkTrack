@@ -7,7 +7,10 @@ import TalkTrackDomain
 public protocol MeetingCaptureControl: Actor {
     func start(timeout: Duration) async throws
     func pause() async throws
-    func stop() async
+    /// Returns within a bounded time; sources that did not stop are reported abandoned.
+    func stop() async -> CaptureStopReport
+    /// Sources whose abandoned stop has not returned yet.
+    var abandonedSources: [CaptureSource] { get }
 }
 
 extension CaptureCoordinator: MeetingCaptureControl {}
@@ -126,6 +129,8 @@ public actor MeetingRecorder {
     private let systemAudioAccess: (@Sendable () async throws -> Void)?
     private let continuation: AsyncStream<MeetingRecorderEvent>.Continuation
     private var active: Active?
+    /// A capture whose stop was abandoned at the deadline; Record is refused until it returns.
+    private var abandonedCapture: (any MeetingCaptureControl)?
     private var locked = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
@@ -192,6 +197,7 @@ public actor MeetingRecorder {
             throw ServiceError(message: "Another recording is already active",
                                recovery: "Stop the current recording before recording another meeting.")
         }
+        try await refuseWhileAbandoned()
         set(.starting, meetingID: meetingID, recordingID: nil)
         do {
             _ = try await store.meeting(meetingID)
@@ -213,14 +219,14 @@ public actor MeetingRecorder {
                 try await pipeline.begin(hostTime: hostClock(), wallClock: startedAt, timeZoneIdentifier: zone)
                 try await capture.start(timeout: startTimeout)
             } catch {
-                await capture.stop()
+                await stopCapture(capture)
                 await abandonStart(writer: writer, pipeline: pipeline, recording: recording)
                 throw error
             }
             recording.state = .recording
             do { try await store.saveRecording(recording) } catch {
                 // The folder stays on disk; relaunch recovery adopts its audio.
-                await capture.stop()
+                await stopCapture(capture)
                 _ = try? await pipeline.finish(interrupted: true)
                 throw error
             }
@@ -268,7 +274,7 @@ public actor MeetingRecorder {
             try await current.pipeline.begin(hostTime: hostClock(), wallClock: wallClock(), timeZoneIdentifier: timeZone())
             try await current.capture.start(timeout: startTimeout)
         } catch {
-            await current.capture.stop()
+            await stopCapture(current.capture)
             active?.issue = RecorderIssue(error)
             _ = await finalize(interrupted: true)
             throw error
@@ -283,7 +289,11 @@ public actor MeetingRecorder {
         guard active != nil else {
             throw ServiceError(message: "No recording is active", recovery: "Start a recording first.")
         }
-        return await finalize(interrupted: false)
+        let started = ContinuousClock.now, id = activeRecordingID
+        CaptureLog.recorder.log("recorder.stop begin recording=\(CaptureLog.id(id), privacy: .public)")
+        let result = await finalize(interrupted: false)
+        CaptureLog.recorder.log("recorder.stop end recording=\(CaptureLog.id(id), privacy: .public) ms=\(CaptureLog.milliseconds(since: started), privacy: .public) state=\(result.recording.state.rawValue, privacy: .public) job=\(result.job != nil, privacy: .public)")
+        return result
     }
 
     // MARK: Failures
@@ -303,8 +313,14 @@ public actor MeetingRecorder {
         let current = active!
         set(.stopping, meetingID: current.recording.meetingID, recordingID: current.recording.id)
         defer { active = nil; set(.idle, meetingID: nil, recordingID: nil) }
-        await current.capture.stop()
         var issue = current.issue
+        switch await stopCapture(current.capture) {
+        case .stopped: break
+        case .failed(let error): issue = issue ?? RecorderIssue(error)
+        case .abandoned(let sources):
+            // Takes precedence: the user must restart TalkTrack before recording again.
+            issue = RecorderIssue(Self.abandonedError(sources, saved: true))
+        }
         var final: Recording
         do { final = try await current.pipeline.finish(interrupted: interrupted || issue != nil).recording }
         catch {
@@ -427,12 +443,50 @@ public actor MeetingRecorder {
         }
     }
 
+    // MARK: Abandoned capture
+
+    /// Stops a capture within its deadline and remembers it when a source did not stop.
+    @discardableResult
+    private func stopCapture(_ capture: any MeetingCaptureControl) async -> CaptureStopReport {
+        let report = await capture.stop()
+        if case .abandoned(let sources) = report {
+            abandonedCapture = capture
+            CaptureLog.recorder.error("recorder.capture abandoned sources=\(sources.map(\.rawValue).joined(separator: ","), privacy: .public)")
+        }
+        return report
+    }
+
+    /// Each recording gets a new capture, so this is what keeps new drivers from
+    /// starting next to a hung one; the shared HAL workers refuse as a second line.
+    private func refuseWhileAbandoned() async throws {
+        guard let capture = abandonedCapture else { return }
+        let sources = await capture.abandonedSources
+        guard !sources.isEmpty else {
+            abandonedCapture = nil
+            CaptureLog.recorder.log("recorder.capture late completion observed")
+            return
+        }
+        CaptureLog.recorder.error("recorder.start refused sources=\(sources.map(\.rawValue).joined(separator: ","), privacy: .public)")
+        throw Self.abandonedError(sources, saved: false)
+    }
+
+    private static func abandonedError(_ sources: [CaptureSource], saved: Bool) -> ServiceError {
+        let names = sources.map { $0 == .microphone ? "microphone" : "system audio" }.joined(separator: " and ")
+        let subject = names.prefix(1).uppercased() + names.dropFirst()
+        return saved
+            ? ServiceError(message: "\(subject) did not stop; the recording was saved with the audio received so far.",
+                           recovery: "Restart TalkTrack before recording again.")
+            : ServiceError(message: "\(subject) has not stopped since the last recording.",
+                           recovery: "Restart TalkTrack before recording again.")
+    }
+
     // MARK: Helpers
 
     /// Test hook: waits until the active pipeline has processed accepted packets.
     func drainCapture() async { await active?.pipeline.drain() }
 
     private func set(_ next: MeetingRecorderPhase, meetingID: UUID?, recordingID: UUID?) {
+        CaptureLog.recorder.log("recorder.phase \(next.rawValue, privacy: .public) recording=\(CaptureLog.id(recordingID ?? self.active?.recording.id), privacy: .public)")
         phase = next
         continuation.yield(.phase(next, meetingID: meetingID, recordingID: recordingID))
     }

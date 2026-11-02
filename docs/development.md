@@ -61,6 +61,23 @@ and model fixtures to the generated project; it is not part of the repository.
 - Models: `~/Library/Application Support/TalkTrack/Models`, outside the app bundle.
 - Saved voices: `~/Library/Application Support/TalkTrack/Speakers.sqlite3`.
 
+## Logging
+
+Capture diagnostics use the unified log, subsystem `local.talktrack.app`, through
+`CaptureLog` (`TalkTrackAudio/CaptureLog.swift`): category `capture` for the
+coordinator and drivers, `recorder` for recorder phases, Stop and Quit. Rules:
+
+- Lifecycle events only (phases, source start/stop, restarts, timeouts, abandoned
+  calls), never per audio packet. Timed operations log `begin` and `end`, `timeout`,
+  `failed` or `cancelled` with milliseconds, so a hung call is a `begin` without an end.
+- Public values: short recording/run identifiers, phases, sources, fixed operation keys
+  (`mic.stop`, `tap.teardown`, `coordinator.shutdown`, …), durations, OSStatus codes.
+- Free-text errors can name devices: log them only with `privacy: .private`.
+- Never log meeting titles or descriptions, transcript, note or dictation text,
+  speaker names or audio.
+
+Collect with `log show --predicate 'subsystem == "local.talktrack.app"' --last 1h --info`.
+
 ## Design notes
 
 - [Inference](inference.md): runtime, models, scheduling and memory admission.

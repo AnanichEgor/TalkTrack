@@ -202,18 +202,20 @@ struct RecordingIndicator: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.1)) { _ in
             let reading = workspace.levels.read()
-            let paused = workspace.phase == .paused
+            // Saving after Stop is shown like a pause: no live levels, no REC.
+            let saving = workspace.phase == .stopping
+            let paused = workspace.phase == .paused || saving
             HStack(spacing: 10) {
                 if !compact {
-                    Circle().fill(paused ? Color.orange : Color.red)
+                    Circle().fill(saving ? Color.secondary : paused ? Color.orange : Color.red)
                         .frame(width: 10, height: 10)
                         // Pulses with the louder source while recording.
                         .scaleEffect(paused ? 1 : 1 + CGFloat(max(reading.microphone, reading.system)) * 0.6)
                         .opacity(paused ? 1 : 0.55 + Double(max(reading.microphone, reading.system)) * 0.45)
                         .animation(.easeOut(duration: 0.1), value: reading)
                         .accessibilityHidden(true)
-                    Text(paused ? "Paused" : "REC").font(.callout.weight(.semibold))
-                        .foregroundStyle(paused ? Color.pausedText : Color.errorText)
+                    Text(saving ? "Saving…" : paused ? "Paused" : "REC").font(.callout.weight(.semibold))
+                        .foregroundStyle(saving ? Color.secondary : paused ? Color.pausedText : Color.errorText)
                 }
                 Text(PlayerBar.clock(reading.seconds)).font(.callout.monospacedDigit())
                 LevelBar(symbol: "mic.fill", level: paused ? 0 : reading.microphone, label: "Microphone")
@@ -269,9 +271,9 @@ struct ActiveRecordingBanner: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: workspace.phase == .paused ? "pause.circle.fill" : "record.circle.fill")
-                .foregroundStyle(workspace.phase == .paused ? Color.orange : Color.red)
-            Text("\(workspace.phase == .paused ? "Paused" : "Recording"): \(active.title)").lineLimit(1)
+            let capture = workspace.activeCaptureStatus ?? .recording
+            Image(systemName: capture.captureSymbol).foregroundStyle(capture.captureColor)
+            Text("\(capture.captureTitle): \(active.title)").lineLimit(1)
             Spacer()
             RecordingIndicator(workspace: workspace, compact: true)
             Button("Show Recording Meeting") { workspace.showActiveMeeting() }
@@ -279,6 +281,33 @@ struct ActiveRecordingBanner: View {
         .padding(.horizontal, 32).padding(.vertical, 8)
         .background(.quaternary.opacity(0.5))
         .accessibilityElement(children: .contain)
+    }
+}
+
+extension MeetingProcessingStatus {
+    /// Short label of the active recording in the sidebar, banner and menu bar.
+    var captureTitle: String {
+        switch self {
+        case .paused: "Paused"
+        case .saving: "Saving…"
+        default: "Recording"
+        }
+    }
+
+    var captureSymbol: String {
+        switch self {
+        case .paused: "pause.circle.fill"
+        case .saving: "square.and.arrow.down.fill"
+        default: "record.circle.fill"
+        }
+    }
+
+    var captureColor: Color {
+        switch self {
+        case .paused: .orange
+        case .saving: .secondary
+        default: .red
+        }
     }
 }
 
@@ -358,6 +387,7 @@ struct StatusRow: View {
         case .ready: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .recording: Image(systemName: "record.circle.fill").foregroundStyle(.red)
         case .paused: Image(systemName: "pause.circle.fill").foregroundStyle(.orange)
+        case .saving: ProgressView().controlSize(.small)
         case .queued: Image(systemName: "clock").foregroundStyle(.secondary)
         case .processing: ProgressView().controlSize(.small)
         case .waitingForModels: Image(systemName: "arrow.down.circle.fill").foregroundStyle(.orange)

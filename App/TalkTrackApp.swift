@@ -64,7 +64,7 @@ private struct MenuBarContent: View {
 
     var body: some View {
         if let workspace = model.workspace, let meeting = workspace.activeMeeting {
-            Text(workspace.phase == .paused ? "Paused: \(meeting.title)" : "Recording: \(meeting.title)")
+            Text("\(workspace.activeCaptureStatus?.captureTitle ?? "Recording"): \(meeting.title)")
             Button("Show Recording") {
                 showMainWindow()
                 workspace.showActiveMeeting()
@@ -200,11 +200,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
         let alert = NSAlert()
         let title = model.workspace?.activeMeeting?.title ?? "A meeting"
-        alert.messageText = "Stop recording and quit?"
-        alert.informativeText = model.workspace?.phase == .paused
-            ? "“\(title)” has a paused recording. TalkTrack saves it before quitting, and transcribes it the next time you open TalkTrack."
-            : "“\(title)” is recording. TalkTrack stops and saves the recording before quitting, and transcribes it the next time you open TalkTrack."
-        alert.addButton(withTitle: "Stop and Quit")
+        switch model.workspace?.phase {
+        case .stopping:
+            alert.messageText = "Quit while saving?"
+            alert.informativeText = "TalkTrack is still saving “\(title)”. It quits when saving finishes, at most 20 seconds from now. If saving does not finish, the audio recorded so far is recovered the next time you open TalkTrack."
+            alert.addButton(withTitle: "Quit")
+        case .paused:
+            alert.messageText = "Stop recording and quit?"
+            alert.informativeText = "“\(title)” has a paused recording. TalkTrack saves it before quitting, and transcribes it the next time you open TalkTrack."
+            alert.addButton(withTitle: "Stop and Quit")
+        default:
+            alert.messageText = "Stop recording and quit?"
+            alert.informativeText = "“\(title)” is recording. TalkTrack stops and saves the recording before quitting, and transcribes it the next time you open TalkTrack."
+            alert.addButton(withTitle: "Stop and Quit")
+        }
         alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
         return alert.runModal() == .alertFirstButtonReturn
     }

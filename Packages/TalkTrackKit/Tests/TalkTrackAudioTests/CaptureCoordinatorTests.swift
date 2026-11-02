@@ -11,7 +11,7 @@ private actor CaptureLatch {
 
 private actor FakeCapture {
     let source: CaptureSource
-    let startupGate: CaptureLatch?
+    var startupGate: CaptureLatch?
     let stopGate: CaptureLatch?
     var shouldFail: Bool
     private(set) var starts = 0
@@ -46,6 +46,7 @@ private actor FakeCapture {
         failures[run](AudioCaptureError(source: source, operation: "Route changed", status: nil, restartable: true))
     }
     func failNextStart() { shouldFail = true }
+    func stallStarts(_ gate: CaptureLatch) { startupGate = gate }
 }
 
 private final class PacketCount: @unchecked Sendable {
@@ -297,6 +298,83 @@ private func eventually(_ condition: @escaping @Sendable () async -> Bool) async
         try await pause.value; await stop.value
         #expect(await coordinator.phase == .idle)
         #expect(await mic.stops == 1)
+    }
+
+    @Test func stopReturnsAtTheDeadlineWhenADriverNeverStopsAndLateCompletionClears() async throws {
+        let gate = CaptureLatch(), mic = FakeCapture(.microphone, stopGate: gate)
+        let system = FakeCapture(.system), packets = PacketCount()
+        let coordinator = CaptureCoordinator(microphone: mic.driver(), system: system.driver(),
+                                             stopDeadline: .milliseconds(100), receive: packets.append)
+        try await coordinator.start()
+        await mic.emit(run: 0)
+        #expect(packets.value == 1)
+        let clock = ContinuousClock(), began = clock.now
+        let report = await coordinator.stop()
+        #expect(clock.now - began < .milliseconds(800))
+        guard case .abandoned(let sources) = report else { Issue.record("Stop waited for the driver: \(report)"); return }
+        #expect(sources == [.microphone])
+        #expect(await coordinator.phase == .failed)
+        #expect(await coordinator.abandonedSources == [.microphone])
+        #expect(await coordinator.lastError?.operation.contains("microphone did not stop") == true)
+        #expect(await system.stops == 1)
+        // The gate closed at the deadline; a second Stop does not wait again.
+        await mic.emit(run: 0)
+        #expect(packets.value == 1)
+        guard case .abandoned = await coordinator.stop() else { Issue.record("Second Stop was not abandoned"); return }
+        await #expect(throws: AudioCaptureError.self) { try await coordinator.start() }
+
+        await gate.release()
+        try await eventually { await coordinator.phase == .idle }
+        #expect(await coordinator.abandonedSources.isEmpty)
+        #expect(await mic.stops == 1)
+        try await coordinator.start()
+        #expect(await coordinator.phase == .recording)
+        guard case .stopped = await coordinator.stop() else { Issue.record("Normal Stop was not clean"); return }
+    }
+
+    @Test func pauseThrowsTheAbandonedErrorAtTheDeadline() async throws {
+        let gate = CaptureLatch(), mic = FakeCapture(.microphone, stopGate: gate), system = FakeCapture(.system)
+        let coordinator = CaptureCoordinator(microphone: mic.driver(), system: system.driver(),
+                                             stopDeadline: .milliseconds(100), receive: { _ in })
+        try await coordinator.start()
+        do {
+            try await coordinator.pause()
+            Issue.record("Pause waited for the driver")
+        } catch let error as AudioCaptureError {
+            #expect(error.source == .microphone && error.operation.contains("did not stop"))
+        }
+        #expect(await coordinator.phase == .failed)
+        await gate.release()
+        try await eventually { await coordinator.phase == .idle }
+    }
+
+    @Test func stopDuringAStalledRestartOrStartReturnsAtTheDeadline() async throws {
+        let gate = CaptureLatch(), mic = FakeCapture(.microphone), system = FakeCapture(.system), packets = PacketCount()
+        let coordinator = CaptureCoordinator(microphone: mic.driver(), system: system.driver(),
+                                             stopDeadline: .milliseconds(100), receive: packets.append)
+        try await coordinator.start()
+        await mic.stallStarts(gate)
+        await mic.routeChange(run: 0)
+        try await eventually { await mic.starts == 2 }
+        let report = await coordinator.stop()
+        guard case .abandoned(let sources) = report else { Issue.record("Stop waited for the restart: \(report)"); return }
+        #expect(sources == [.microphone])
+        await system.emit(run: 0)
+        #expect(packets.value == 0)
+        await gate.release()
+        try await eventually { await coordinator.phase == .idle }
+        #expect(await mic.active == false)
+
+        let stalled = CaptureLatch(), slow = FakeCapture(.microphone, startupGate: stalled), other = FakeCapture(.system)
+        let second = CaptureCoordinator(microphone: slow.driver(), system: other.driver(),
+                                        stopDeadline: .milliseconds(100), receive: { _ in })
+        let start = Task { try await second.start(timeout: .seconds(30)) }
+        try await eventually { await slow.entered }
+        guard case .abandoned([.microphone]) = await second.stop() else { Issue.record("Stop waited for the start"); return }
+        await #expect(throws: (any Error).self) { try await start.value }
+        await stalled.release()
+        try await eventually { await second.phase == .idle }
+        #expect(await slow.active == false); #expect(await other.active == false)
     }
 
     @Test func permissionReplyIgnoresLateAnswersAndCancellationBeforeWait() async throws {

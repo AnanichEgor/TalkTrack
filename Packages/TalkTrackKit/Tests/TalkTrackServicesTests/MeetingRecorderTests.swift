@@ -38,7 +38,16 @@ private actor FakeMeetingCapture: MeetingCaptureControl {
         }
     }
     func pause() async throws { log.mutate { $0.append("capture.pause") } }
-    func stop() async { log.mutate { $0.append("capture.stop") } }
+    func stop() async -> CaptureStopReport { log.mutate { $0.append("capture.stop") }; return .stopped }
+    var abandonedSources: [CaptureSource] { [] }
+}
+
+/// A microphone stop that does not return until released, like a stalled engine.
+private actor StopLatch {
+    private var open = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async { if !open { await withCheckedContinuation { waiters.append($0) } } }
+    func release() { open = true; let all = waiters; waiters = []; all.forEach { $0.resume() } }
 }
 
 private struct Playback: CapturePlaybackExclusion {
@@ -86,6 +95,9 @@ private final class RecorderFixture: @unchecked Sendable {
     let captures = Locked<[FakeMeetingCapture]>([])
     let fullDiskAfter = Locked<UInt64?>(nil)
     let access = Locked<SystemAudioAccess?>(nil)
+    /// When set, recordings use a real coordinator whose microphone stop waits for it.
+    let micStopGate = Locked<StopLatch?>(nil)
+    let lastCallbacks = Locked<MeetingCaptureCallbacks?>(nil)
     var recorder: MeetingRecorder!
 
     init() async throws {
@@ -100,9 +112,18 @@ private final class RecorderFixture: @unchecked Sendable {
     func makeRecorder() -> MeetingRecorder {
         let log = log, startError = startError, beforeFailure = beforeFailure, captures = captures
         let host = host, wall = wall, missing = missing, fullDisk = fullDiskAfter
+        let micStopGate = micStopGate, lastCallbacks = lastCallbacks
         var check: (@Sendable () async throws -> Void)?
         if let gate = access.value { check = { try await gate.requireAllowed() } }
-        return MeetingRecorder(library: library, store: store, capture: { callbacks in
+        return MeetingRecorder(library: library, store: store, capture: { callbacks -> any MeetingCaptureControl in
+            lastCallbacks.value = callbacks
+            if let gate = micStopGate.value {
+                return CaptureCoordinator(
+                    microphone: CaptureDriver(source: .microphone, start: { _, _ in }, stop: { await gate.wait() }),
+                    system: CaptureDriver(source: .system, start: { _, _ in }, stop: {}),
+                    stopDeadline: .milliseconds(200), receive: callbacks.receive, restarted: callbacks.restarted,
+                    failed: callbacks.failed)
+            }
             let capture = FakeMeetingCapture(callbacks: callbacks, log: log, startError: startError.value,
                                              beforeFailure: beforeFailure.value)
             captures.mutate { $0.append(capture) }
@@ -116,7 +137,7 @@ private final class RecorderFixture: @unchecked Sendable {
             }, systemAudioAccess: check)
     }
 
-    var callbacks: MeetingCaptureCallbacks { get async { await captures.value.last!.callbacks } }
+    var callbacks: MeetingCaptureCallbacks { get async { lastCallbacks.value! } }
 
     /// Both sources deliver `seconds` of a quiet tone from the current host
     /// time; the host clock then advances past the delivered audio.
@@ -352,6 +373,48 @@ private final class AccessProbes: @unchecked Sendable {
         #expect(result.issue?.settingsURL == nil)
         #expect(storedFrames(result.recording, .system) >= 2 * 48_000)
         #expect(result.job != nil)
+    }
+
+    @Test func microphoneStopThatNeverReturnsSavesAnInterruptedRecordingAndRefusesRecordUntilItReturns() async throws {
+        let f = try await RecorderFixture()
+        defer { f.remove() }
+        let gate = StopLatch()
+        f.micStopGate.value = gate
+        f.recorder = f.makeRecorder()
+        let recording = try await f.recorder.start(meetingID: f.meeting.id)
+        await f.deliver(seconds: 3)
+        let clock = ContinuousClock(), began = clock.now
+        let result = try await f.recorder.stop()
+        #expect(clock.now - began < .seconds(3))
+        #expect(result.recording.id == recording.id && result.recording.state == .interrupted)
+        #expect(result.issue?.message.contains("Microphone did not stop") == true)
+        #expect(result.issue?.recovery?.contains("Restart TalkTrack") == true)
+        for track in AudioTrack.allCases { #expect(storedFrames(result.recording, track) >= 2 * 48_000) }
+        #expect(result.job?.stage == .queued)
+        #expect(await f.recorder.phase == .idle)
+        #expect(try await f.store.recordings(meetingID: f.meeting.id) == [result.recording])
+
+        do {
+            try await f.recorder.start(meetingID: f.meeting.id)
+            Issue.record("Record was accepted while the microphone stop is hung")
+        } catch let error as ServiceError {
+            #expect(error.errorDescription?.contains("Microphone has not stopped") == true)
+            #expect(error.recoverySuggestion?.contains("Restart TalkTrack") == true)
+        }
+        #expect(await f.recorder.phase == .idle)
+        #expect(try await f.store.recordings(meetingID: f.meeting.id).count == 1)
+
+        // The hung call returns: Record works again without a restart.
+        await gate.release()
+        var next: Recording?
+        for _ in 0..<300 where next == nil {
+            do { next = try await f.recorder.start(meetingID: f.meeting.id) }
+            catch is ServiceError { try await Task.sleep(for: .milliseconds(10)) }
+        }
+        #expect(next != nil)
+        await f.deliver(seconds: 1)
+        let second = try await f.recorder.stop()
+        #expect(second.recording.state == .complete && second.issue == nil)
     }
 
     @Test(arguments: [false, true])

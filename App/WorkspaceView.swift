@@ -185,8 +185,9 @@ struct MeetingSidebar: View {
                 ScrollViewReader { proxy in
                     List(selection: $workspace.selectedID) {
                         ForEach(workspace.meetings) { meeting in
-                            MeetingRow(meeting: meeting, isRecording: workspace.activeMeeting?.id == meeting.id,
-                                       isPaused: workspace.phase == .paused, queue: workspace.queueStates[meeting.id])
+                            MeetingRow(meeting: meeting,
+                                       capture: workspace.activeMeeting?.id == meeting.id ? workspace.activeCaptureStatus : nil,
+                                       queue: workspace.queueStates[meeting.id])
                                 .tag(meeting.id)
                                 .contextMenu {
                                     Button("Rename…") { sheet = .edit(meeting) }
@@ -219,8 +220,8 @@ struct MeetingSidebar: View {
 
 struct MeetingRow: View {
     let meeting: Meeting
-    let isRecording: Bool
-    let isPaused: Bool
+    /// Recording, paused or saving, when this meeting has the active recording.
+    let capture: MeetingProcessingStatus?
     /// Final transcription running or waiting, shown while another meeting is selected.
     var queue: FinalQueueState?
 
@@ -231,9 +232,9 @@ struct MeetingRow: View {
                 .lineLimit(2, reservesSpace: true)
             HStack(spacing: 6) {
                 Text(Self.date(meeting.sortDate))
-                if isRecording {
-                    Label(isPaused ? "Paused" : "Recording", systemImage: isPaused ? "pause.circle.fill" : "record.circle.fill")
-                        .labelStyle(.titleAndIcon).foregroundStyle(isPaused ? Color.pausedText : Color.errorText)
+                if let capture {
+                    Label(capture.captureTitle, systemImage: capture.captureSymbol).labelStyle(.titleAndIcon)
+                        .foregroundStyle(capture == .paused ? Color.pausedText : capture == .saving ? Color.secondary : Color.errorText)
                 } else if let queue {
                     Image(systemName: queue == .running ? "waveform" : "clock")
                         .accessibilityLabel(queue.accessibilityLabel)

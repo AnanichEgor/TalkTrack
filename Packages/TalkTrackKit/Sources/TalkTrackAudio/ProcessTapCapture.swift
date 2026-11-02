@@ -61,8 +61,10 @@ public actor ProcessTapCapture {
         let next = makeSession()
         let rate: Double
         do {
-            rate = try await worker.run("Preparing system audio capture", timeout: timing.prepare) {
-                do { return try next.prepare() } catch { try? next.stop(); throw error }
+            rate = try await CaptureLog.timed("tap.prepare") {
+                try await worker.run("Preparing system audio capture", timeout: timing.prepare) {
+                    do { return try next.prepare() } catch { try? next.stop(); throw error }
+                }
             }
         } catch {
             throw Self.mapped(error)
@@ -72,7 +74,7 @@ public actor ProcessTapCapture {
         session = next; handoff = packets; self.relay = relay
         let claim = StartClaim()
         do {
-            try await worker.run("Starting system audio capture", timeout: timing.start) {
+            try await CaptureLog.timed("tap.start") { try await worker.run("Starting system audio capture", timeout: timing.start) {
                 // A route change restarts only the system source with an explicit gap;
                 // the coordinator fails the recording after too many (design D3).
                 try next.start({ list, time in SystemTapBuffers.consume(list, time, into: packets) }) { change in
@@ -80,7 +82,7 @@ public actor ProcessTapCapture {
                 }
                 // A start that returns after its timeout stops itself: its caller gave up.
                 if !claim.markStarted() { try? next.stop() }
-            }
+            } }
             try Task.checkCancellation()
         } catch {
             if case .timedOut = error as? HALWorkerError, claim.markAbandoned() {
@@ -103,15 +105,18 @@ public actor ProcessTapCapture {
         var problem: AudioCaptureError?
         if let current = session {
             do {
-                try await worker.run("Stopping system audio capture", timeout: timing.teardown) { try current.stop() }
+                try await CaptureLog.timed("tap.teardown") {
+                    try await worker.run("Stopping system audio capture", timeout: timing.teardown) { try current.stop() }
+                }
                 session = nil
             } catch HALWorkerError.timedOut(_, let seconds) {
                 // Abandoned with the hung worker: callbacks may still run, but the
                 // handoff below stops accepting them. Committed audio is kept.
+                CaptureLog.capture.error("tap.teardown abandoned")
                 session = nil
                 problem = AudioCaptureError(source: .system, operation:
-                    "Stopping system audio did not finish within \(seconds.formatted(.number.precision(.fractionLength(0...1)))) s; the recording was saved. Restart TalkTrack before recording again",
-                    status: nil)
+                    "Stopping system audio did not finish within \(seconds.formatted(.number.precision(.fractionLength(0...1)))) s; the recording was saved with the audio received so far",
+                    status: nil, recovery: .restartTalkTrack)
             } catch {
                 problem = Self.mapped(error)
             }
@@ -129,7 +134,7 @@ public actor ProcessTapCapture {
         case let error as AudioCaptureError: return error
         case HALWorkerError.busy(let operation):
             return AudioCaptureError(source: .system, operation:
-                "\(operation) has not returned since an earlier recording; restart TalkTrack to record system audio", status: nil)
+                "\(operation) has not returned since an earlier recording", status: nil, recovery: .restartTalkTrack)
         case let error as HALWorkerError:
             return AudioCaptureError(source: .system, operation: (error.errorDescription ?? "\(error)")
                 + "; try again, or restart TalkTrack if it keeps failing", status: nil)

@@ -18,6 +18,16 @@ public struct CaptureDriver: Sendable {
     }
 }
 
+/// How Stop or Pause ended (design D3).
+public enum CaptureStopReport: Sendable {
+    case stopped
+    /// A source's cleanup failed or timed out in its driver; audio until then is kept.
+    case failed(AudioCaptureError)
+    /// These sources were still stopping at the deadline. The packet gate is closed;
+    /// their late completion clears the state.
+    case abandoned([CaptureSource])
+}
+
 /// Used for both permission and startup completion. Late replies after a
 /// timeout/cancellation are harmless; no continuation is resumed twice.
 final class CaptureReply<Value: Sendable>: @unchecked Sendable {
@@ -50,6 +60,9 @@ final class CaptureReply<Value: Sendable>: @unchecked Sendable {
 /// Owns both tracks' lifetime independently of inference. Startup failure is
 /// reported promptly; the state remains stopping until even a stalled driver's
 /// late start has returned and cleanup completed. A new run cannot overlap it.
+/// Stop and Pause wait at most `stopDeadline` for that: then the packet gate is
+/// closed, the pending sources are reported abandoned and the capture stays failed
+/// (cleanup required) until the late shutdown completes.
 public actor CaptureCoordinator {
     public private(set) var phase: CapturePhase = .idle
     public private(set) var lastError: AudioCaptureError?
@@ -73,6 +86,11 @@ public actor CaptureCoordinator {
     private var destination: CapturePhase = .idle
     private var packetGate: CapturePacketGate?
     private var cleanupRequired = false
+    private let stopDeadline: Duration
+    private var shutdownPending: Set<CaptureSource> = []
+    private var shutdownStarted = ContinuousClock.now
+    /// Sources whose stop was abandoned at the deadline and has not returned yet.
+    public private(set) var abandonedSources: [CaptureSource] = []
 
     /// `restarted` runs after a restartable source has stopped and drained its
     /// old packets, before it starts again: the sink can mark the discontinuity.
@@ -82,11 +100,12 @@ public actor CaptureCoordinator {
     /// stopped and drained, so the owner can finalize the recording.
     public init(microphone: CaptureDriver, system: CaptureDriver,
                 restartLimit: Int = 5, restartWindow: Duration = .seconds(30),
+                stopDeadline: Duration = .seconds(10),
                 receive: @escaping @Sendable (AudioPacket) -> Void,
                 restarted: (@Sendable (CaptureSource, String) -> Void)? = nil,
                 failed: (@Sendable (AudioCaptureError) -> Void)? = nil) {
-        precondition(microphone.source == .microphone && system.source == .system && restartLimit >= 0)
-        drivers = [microphone, system]; self.receive = receive; stopped = failed
+        precondition(microphone.source == .microphone && system.source == .system && restartLimit >= 0 && stopDeadline > .zero)
+        drivers = [microphone, system]; self.receive = receive; stopped = failed; self.stopDeadline = stopDeadline
         self.restarted = restarted; self.restartLimit = restartLimit; self.restartWindow = restartWindow
     }
 
@@ -106,7 +125,7 @@ public actor CaptureCoordinator {
         let capture = MicrophoneCapture()
         return CaptureCoordinator(microphone: CaptureDriver(source: .microphone,
             start: { try await capture.start(deviceID: try microphone(), receive: $0, failure: $1) },
-            stop: { await capture.stop() }), system: nativeSystemDriver(),
+            stop: { try await capture.stop() }), system: nativeSystemDriver(),
             receive: receive, restarted: restarted, failed: failed)
     }
 
@@ -146,26 +165,81 @@ public actor CaptureCoordinator {
             do { try await Task.sleep(for: timeout) } catch { return }
             await self?.timedOut(run)
         }
-        try await withTaskCancellationHandler {
-            try await completion.value()
-            try Task.checkCancellation()
-        } onCancel: {
-            completion.resolve(.failure(CancellationError()))
-            Task { await self.cancel(run) }
+        try await CaptureLog.timed("coordinator.start", run: run) {
+            try await withTaskCancellationHandler {
+                try await completion.value()
+                try Task.checkCancellation()
+            } onCancel: {
+                completion.resolve(.failure(CancellationError()))
+                Task { await self.cancel(run) }
+            }
         }
     }
 
+    /// Throws the cleanup or abandonment error when the sources did not stop cleanly.
     public func pause() async throws {
         guard phase == .recording else {
             throw AudioCaptureError(source: .system, operation: "Only an active recording can be paused", status: nil)
         }
-        await beginShutdown(to: .paused).value
-        if cleanupRequired, let lastError { throw lastError }
+        switch await finish(beginShutdown(to: .paused), operation: "coordinator.pause") {
+        case .stopped: return
+        case .failed(let error): throw error
+        case .abandoned: throw lastError ?? AudioCaptureError(source: .microphone, operation: "Capture did not stop", status: nil)
+        }
     }
 
-    public func stop() async {
-        guard phase != .idle else { return }
-        await beginShutdown(to: .idle).value
+    /// Returns within `stopDeadline` (plus scheduling), even when a driver never returns.
+    @discardableResult
+    public func stop() async -> CaptureStopReport {
+        guard phase != .idle else { return .stopped }
+        // An abandoned shutdown is still running; waiting again would only add a deadline.
+        if !abandonedSources.isEmpty { return .abandoned(abandonedSources) }
+        return await finish(beginShutdown(to: .idle), operation: "coordinator.stop")
+    }
+
+    /// Races the shutdown against the deadline; abandons the pending sources if it wins.
+    private func finish(_ shutdown: Task<Void, Never>, operation: String) async -> CaptureStopReport {
+        let run = generation, start = ContinuousClock.now
+        CaptureLog.capture.log("\(operation, privacy: .public) begin run=\(CaptureLog.id(run), privacy: .public)")
+        let done = CaptureReply<Bool>()
+        let waiter = Task { await shutdown.value; done.resolve(.success(true)) }
+        let timer = Task { [stopDeadline] in
+            do { try await Task.sleep(for: stopDeadline) } catch { return }
+            done.resolve(.success(false))
+        }
+        let finished = (try? await done.value()) ?? false
+        timer.cancel(); waiter.cancel()
+        if !finished { abandon(run) }
+        let report: CaptureStopReport = if !abandonedSources.isEmpty { .abandoned(abandonedSources) }
+            else if cleanupRequired, let lastError { .failed(lastError) }
+            else { .stopped }
+        let outcome = switch report {
+        case .stopped: "stopped"
+        case .failed: "failed"
+        case .abandoned(let sources): "abandoned sources=" + sources.map(\.rawValue).joined(separator: ",")
+        }
+        CaptureLog.capture.log("\(operation, privacy: .public) end run=\(CaptureLog.id(run), privacy: .public) ms=\(CaptureLog.milliseconds(since: start), privacy: .public) outcome=\(outcome, privacy: .public)")
+        return report
+    }
+
+    private func abandon(_ run: UUID) {
+        guard generation == run, shutdown != nil, abandonedSources.isEmpty else { return }
+        let sources = shutdownPending.sorted { $0.rawValue < $1.rawValue }
+        // Every driver returned; didStop is about to run.
+        guard let first = sources.first else { return }
+        // Late packets must not reach a recording that is being finished.
+        packetGate?.close(); packetGate = nil
+        abandonedSources = sources; cleanupRequired = true; phase = .failed; reportStop = false
+        let names = sources.map { $0 == .microphone ? "microphone" : "system audio" }.joined(separator: " and ")
+        lastError = AudioCaptureError(source: first, operation:
+            "The \(names) did not stop within \(stopDeadline.seconds.formatted(.number.precision(.fractionLength(0...1)))) s; the recording was saved with the audio received so far",
+            status: nil, recovery: .restartTalkTrack)
+        CaptureLog.capture.error("coordinator.shutdown abandoned run=\(CaptureLog.id(run), privacy: .public) ms=\(CaptureLog.milliseconds(since: self.shutdownStarted), privacy: .public) sources=\(sources.map(\.rawValue).joined(separator: ","), privacy: .public)")
+    }
+
+    private func sourceStopped(_ run: UUID, source: CaptureSource) {
+        guard generation == run else { return }
+        shutdownPending.remove(source)
     }
 
     private func started(_ run: UUID, source: CaptureSource) {
@@ -191,7 +265,9 @@ public actor CaptureCoordinator {
         guard let gate = packetGate else { return }
         let notify = restarted
         restarts[source, default: 0] += 1
+        CaptureLog.capture.log("coordinator.restart begin run=\(CaptureLog.id(run), privacy: .public) source=\(source.rawValue, privacy: .public) count=\(self.restarts[source, default: 0], privacy: .public)")
         starts[index] = Task.detached { [self] in
+            let began = ContinuousClock.now
             do {
                 _ = await previous.result
                 try await driver.stop()
@@ -199,7 +275,9 @@ public actor CaptureCoordinator {
                 try Task.checkCancellation()
                 try await driver.start({ gate.receive($0) }, Self.failureHandler(self, run: run))
                 try Task.checkCancellation()
+                CaptureLog.capture.log("coordinator.restart end run=\(CaptureLog.id(run), privacy: .public) source=\(source.rawValue, privacy: .public) ms=\(CaptureLog.milliseconds(since: began), privacy: .public)")
             } catch {
+                CaptureLog.failure("coordinator.restart", run: run, ms: CaptureLog.milliseconds(since: began), error: error)
                 await self.failed(run, error: AudioCaptureError(source: source,
                     operation: "Cannot restart after a device change: \((error as? AudioCaptureError)?.operation ?? error.localizedDescription)",
                     status: (error as? AudioCaptureError)?.status), source: source)
@@ -218,6 +296,8 @@ public actor CaptureCoordinator {
     private func failed(_ run: UUID, error: Error, source: CaptureSource = .system) {
         guard run == generation, [.preparing, .recording].contains(phase) else { return }
         if error is CancellationError { _ = beginShutdown(to: .idle); return }
+        let restartable = (error as? AudioCaptureError)?.restartable == true
+        CaptureLog.capture.log("coordinator.sourceFailed run=\(CaptureLog.id(run), privacy: .public) source=\(source.rawValue, privacy: .public) phase=\(self.phase.rawValue, privacy: .public) restartable=\(restartable, privacy: .public) status=\((error as? AudioCaptureError)?.status.map { String($0) } ?? "-", privacy: .public) error=\(String(describing: error), privacy: .private)")
         if phase == .recording, let problem = error as? AudioCaptureError, problem.restartable {
             let now = ContinuousClock.now
             let recent = recentRestarts[problem.source, default: []].filter { now - $0 < restartWindow }
@@ -247,11 +327,14 @@ public actor CaptureCoordinator {
         reply?.resolve(.failure(CancellationError())); reply = nil
         let operations = starts, run = generation
         operations.forEach { $0.cancel() }
+        shutdownPending = Set(drivers.map(\.source)); shutdownStarted = .now
+        CaptureLog.capture.log("coordinator.shutdown begin run=\(CaptureLog.id(run), privacy: .public) to=\(next.rawValue, privacy: .public)")
         let task = Task.detached { [drivers] in
             let errors = await withTaskGroup(of: AudioCaptureError?.self) { group in
                 for (index, driver) in drivers.enumerated() {
                     group.addTask {
                         if index < operations.count { _ = await operations[index].result }
+                        defer { Task { await self.sourceStopped(run, source: driver.source) } }
                         do { try await driver.stop(); return nil }
                         catch { return (error as? AudioCaptureError) ?? AudioCaptureError(source: driver.source,
                             operation: "Audio resource cleanup failed: \(error.localizedDescription)", status: nil) }
@@ -272,10 +355,16 @@ public actor CaptureCoordinator {
         // Drivers have stopped producing and drained accepted packets. Closing
         // earlier would discard the last queued audio on Pause/Stop.
         packetGate?.close(); packetGate = nil
-        starts = []; pending = []; shutdown = nil
+        starts = []; pending = []; shutdown = nil; shutdownPending = []
+        // A shutdown abandoned at the deadline completed late: the owner has already
+        // finished the recording, so the capture becomes idle, or stays failed on error.
+        let late = !abandonedSources.isEmpty
+        abandonedSources = []
         cleanupRequired = error != nil
         if let error { lastError = error; phase = .failed }
-        else { phase = destination }
+        else { phase = late ? .idle : destination }
+        let outcome = error == nil ? (late ? "late" : "stopped") : "failed"
+        CaptureLog.capture.log("coordinator.shutdown end run=\(CaptureLog.id(run), privacy: .public) ms=\(CaptureLog.milliseconds(since: self.shutdownStarted), privacy: .public) outcome=\(outcome, privacy: .public) status=\(error?.status.map { String($0) } ?? "-", privacy: .public)")
         if reportStop, let lastError { reportStop = false; stopped?(lastError) }
     }
 }

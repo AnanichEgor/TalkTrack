@@ -197,6 +197,7 @@ struct WorkspaceServices {
             case .recognizing: "TalkTrack, recognizing dictation"
             }
         case .paused: "TalkTrack, recording paused"
+        case .stopping: "TalkTrack, saving recording"
         default: "TalkTrack, recording"
         }
     }
@@ -210,6 +211,7 @@ struct WorkspaceServices {
             case .recognizing: "ellipsis.circle"
             }
         case .paused: "pause.circle"
+        case .stopping: "square.and.arrow.down"
         default: "record.circle"
         }
     }

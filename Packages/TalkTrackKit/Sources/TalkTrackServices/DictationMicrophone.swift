@@ -21,7 +21,8 @@ public struct DictationCapture: Sendable {
 public protocol DictationMicrophoneDriver: Sendable {
     func start(deviceID: AudioObjectID?, receive: @escaping @Sendable (AudioPacket) -> Void,
                failure: @escaping @Sendable (AudioCaptureError) -> Void) async throws
-    func stop() async
+    /// Bounded by the driver's stop timeout; a timed-out stop leaves no audio pending.
+    func stop() async throws
 }
 
 extension MicrophoneCapture: DictationMicrophoneDriver {}
@@ -103,7 +104,7 @@ public actor DictationMicrophone: DictationAudioSource {
         guard running else { return DictationCapture(samples: [], spokenSeconds: 0, tailSeconds: 0, reachedLimit: false) }
         // Packets stop arriving on a failed device; the wall clock bounds the wait.
         await buffer.waitForTail(timeout: .milliseconds(Int(DictationTail.maximumSeconds * 1000) + 150))
-        await driver.stop()
+        try? await driver.stop()
         running = false
         let recorded = buffer.take()
         let samples = (try? Self.resample(recorded.samples, from: recorded.sampleRate)) ?? []
@@ -114,7 +115,7 @@ public actor DictationMicrophone: DictationAudioSource {
 
     public func cancel() async {
         guard running else { return }
-        await driver.stop()
+        try? await driver.stop()
         running = false
         _ = buffer.take()
     }

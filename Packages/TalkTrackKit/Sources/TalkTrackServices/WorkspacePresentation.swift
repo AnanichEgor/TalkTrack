@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import TalkTrackAudio
 import TalkTrackDomain
 
 public struct WorkspaceIssue: Equatable, Sendable, Identifiable {
@@ -25,6 +26,8 @@ public struct WorkspaceIssue: Equatable, Sendable, Identifiable {
 public enum MeetingProcessingStatus: Equatable, Sendable {
     case noRecordings
     case recording, paused
+    /// Stop was pressed and the recording is being finalized.
+    case saving
     /// A recording has saved audio but no queued job (queueing failed earlier).
     case notProcessed(recordingID: UUID)
     case queued
@@ -39,6 +42,7 @@ public enum MeetingProcessingStatus: Equatable, Sendable {
         case .noRecordings: "No recordings yet"
         case .recording: "Recording"
         case .paused: "Recording paused"
+        case .saving: "Saving…"
         case .notProcessed: "Saved audio has not been transcribed"
         case .queued: "Waiting to transcribe"
         case .processing(let stage): Self.title(stage)
@@ -125,7 +129,7 @@ public enum MeetingProcessingStatus: Equatable, Sendable {
         case .notProcessed: 3
         case .processing: 4
         case .queued: 5
-        case .recording, .paused: 6
+        case .recording, .paused, .saving: 6
         case .ready: 7
         case .noRecordings: 8
         }
@@ -392,13 +396,22 @@ public struct RecordControls: Equatable, Sendable {
         }
     }
 
+    /// How the active recording is shown in the sidebar, banner and menu bar:
+    /// `.recording`, `.paused` or `.saving`; nil when nothing records.
+    public var activeCaptureStatus: MeetingProcessingStatus? {
+        guard activeMeeting != nil else { return nil }
+        switch phase {
+        case .idle: return nil
+        case .paused: return .paused
+        case .stopping: return .saving
+        case .starting, .recording: return .recording
+        }
+    }
+
     /// Status of the selected meeting, from its loaded recordings and jobs.
     public var selectedStatus: MeetingProcessingStatus? {
         guard let meetingID = selected?.id else { return nil }
-        if activeMeeting?.id == meetingID {
-            if phase == .paused { return .paused }
-            if phase != .idle { return .recording }
-        }
+        if activeMeeting?.id == meetingID, let capture = activeCaptureStatus { return capture }
         let status = MeetingProcessingStatus.derive(recordings: recordings, jobs: jobs, missing: missingModels)
         if case .queued = status, runningJobMeetingID == meetingID { return .processing(.transcribing) }
         return status
@@ -592,20 +605,30 @@ public struct RecordControls: Equatable, Sendable {
         /// True when that job stopped in time and was queued again, so it
         /// resumes at the next launch. Otherwise relaunch marks it interrupted.
         public let requeued: Bool
+        /// Stop did not finish within the quit deadline; the next launch recovers
+        /// the recording's committed audio as interrupted.
+        public let stopTimedOut: Bool
     }
 
     /// Readies the library for the process to exit without losing recoverable
     /// work: no new transcription starts; the running one is cancelled (its
     /// completed stages are checkpoints) and queued again; an active or starting
     /// recording is stopped and saved, which also queues its transcription for
-    /// the next launch; pending notes are written. Returns only when capture has
-    /// stopped. A failed note write keeps the text in recovery storage.
+    /// the next launch; pending notes are written. Returns when capture has
+    /// stopped or after `stopTimeout` (design D5), so Quit never hangs; relaunch
+    /// recovery then adopts the committed audio. A failed note write keeps the text
+    /// in recovery storage.
     @discardableResult
-    public func prepareToQuit(notes: NotesAutosave?, processingTimeout: Duration = .seconds(10)) async -> QuitReport {
+    public func prepareToQuit(notes: NotesAutosave?, processingTimeout: Duration = .seconds(10),
+                              stopTimeout: Duration = .seconds(20)) async -> QuitReport {
         isQuitting = true
         let cancelled = await runner.shutDown()
         // Waits for a start in progress; throws harmlessly when nothing records.
-        let saved = try? await recorder.stop()
+        let started = ContinuousClock.now, recorder = recorder
+        let outcome = await Self.within(stopTimeout) { try? await recorder.stop() }
+        let saved = outcome ?? nil
+        let outcomeName = outcome == nil ? "stopTimedOut" : (saved == nil ? "none" : "saved")
+        CaptureLog.recorder.log("quit.stop end ms=\(CaptureLog.milliseconds(since: started), privacy: .public) outcome=\(outcomeName, privacy: .public)")
         let deadline = ContinuousClock.now + processingTimeout
         while await runner.isRunning, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
         var requeued = false
@@ -614,7 +637,22 @@ public struct RecordControls: Equatable, Sendable {
             else { requeued = stage == .queued }
         }
         try? await notes?.flushForQuit()
-        return QuitReport(saved: saved, cancelledJobID: cancelled, requeued: requeued)
+        return QuitReport(saved: saved, cancelledJobID: cancelled, requeued: requeued, stopTimedOut: outcome == nil)
+    }
+
+    /// The operation's result, or nil when `timeout` passed first; the operation keeps running.
+    nonisolated static func within<T: Sendable>(_ timeout: Duration,
+                                                _ operation: @escaping @Sendable () async -> T) async -> T? {
+        let results = AsyncStream<T?> { continuation in
+            Task { continuation.yield(await operation()); continuation.finish() }
+            let timer = Task {
+                do { try await Task.sleep(for: timeout) } catch { return }
+                continuation.yield(nil); continuation.finish()
+            }
+            continuation.onTermination = { _ in timer.cancel() }
+        }
+        for await result in results { return result }
+        return nil
     }
 
     private func command(_ body: @escaping @MainActor () async throws -> Void) async {

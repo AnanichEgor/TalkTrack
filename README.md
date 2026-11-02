@@ -262,6 +262,25 @@ TalkTrack from the Screen & System Audio Recording list.
 | Preferences, including the dictation dictionary and replacement rules | `defaults` domain `local.talktrack.app` |
 | Dictation audio and text | Not stored (memory only) |
 
+### If TalkTrack gets stuck
+
+Stop and Quit never wait indefinitely. A recording whose audio device does not stop is
+saved as interrupted with the audio recorded so far, and TalkTrack asks to be restarted
+before the next recording. If TalkTrack still stops responding, collect this before
+force quitting, so a bug report can show what it was waiting for:
+
+1. Open **Activity Monitor**, select TalkTrack, choose **View ▸ Sample Process**, and
+   save the sample.
+2. In Terminal, save TalkTrack's log entries for the last hour (adjust `--last` to
+   cover the problem):
+
+   ```bash
+   log show --predicate 'subsystem == "local.talktrack.app"' --last 1h --info > ~/Desktop/talktrack.log
+   ```
+
+The log contains recording identifiers, phases, durations and error codes only: no
+meeting titles, transcripts, notes, speaker names or device names.
+
 ### Uninstall
 
 Quit TalkTrack from the menu bar, delete `TalkTrack.app` from Applications, and, if

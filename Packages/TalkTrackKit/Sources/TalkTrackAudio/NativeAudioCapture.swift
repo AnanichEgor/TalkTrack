@@ -2,6 +2,7 @@
 import AudioToolbox
 import CoreAudio
 import Foundation
+import Synchronization
 
 public enum CaptureSource: String, Codable, Sendable { case microphone, system }
 
@@ -19,6 +20,8 @@ public struct AudioPacket: Sendable {
 
 public enum AudioCaptureRecovery: Sendable {
     case retry, microphonePermission, systemAudioPermission, selectedMicrophone
+    /// A native audio call is hung; only restarting TalkTrack releases the device.
+    case restartTalkTrack
 }
 
 public struct AudioCaptureError: Error, LocalizedError, Sendable {
@@ -45,7 +48,7 @@ public struct AudioCaptureError: Error, LocalizedError, Sendable {
         // System Audio Recording Only is listed in the Screen & System Audio Recording pane.
         case .systemAudioPermission:
             URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-        case .retry, .selectedMicrophone: nil
+        case .retry, .selectedMicrophone, .restartTalkTrack: nil
         }
     }
     public var recoverySuggestion: String? {
@@ -56,6 +59,8 @@ public struct AudioCaptureError: Error, LocalizedError, Sendable {
             "Switch TalkTrack on under System Audio Recording Only in System Settings > Privacy & Security > Screen & System Audio Recording, then restart TalkTrack if recording is still refused."
         case .selectedMicrophone:
             "Connect it, or choose another microphone in TalkTrack Settings, then try recording again."
+        case .restartTalkTrack:
+            "Restart TalkTrack before recording again."
         case .retry:
             source == .microphone
                 ? "Check the selected input device, then try recording again."
@@ -152,31 +157,67 @@ final class CaptureFailureRelay: @unchecked Sendable {
     func close() { lock.withLock { open = false } }
 }
 
+public typealias MicrophoneIO = @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void
+
+/// The blocking native side of microphone capture; every call runs on a `HALWorker`.
+/// `prepare` creates the engine, selects the device and returns the input sample
+/// rate; on failure it releases what it created. `start` installs the tap, reports
+/// configuration changes until `stop`, and starts the engine. `stop` is idempotent.
+public protocol MicrophoneEngineSession: AnyObject, Sendable {
+    func prepare(deviceID: AudioObjectID?) throws -> Double
+    func start(_ io: @escaping MicrophoneIO, configurationChanged: @escaping @Sendable () -> Void) throws
+    func stop()
+}
+
 /// Per-source drivers produce bounded owned PCM packets. The recording pipeline
 /// supplies a nonblocking sink; conversion, encoding and inference belong off
 /// the hardware callback. No callback borrows Core Audio buffers after return.
+///
+/// `AVAudioEngine` calls run on one process-wide `HALWorker` with timeouts (design
+/// D2), like the system tap: a start that waits for longer than 10 s fails visibly,
+/// and a stop that hangs for 5 s is abandoned with its engine. While such a call has
+/// not returned, later starts are refused with an error that suggests a restart.
 public actor MicrophoneCapture {
-    private nonisolated let executor = AudioDriverExecutor()
-    public nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
-    private var engine: AVAudioEngine?
+    public struct Timing: Sendable {
+        public var start: Duration = .seconds(10)
+        public var stop: Duration = .seconds(5)
+        public init() {}
+    }
+
+    static let sharedWorker = HALWorker(name: "local.talktrack.hal.microphone")
+    private let worker: HALWorker
+    private let timing: Timing
+    private let makeSession: @Sendable () -> any MicrophoneEngineSession
+    private let authorization: @Sendable () -> AVAuthorizationStatus
+    private var session: (any MicrophoneEngineSession)?
     private var permission: CaptureReply<Bool>?
     private var startup: UUID?
-    private var configurationObserver: (any NSObjectProtocol)?
     private var handoff: AudioPacketHandoff?
     private var failureRelay: CaptureFailureRelay?
-    private var stopping = false
     private var stopReply: CaptureReply<Void>?
-    public init() {}
+
+    public init() {
+        self.init(worker: Self.sharedWorker, timing: Timing()) { EngineMicrophoneSession() }
+    }
+
+    init(worker: HALWorker, timing: Timing,
+         authorization: @escaping @Sendable () -> AVAuthorizationStatus = { AVCaptureDevice.authorizationStatus(for: .audio) },
+         makeSession: @escaping @Sendable () -> any MicrophoneEngineSession) {
+        self.worker = worker; self.timing = timing; self.authorization = authorization; self.makeSession = makeSession
+    }
 
     public func start(deviceID: AudioObjectID? = nil,
         receive: @escaping @Sendable (AudioPacket) -> Void,
         failure: @escaping @Sendable (AudioCaptureError) -> Void) async throws {
-        guard engine == nil, startup == nil, !stopping else { throw AudioCaptureError(source: .microphone, operation: "Capture is already active", status: nil) }
+        guard session == nil, startup == nil, stopReply == nil else {
+            throw AudioCaptureError(source: .microphone, operation: "Capture is already active", status: nil)
+        }
+        if let hung = worker.hungOperation { throw Self.mapped(HALWorkerError.busy(hungOperation: hung)) }
         let run = UUID()
         startup = run
         defer { if startup == run { startup = nil; permission = nil } }
         let allowed: Bool
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        switch authorization() {
         case .authorized: allowed = true
         case .notDetermined:
             let reply = CaptureReply<Bool>()
@@ -189,9 +230,137 @@ public actor MicrophoneCapture {
         }
         guard allowed else { throw AudioCaptureError(source: .microphone, operation: "Permission was denied", status: nil, recovery: .microphonePermission) }
         try Task.checkCancellation()
-        // Another start may have entered while the permission prompt was open.
-        guard startup == run, engine == nil else { throw CancellationError() }
+        // Stop may have run while the permission prompt was open.
+        guard startup == run, session == nil else { throw CancellationError() }
+        let next = makeSession()
+        let prepared = StartClaim()
+        let rate: Double
+        do {
+            rate = try await CaptureLog.timed("mic.prepare") { try await worker.run("Preparing the microphone", timeout: timing.start) {
+                do {
+                    let rate = try next.prepare(deviceID: deviceID)
+                    // A prepare that returns after its timeout releases itself: its caller gave up.
+                    if !prepared.markStarted() { next.stop() }
+                    return rate
+                } catch { next.stop(); throw error }
+            } }
+        } catch {
+            _ = prepared.markAbandoned()
+            throw Self.mapped(error)
+        }
+        guard startup == run else { next.stop(); throw CancellationError() }
+        let relay = CaptureFailureRelay(failure)
+        let packets = AudioPacketHandoff(source: .microphone, sampleRate: rate, receive: receive, failure: relay.send)
+        session = next; handoff = packets; failureRelay = relay
+        let claim = StartClaim()
+        do {
+            try await CaptureLog.timed("mic.start") { try await worker.run("Starting the microphone", timeout: timing.start) {
+                do {
+                    try next.start({ buffer, time in MicrophoneBuffers.consume(buffer, time, rate: rate, into: packets) }) {
+                        relay.send(AudioCaptureError(source: .microphone,
+                            operation: "The input device or its format changed", status: nil, restartable: true))
+                    }
+                } catch {
+                    if !claim.markStarted() { next.stop() }
+                    throw error
+                }
+                // A start that returns after its timeout stops itself: its caller gave up.
+                if !claim.markStarted() { next.stop() }
+            } }
+            try Task.checkCancellation()
+        } catch {
+            if case .timedOut = error as? HALWorkerError, claim.markAbandoned() {
+                // The hung worker owns the engine now and releases it when the start returns.
+                relay.close(); session = nil; handoff = nil; failureRelay = nil
+                await packets.finish()
+                throw Self.mapped(error)
+            }
+            try? await stop()
+            if error is CancellationError { throw error }
+            throw Self.mapped(error)
+        }
+    }
+
+    /// Returns after callbacks have quiesced, or after the stop timeout with the
+    /// engine abandoned: late callbacks are then dropped by the finished handoff.
+    public func stop() async throws {
+        if let stopReply { return try await stopReply.value() }
+        let reply = CaptureReply<Void>(); stopReply = reply
+        defer { stopReply = nil }
+        startup = nil
+        permission?.resolve(.failure(CancellationError())); permission = nil
+        failureRelay?.close(); failureRelay = nil
+        var problem: AudioCaptureError?
+        if let current = session {
+            session = nil
+            do {
+                try await CaptureLog.timed("mic.stop") {
+                    try await worker.run("Stopping the microphone", timeout: timing.stop) { current.stop() }
+                }
+            } catch HALWorkerError.timedOut(_, let seconds) {
+                CaptureLog.capture.error("mic.stop abandoned")
+                problem = AudioCaptureError(source: .microphone, operation:
+                    "Stopping the microphone did not finish within \(seconds.formatted(.number.precision(.fractionLength(0...1)))) s; the recording was saved with the audio received so far",
+                    status: nil, recovery: .restartTalkTrack)
+            } catch {
+                problem = Self.mapped(error)
+            }
+        }
+        let packets = handoff; handoff = nil
+        await packets?.finish()
+        if let problem { reply.resolve(.failure(problem)); throw problem }
+        reply.resolve(.success(()))
+    }
+
+    static func mapped(_ error: Error) -> AudioCaptureError {
+        switch error {
+        case let error as AudioCaptureError: return error
+        case is CancellationError:
+            return AudioCaptureError(source: .microphone, operation: "Microphone startup was cancelled", status: nil)
+        case HALWorkerError.busy(let operation):
+            return AudioCaptureError(source: .microphone, operation:
+                "\(operation) has not returned since an earlier recording", status: nil, recovery: .restartTalkTrack)
+        case let error as HALWorkerError:
+            return AudioCaptureError(source: .microphone, operation: (error.errorDescription ?? "\(error)")
+                + "; try again, or restart TalkTrack if it keeps failing", status: nil)
+        default:
+            return AudioCaptureError(source: .microphone, operation: "Cannot start input: \(error.localizedDescription)", status: nil)
+        }
+    }
+
+    #if DEBUG
+    /// Review hook: the next real engine stop blocks the worker for `seconds`, as a
+    /// stalled `AVAudioEngine.stop` would.
+    public static func hangNextStopForReview(seconds: Double) { EngineMicrophoneSession.reviewStopHang.withLock { $0 = seconds } }
+    #endif
+}
+
+/// Copies one tap buffer into the bounded handoff; validates format and host time.
+enum MicrophoneBuffers {
+    static func consume(_ buffer: AVAudioPCMBuffer, _ time: AVAudioTime, rate: Double, into packets: AudioPacketHandoff) {
+        guard time.isHostTimeValid, buffer.format.sampleRate == rate, let channels = buffer.floatChannelData else {
+            packets.interrupt(); return
+        }
+        let frames = Int(buffer.frameLength), count = Int(buffer.format.channelCount)
+        guard frames > 0 else { return }
+        packets.enqueue(frames: frames, channels: count, hostTime: time.hostTime,
+                        sampleTime: time.isSampleTimeValid ? Double(time.sampleTime) : 0) { frame, channel in
+            buffer.format.isInterleaved ? channels[0][frame * count + channel] : channels[channel][frame]
+        }
+    }
+}
+
+/// One `AVAudioEngine` input run. Only the microphone worker thread calls it.
+final class EngineMicrophoneSession: MicrophoneEngineSession, @unchecked Sendable {
+    static let reviewStopHang = Mutex<Double?>(nil)
+    private var engine: AVAudioEngine?
+    private var format: AVAudioFormat?
+    private var tapInstalled = false
+    private var configurationObserver: (any NSObjectProtocol)?
+
+    func prepare(deviceID: AudioObjectID?) throws -> Double {
         let next = AVAudioEngine()
+        engine = next
         let input = next.inputNode
         if let deviceID {
             guard let unit = input.audioUnit else { throw AudioCaptureError(source: .microphone, operation: "Input device is unavailable", status: nil) }
@@ -204,58 +373,31 @@ public actor MicrophoneCapture {
               (1...8).contains(format.channelCount), format.commonFormat == .pcmFormatFloat32 else {
             throw AudioCaptureError(source: .microphone, operation: "The input format is unsupported or the device is unavailable", status: nil)
         }
-        let rate = format.sampleRate
-        let relay = CaptureFailureRelay(failure)
-        let packets = AudioPacketHandoff(source: .microphone, sampleRate: rate, receive: receive, failure: relay.send)
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, time in
-            guard time.isHostTimeValid, buffer.format.sampleRate == rate, let channels = buffer.floatChannelData else {
-                packets.interrupt(); return
-            }
-            let frames = Int(buffer.frameLength), count = Int(buffer.format.channelCount)
-            guard frames > 0 else { return }
-            packets.enqueue(frames: frames, channels: count, hostTime: time.hostTime,
-                            sampleTime: time.isSampleTimeValid ? Double(time.sampleTime) : 0) { frame, channel in
-                buffer.format.isInterleaved ? channels[0][frame * count + channel] : channels[channel][frame]
-            }
-        }
-        do {
-            next.prepare()
-            configurationObserver = NotificationCenter.default.addObserver(
-                forName: .AVAudioEngineConfigurationChange, object: next, queue: nil) { _ in
-                relay.send(AudioCaptureError(source: .microphone,
-                    operation: "The input device or its format changed", status: nil, restartable: true))
-            }
-            try next.start()
-            try Task.checkCancellation()
-            engine = next; handoff = packets; failureRelay = relay
-        } catch {
-            relay.close()
-            if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
-            configurationObserver = nil
-            next.stop(); input.removeTap(onBus: 0)
-            await packets.finish()
-            if error is CancellationError { throw error }
+        self.format = format
+        return format.sampleRate
+    }
+
+    func start(_ io: @escaping MicrophoneIO, configurationChanged: @escaping @Sendable () -> Void) throws {
+        guard let engine, let format else { throw AudioCaptureError(source: .microphone, operation: "Input device is unavailable", status: nil) }
+        engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { io($0, $1) }
+        tapInstalled = true
+        engine.prepare()
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { _ in configurationChanged() }
+        do { try engine.start() } catch {
             throw AudioCaptureError(source: .microphone, operation: "Cannot start input: \(error.localizedDescription)", status: nil)
         }
     }
 
-    public func stop() async {
-        if let stopReply { _ = try? await stopReply.value(); return }
-        let completion = CaptureReply<Void>()
-        stopReply = completion
-        stopping = true
-        defer { stopping = false; stopReply = nil; completion.resolve(.success(())) }
-        startup = nil
-        permission?.resolve(.failure(CancellationError())); permission = nil
-        failureRelay?.close(); failureRelay = nil
+    func stop() {
+        if let hang = Self.reviewStopHang.withLock({ value -> Double? in defer { value = nil }; return value }) {
+            Thread.sleep(forTimeInterval: hang)
+        }
         if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
         configurationObserver = nil
-        if let current = engine {
-            engine = nil
-            current.stop()
-            current.inputNode.removeTap(onBus: 0)
-        }
-        let packets = handoff; handoff = nil
-        await packets?.finish()
+        guard let engine else { return }
+        self.engine = nil
+        engine.stop()
+        if tapInstalled { engine.inputNode.removeTap(onBus: 0); tapInstalled = false }
     }
 }

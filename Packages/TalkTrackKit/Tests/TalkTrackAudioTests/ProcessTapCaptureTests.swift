@@ -141,7 +141,7 @@ private func waitUntil(_ condition: @Sendable () -> Bool) async throws {
             try await other.start(receive: { _ in }, failure: { _ in })
             Issue.record("start should be refused while the worker is hung")
         } catch let error as AudioCaptureError {
-            #expect(error.operation.contains("restart TalkTrack"))
+            #expect(error.operation.contains("has not returned") && error.recovery == .restartTalkTrack)
         }
 
         try await waitUntil { slow.stops == 1 && worker.hungOperation == nil }
@@ -161,7 +161,7 @@ private func waitUntil(_ condition: @Sendable () -> Bool) async throws {
             try await capture.stop()
             Issue.record("stop should time out")
         } catch let error as AudioCaptureError {
-            #expect(error.operation.contains("recording was saved") && error.operation.contains("Restart TalkTrack"))
+            #expect(error.operation.contains("recording was saved") && error.recovery == .restartTalkTrack)
         }
         let kept = log.packets.count
         #expect(kept >= 2)

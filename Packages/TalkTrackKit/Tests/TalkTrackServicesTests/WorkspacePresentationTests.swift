@@ -17,12 +17,22 @@ private final class Box<Value>: @unchecked Sendable {
     }
 }
 
+/// Holds a scripted Stop until released, like a capture that does not stop.
+private actor StopGate {
+    private var open = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async { if !open { await withCheckedContinuation { waiters.append($0) } } }
+    func release() { open = true; let all = waiters; waiters = []; all.forEach { $0.resume() } }
+}
+
 private actor ScriptedCapture: MeetingCaptureControl {
     let callbacks: MeetingCaptureCallbacks
-    init(_ callbacks: MeetingCaptureCallbacks) { self.callbacks = callbacks }
+    let stopGate: StopGate?
+    init(_ callbacks: MeetingCaptureCallbacks, stopGate: StopGate?) { self.callbacks = callbacks; self.stopGate = stopGate }
     func start(timeout: Duration) async throws {}
     func pause() async throws {}
-    func stop() async {}
+    func stop() async -> CaptureStopReport { await stopGate?.wait(); return .stopped }
+    var abandonedSources: [CaptureSource] { [] }
 }
 
 private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
@@ -39,6 +49,7 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
     let runner: FinalJobRunner
     let workspace: WorkspacePresentation
     let captures = Box<[ScriptedCapture]>([])
+    let stopGate = Box<StopGate?>(nil)
     let host = Box<UInt64>(ticks(100))
     let wall = Box<Date>(Date().addingTimeInterval(60))
     let processed = Box<[UUID]>([])
@@ -52,9 +63,9 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         folder = try TemporaryFolder()
         let library = try await OwnedLibrary().open(root: folder.url)
         store = try await SessionStore.open(library)
-        let captures = captures, host = host, wall = wall
+        let captures = captures, host = host, wall = wall, stopGate = stopGate
         recorder = MeetingRecorder(library: library, store: store, capture: { callbacks in
-            let capture = ScriptedCapture(callbacks)
+            let capture = ScriptedCapture(callbacks, stopGate: stopGate.value)
             captures.value.append(capture)
             return capture
         }, playback: nil, jobs: FinalJobPolicy(models: { speechModels }, missing: { _ in [] },
@@ -454,7 +465,36 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(await f.recorder.phase == .idle && f.captures.value.count == 2)
         // Quitting again (or when idle) has nothing left to do.
         let again = await w.prepareToQuit(notes: notes)
-        #expect(again.saved == nil && again.cancelledJobID == nil)
+        #expect(again.saved == nil && again.cancelledJobID == nil && !again.stopTimedOut)
+    }
+
+    @Test func savingIsShownWhileStopRunsAndQuitDoesNotWaitForAStopThatNeverFinishes() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let gate = StopGate()
+        f.stopGate.value = gate
+        let w = f.workspace
+        await w.start()
+        let meeting = try await w.createMeeting(title: "Stuck", description: "")
+        await w.record()
+        #expect(await until { w.phase == .recording })
+        await f.deliver(seconds: 2)
+        let stop = Task { await w.stop() }
+        #expect(await until { w.phase == .stopping })
+        #expect(w.selectedStatus == .saving && w.activeCaptureStatus == .saving)
+        #expect(MeetingProcessingStatus.saving.message == "Saving…")
+        let controls = w.controls(for: meeting.id)
+        #expect(controls.primary == .stop && !controls.primaryEnabled && !controls.secondaryEnabled)
+        let notes = NotesAutosave(store: f.store, delay: .seconds(60))
+        try await notes.edit(meetingID: meeting.id, text: "Saved before exit")
+
+        let clock = ContinuousClock(), began = clock.now
+        let report = await w.prepareToQuit(notes: notes, stopTimeout: .milliseconds(300))
+        #expect(clock.now - began < .seconds(3))
+        #expect(report.stopTimedOut && report.saved == nil)
+        #expect(try await f.store.notes(meetingID: meeting.id)?.text == "Saved before exit")
+        await gate.release()
+        await stop.value
     }
 
     @Test func waitingJobsNameOnlyTheModelsStillMissing() async throws {
