@@ -130,8 +130,9 @@ Source and model licenses and attribution are in [ThirdParty/](ThirdParty/README
 - **Apple Silicon and macOS 15+ only.** The app is built for arm64. Development and
   testing were done on macOS 27; earlier versions are supported by the build target
   but were not tested.
-- **Memory.** The text model is chosen by RAM: 32 GB or more uses Qwen3.5 9B, less
-  uses 4B. You can choose 9B on a smaller Mac in Settings ▸ Models; TalkTrack warns
+- **Memory.** The text model is chosen by RAM: 24 GB or more uses Qwen3.5 9B, less
+  uses 4B. When other apps open during a summary, TalkTrack waits up to a minute while
+  macOS makes room instead of stopping. You can choose 9B on a smaller Mac in Settings ▸ Models; TalkTrack warns
   that summaries and translations may then be much slower or stop with a memory
   error. 16 GB is the practical minimum for summaries and translation; requests that
   do not fit in RAM at all (for example 9B on 8 GB) are refused. Recording and

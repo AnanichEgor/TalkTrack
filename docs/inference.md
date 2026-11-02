@@ -91,14 +91,19 @@ remain unchanged. Historical 32K/64K inference gates are retained; a new 128K
 hardware gate is no longer required.
 Since 2026-10-15 (user decision) admission does not look at currently free
 memory: macOS compresses and swaps other apps to make room for the model, and the
-model is chosen by RAM (4B below 32 GB). It estimates resident weights plus
+model is chosen by RAM (4B below 24 GB since 2026-11-02; earlier below 32 GB). It estimates resident weights plus
 4 GiB workspace (3 GiB for 4B) and the validated checkpoint's full-attention KV
 state, refuses a request larger than RAM minus a system reserve (RAM/8, 2–8 GiB),
-and refuses or stops only at critical memory pressure or when TalkTrack's footprint
+and refuses or stops only when critical memory pressure lasts or when TalkTrack's footprint
 exceeds that same limit. Since 2026-10-16 (user decision) a larger model than the
-Mac's default (9B below 32 GB) may be chosen and tried; Settings ▸ Models warns that
+Mac's default (9B below 24 GB) may be chosen and tried; Settings ▸ Models warns that
 it can be slow or stop with a memory error.
-Pressure checks continue between 512-token prefill chunks and during generation. The MLX free-buffer cache is limited to
+Since 2026-11-02 (user request) `GenerationMemoryWatch` treats critical pressure as
+possibly brief (opening apps makes it critical while macOS compresses and swaps them):
+admission waits, prefill pauses between 512-token chunks with the MLX cache cleared, and
+decoding continues; a request stops only after 60 s of continuous critical pressure,
+while a footprint past the limit still stops at once. Waits are logged in the unified
+log (category `inference`). The MLX free-buffer cache is limited to
 512 MiB. No refusal truncates source content; downstream text planners must split
 and cover it explicitly. `generateTask` cancellation joins the producer before
 lease release. Output reaching the generation cap is rejected as incomplete.

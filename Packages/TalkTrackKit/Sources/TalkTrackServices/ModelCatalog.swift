@@ -270,8 +270,9 @@ public struct ModelCatalog: Sendable {
     }
 
     /// The installed text model is chosen by memory unless the user picked one:
-    /// the largest model from 32 GiB, the smallest below.
-    public static let largeTextModelMemory: UInt64 = 32 << 30
+    /// the largest model from 24 GiB, the smallest below. 9B peaks near 9.3 GiB
+    /// of MLX memory at 32K, which a 24 GB Mac holds beside other apps.
+    public static let largeTextModelMemory: UInt64 = 24 << 30
 
     public static func defaultTextModel(among textModels: [ModelManifest], physicalMemory: UInt64) -> ModelManifest? {
         let sorted = textModels.sorted { $0.weightByteCount > $1.weightByteCount }

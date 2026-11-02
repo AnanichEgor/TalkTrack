@@ -153,8 +153,8 @@ public actor QwenTextAdapter {
         defer { busy = false; Memory.clearCache() }
         guard manifest.adapter == .qwen3Text else { throw TextAdapterError.configuration }
         let profile = try TextConfigurationValidation.validate(try await context.read(RelativePath("config.json")))
-        try TextMemoryAdmission.admit(weightBytes: manifest.weightByteCount, contextTokens: 32768,
-            alreadyLoaded: false, memory: NativeMemorySnapshot.current(), profile: profile)
+        try await TextMemoryAdmission.admit(weightBytes: manifest.weightByteCount, contextTokens: 32768,
+            alreadyLoaded: false, profile: profile, watch: GenerationMemoryWatch())
         _ = try await Self.loadLocal(try await context.localDirectory())
         try Task.checkCancellation()
     }
@@ -169,9 +169,9 @@ public actor QwenTextAdapter {
         do {
             let url = try await directory.validatedURL()
             let profile = try TextConfigurationValidation.validate(Data(contentsOf: url.appendingPathComponent("config.json")))
-            try TextMemoryAdmission.admit(weightBytes: manifest.weightByteCount,
+            try await TextMemoryAdmission.admit(weightBytes: manifest.weightByteCount,
                 contextTokens: contextTokens == 0 ? ContextLimit.tokens4K.rawValue : contextTokens,
-                alreadyLoaded: false, memory: NativeMemorySnapshot.current(), profile: profile)
+                alreadyLoaded: false, profile: profile, watch: GenerationMemoryWatch())
             container = try await Self.loadLocal(directory)
             try Task.checkCancellation()
             access = directory
@@ -222,10 +222,13 @@ public actor QwenTextAdapter {
                 tools: nil, additionalContext: ["enable_thinking": reasoning])
             let plan = try TextContextPlanner.resolve(selection: selection, role: role,
                 inputTokens: tokens.count, outputTokens: maxTokens)
-            try TextMemoryAdmission.admit(weightBytes: weightBytes, contextTokens: plan.contextTokens,
-                alreadyLoaded: true, memory: NativeMemorySnapshot.current(), profile: memoryProfile)
+            // One watch for the whole request: a pause at admission, in prefill
+            // and during generation counts toward the same grace period.
+            let watch = GenerationMemoryWatch()
+            try await TextMemoryAdmission.admit(weightBytes: weightBytes, contextTokens: plan.contextTokens,
+                alreadyLoaded: true, profile: memoryProfile, watch: watch)
             try Task.checkCancellation()
-            let iterator = try TokenIterator(input: LMInput(tokens: MLXArray(tokens)), model: CancellablePrefillModel(context.model),
+            let iterator = try TokenIterator(input: LMInput(tokens: MLXArray(tokens)), model: CancellablePrefillModel(context.model, watch: watch),
                 parameters: { var value = sampling.parameters; value.maxTokens = plan.outputTokens; return value }())
             let (stream, task) = generateTask(promptTokenCount: tokens.count,
                 modelConfiguration: context.configuration, tokenizer: context.tokenizer, iterator: iterator)
@@ -235,7 +238,10 @@ public actor QwenTextAdapter {
                 var toolOutput = false
                 do {
                     for await event in stream {
-                        try TextMemoryAdmission.checkDuringGeneration(NativeMemorySnapshot.current())
+                        // The producer decodes on its own task, so critical pressure
+                        // cannot pause it here; decoding adds little memory, and the
+                        // request stops only if the pressure lasts.
+                        try watch.check(NativeMemorySnapshot.current())
                         switch event {
                         case .chunk(let chunk): text += chunk
                         case .info(let info): completion = info
@@ -337,7 +343,8 @@ private struct LocalTokenizer: MLXLMCommon.Tokenizer {
 // latency to one evaluated prefill chunk instead of queuing the entire prompt.
 private final class CancellablePrefillModel: Module, LanguageModel {
     let wrapped: any LanguageModel
-    init(_ wrapped: any LanguageModel) { self.wrapped = wrapped }
+    let watch: GenerationMemoryWatch
+    init(_ wrapped: any LanguageModel, watch: GenerationMemoryWatch) { self.wrapped = wrapped; self.watch = watch }
     func newCache(parameters: GenerateParameters?) -> [KVCache] { wrapped.newCache(parameters: parameters) }
     func callAsFunction(_ input: LMInput.Text, cache: [KVCache]?, state: LMOutput.State?) -> LMOutput {
         wrapped(input, cache: cache, state: state)
@@ -349,7 +356,14 @@ private final class CancellablePrefillModel: Module, LanguageModel {
             var state: LMOutput.State?
             while remaining.tokens.size > step {
                 try Task.checkCancellation()
-                try TextMemoryAdmission.checkDuringGeneration(NativeMemorySnapshot.current())
+                // Prefill allocates the most, so it pauses while macOS makes room,
+                // with the free-buffer cache returned. It runs synchronously
+                // inside the iterator's initializer, hence a blocking wait.
+                while try watch.check(NativeMemorySnapshot.current()) {
+                    Memory.clearCache()
+                    try Task.checkCancellation()
+                    Thread.sleep(forTimeInterval: Double(GenerationMemoryWatch.pollInterval.components.attoseconds) / 1e18)
+                }
                 let output = wrapped(remaining[.newAxis, ..<step], cache: cache, state: state)
                 state = output.state
                 eval(cache)

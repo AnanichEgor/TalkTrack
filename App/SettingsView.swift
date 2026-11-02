@@ -373,7 +373,7 @@ private struct ModelSettings: View {
             } header: {
                 Text("Text Model")
             } footer: {
-                Text("Automatic uses the larger model on Macs with 32 GB of memory or more (this Mac has \(Self.memory(models.physicalMemory))). Summaries choose their model beside Generate Summaries: the text server below when it is used for summaries, otherwise this one. Summaries and translations already queued keep the model they were started with.")
+                Text("Automatic uses the larger model on Macs with 24 GB of memory or more (this Mac has \(Self.memory(models.physicalMemory))). Summaries choose their model beside Generate Summaries: the text server below when it is used for summaries, otherwise this one. Summaries and translations already queued keep the model they were started with.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             TextServerSection(server: server)

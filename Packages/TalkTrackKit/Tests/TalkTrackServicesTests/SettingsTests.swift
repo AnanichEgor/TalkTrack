@@ -169,8 +169,8 @@ private actor FakeInstallations: ModelInstallationControl {
         let base = try ModelCatalog.bundled(in: defaults)
         #expect(base.textModels.map(\.repository) == ["mlx-community/Qwen3.5-9B-OptiQ-4bit", "mlx-community/Qwen3.5-4B-OptiQ-4bit"])
         let large = "text-qwen35-9b", small = "text-qwen35-4b"
-        // 32 GB and more: 9B; 16 and 24 GB: 4B.
-        for (memory, expected) in [(8 * gib, small), (16 * gib, small), (24 * gib, small), (32 * gib, large), (64 * gib, large)] {
+        // 24 GB and more: 9B; 8 and 16 GB: 4B.
+        for (memory, expected) in [(8 * gib, small), (16 * gib, small), (24 * gib, large), (32 * gib, large), (64 * gib, large)] {
             let catalog = base.selecting(textModel: nil, physicalMemory: memory)
             #expect(catalog.selectedTextModelID == expected)
             for role in [ModelRole.summary, .translation, .spelling] { #expect(try catalog.model(for: role).id == expected) }

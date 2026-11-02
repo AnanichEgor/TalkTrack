@@ -1,5 +1,7 @@
 import Darwin
 import Foundation
+import os
+import TalkTrackAudio
 import TalkTrackDomain
 
 public struct NativeMemorySnapshot: Codable, Sendable {
@@ -63,7 +65,7 @@ public enum TextMemoryAdmissionError: Error, LocalizedError, Equatable {
         return switch self {
         case .unavailable: "Memory availability cannot be checked. Text processing was not started."
         case .unsafe: "This text request does not fit in this Mac's memory. Choose a smaller context in Settings ▸ Text, or the 4B text model in Settings ▸ Models. " + advice
-        case .pressure: "macOS is critically short of memory, so text processing stopped. Quit memory-heavy apps and try again. " + advice
+        case .pressure: "macOS stayed critically short of memory for a minute, so text processing stopped. Quit memory-heavy apps and try again. " + advice
         }
     }
 }
@@ -114,12 +116,75 @@ public enum TextMemoryAdmission {
     /// `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warning, 4 critical.
     static let criticalPressure: Int32 = 4
 
-    /// Called between bounded GPU batches. Stops without publishing an
-    /// incomplete result, never clipping the input, when macOS reaches critical
-    /// pressure or this process grows past RAM minus the system reserve.
-    public static func checkDuringGeneration(_ memory: NativeMemorySnapshot) throws {
-        guard memory.pressure < criticalPressure, memory.footprintBytes <= usableBytes(memory.physicalBytes) else {
+    /// `admit`, waiting while macOS reports critical pressure: opening apps
+    /// often makes it critical for a few seconds while macOS compresses and
+    /// swaps them. Refuses with `.pressure` only once `watch` has seen critical
+    /// pressure for its whole grace period; `.unsafe` is never waited for.
+    public static func admit(weightBytes: Int64, contextTokens: Int, alreadyLoaded: Bool,
+                             profile: TextMemoryProfile = .qwen36MoE35B, watch: GenerationMemoryWatch,
+                             sample: () throws -> NativeMemorySnapshot = NativeMemorySnapshot.current,
+                             now: () -> ContinuousClock.Instant = { .now },
+                             sleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) async throws {
+        while true {
+            let memory = try sample()
+            do {
+                try admit(weightBytes: weightBytes, contextTokens: contextTokens, alreadyLoaded: alreadyLoaded,
+                          memory: memory, profile: profile)
+                try watch.check(memory, now: now())
+                return
+            } catch TextMemoryAdmissionError.pressure {
+                try watch.check(memory, now: now())
+                try await sleep(GenerationMemoryWatch.pollInterval)
+            }
+        }
+    }
+}
+
+/// Follows memory for one request, between bounded GPU batches. Critical
+/// pressure is often brief (macOS compresses and swaps other apps to make room),
+/// so it stops the request only when pressure stays critical for `grace`; the
+/// caller pauses meanwhile where it can. A footprint past RAM minus the system
+/// reserve stops at once. Never publishes an incomplete result or clips input.
+public final class GenerationMemoryWatch: @unchecked Sendable {
+    public static let defaultGrace: Duration = .seconds(60)
+    public static let pollInterval: Duration = .milliseconds(250)
+    private static let log = Logger(subsystem: CaptureLog.subsystem, category: "inference")
+    private let grace: Duration
+    private let lock = NSLock()
+    private var criticalSince: ContinuousClock.Instant?
+
+    public init(grace: Duration = defaultGrace) { self.grace = grace }
+
+    /// Whether macOS reports critical pressure now (the caller should wait);
+    /// throws `.pressure` once it has lasted `grace`.
+    @discardableResult
+    public func check(_ memory: NativeMemorySnapshot, now: ContinuousClock.Instant = .now) throws -> Bool {
+        guard memory.footprintBytes <= TextMemoryAdmission.usableBytes(memory.physicalBytes) else {
+            Self.log.error("text.memory footprint over limit footprintMiB=\(memory.footprintBytes >> 20, privacy: .public)")
             throw TextMemoryAdmissionError.pressure
         }
+        return try lock.withLock {
+            guard memory.pressure >= TextMemoryAdmission.criticalPressure else {
+                if let since = criticalSince {
+                    Self.log.log("text.memory resumed waitedMs=\(Self.milliseconds(now - since), privacy: .public)")
+                    criticalSince = nil
+                }
+                return false
+            }
+            guard let since = criticalSince else {
+                Self.log.log("text.memory critical pressure, waiting")
+                criticalSince = now
+                return true
+            }
+            guard now - since < grace else {
+                Self.log.error("text.memory critical pressure lasted waitedMs=\(Self.milliseconds(now - since), privacy: .public), stopping")
+                throw TextMemoryAdmissionError.pressure
+            }
+            return true
+        }
+    }
+
+    private static func milliseconds(_ duration: Duration) -> Int64 {
+        duration.components.seconds * 1000 + duration.components.attoseconds / 1_000_000_000_000_000
     }
 }
