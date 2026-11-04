@@ -112,6 +112,13 @@ upgrades the same way as schema 1 (temporary backup in the same
 removed); a schema 1 file upgrades through 2 to 3 in one open. Older builds
 refuse a schema 3 file as a newer schema.
 
+Schema 4 adds `exclusions(profile_id, revision_id, recording_id, start_us,
+end_us, excluded_at)`: samples the user removed from one voice in Settings, as
+time ranges, never vectors. Schema 3 upgrades the same way (temporary backup,
+`CREATE TABLE`, `user_version = 4`, backup removed); older files upgrade through
+every step in one open. Builds before this one refuse a schema 4 file. Deleting
+a voice deletes its exclusions too.
+
 
 ## Recognition and manual correction
 
@@ -223,3 +230,33 @@ nothing. If recording it fails, the name is still removed and the error row says
 saved voices still use the speech; Retry records it.
 
 Tests: `./scripts/test.sh --filter 'NamingUndoTests|SpeakerRenameTests|SavedSpeakersTests'`.
+
+## Reviewing and removing samples
+
+Each voice in Settings ▸ Speakers has **Samples (N)**. Opening it lists the
+samples that voice currently counts: the same filters recognition applies
+(latest name of each day speaker, withdrawals, exclusions, and the open
+library's named fragments) on revisions compatible with the voice's head
+(`VoiceProfileStore.samples(of:corrections:)`). Samples are grouped by the
+meeting day where the person was named, newest first. A row shows the
+transcript time where the sample starts, its length, the overlapping reply text
+from the current transcript (read by `SessionStore.voiceSampleContexts`, shown
+only, never stored) and **Used for recognition** when it is among the at most
+24 samples recognition compares with.
+
+- **Play** plays only the sample's system audio from its own recording
+  (`VoiceSamplePreview`, its own audio engine), pauses meeting playback and is
+  refused while TalkTrack records. Capture stops it first: the recorder gets a
+  `CombinedPlaybackExclusion` of the meeting player and the preview.
+- **Remove** and **Remove All…** (one meeting day, with a confirmation) record
+  exclusions for this voice only (`VoiceProfileStore.exclude`). The sample stops
+  counting for it in recognition, calibration and status; other voices, meeting
+  names and recordings are unchanged. Exclusions are keyed by the revision that
+  holds the sample, so naming the same speech for the person again counts again.
+- **Undo** in the banner restores the latest removal exactly
+  (`VoiceProfileStore.restore`) until a refresh, rename, delete or a change of
+  the voice.
+- Samples from a library that is not open, or whose meeting or recording was
+  deleted, are listed without Play, with the reason; they can still be removed.
+
+Tests: `./scripts/test.sh --filter 'VoiceSampleExclusionTests|SavedSpeakersTests'`.

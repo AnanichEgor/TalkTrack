@@ -49,6 +49,46 @@ public struct SavedVoice: Equatable, Identifiable, Sendable {
     public let needsNewSpeech: Bool
 }
 
+/// One sample a saved voice currently counts, for Settings. No vector.
+public struct SavedVoiceSample: Equatable, Identifiable, Sendable {
+    /// Identity and what `VoiceProfileStore.exclude` takes.
+    public let key: VoiceSampleExclusion
+    public let libraryID: UUID
+    public let meetingID: UUID
+    public let daySpeakerID: UUID
+    /// When the user named the person (the revision's creation).
+    public let confirmedAt: Date
+    /// In the at most 24 samples recognition compares with.
+    public let usedForRecognition: Bool
+    public var id: String { "\(key.revisionID)/\(key.recordingID)/\(key.interval.start.microseconds)/\(key.interval.end.microseconds)" }
+    public var recordingID: UUID { key.recordingID }
+    public var interval: MediaInterval { key.interval }
+}
+
+/// Where a saved-voice sample came from, read from the open library for
+/// display only.
+public enum VoiceSampleContext: Equatable, Sendable {
+    public struct Details: Equatable, Sendable {
+        public let meetingTitle: String
+        /// The recording day, e.g. "October 9, 2026".
+        public let date: String
+        /// The transcript time of the reply the sample starts in.
+        public let time: String?
+        /// Current transcript text overlapping the sample, clipped.
+        public let text: String?
+    }
+    case available(Details)
+    /// Learned in a library that is not open (moved, another Mac).
+    case otherLibrary
+    /// Its meeting or recording was deleted.
+    case recordingDeleted
+
+    static let maximumText = 160
+    static func clipped(_ text: String) -> String {
+        text.count <= maximumText ? text : String(text.prefix(maximumText - 1)).trimmingCharacters(in: .whitespaces) + "…"
+    }
+}
+
 public enum VoiceProfileSettingsError: Error, Equatable, LocalizedError, Sendable {
     case changed, busy
     public var errorDescription: String? {

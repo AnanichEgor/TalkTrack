@@ -841,6 +841,46 @@ public actor SessionStore {
         }
     }
 
+    /// What Settings shows about saved-voice samples (meeting, day, transcript
+    /// time, overlapping reply text), keyed by `SavedVoiceSample.id`. Read only;
+    /// nothing is written anywhere. One transcript read per meeting.
+    public func voiceSampleContexts(_ samples: [SavedVoiceSample]) -> [String: VoiceSampleContext] {
+        var result: [String: VoiceSampleContext] = [:]
+        let own = samples.filter { $0.libraryID == library.manifest.libraryID }
+        for sample in samples where sample.libraryID != library.manifest.libraryID { result[sample.id] = .otherLibrary }
+        for (meetingID, group) in Dictionary(grouping: own, by: \.meetingID) {
+            guard let snapshot = try? meetingTranscript(meetingID: meetingID) else {
+                for sample in group { result[sample.id] = .recordingDeleted }
+                continue
+            }
+            let blocks = snapshot.items.compactMap { item -> TranscriptBlock? in if case .speech(let block) = item { block } else { nil } }
+            for sample in group {
+                guard let recording = snapshot.recordings.first(where: { $0.id == sample.recordingID }),
+                      (try? isDeletedRecording(recording.id)) == false else { result[sample.id] = .recordingDeleted; continue }
+                let dayID = snapshot.speakers.first { $0.id == sample.daySpeakerID }?.dayID
+                let day = recording.days.first { $0.id == dayID } ?? recording.days[0]
+                func overlaps(_ segment: TranscriptSegment) -> Bool {
+                    segment.recordingID == sample.recordingID && segment.track == .system &&
+                        max(segment.interval.start, sample.interval.start) < min(segment.interval.end, sample.interval.end)
+                }
+                let covering = blocks.filter { $0.recordingID == sample.recordingID && $0.segments.contains(where: overlaps) }
+                let overlapping = covering.flatMap(\.segments).filter(overlaps)
+                let words = overlapping.map { $0.correctedText ?? $0.originalText }
+                    .joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                // The wall-clock time where the sample starts, from the first
+                // overlapping segment (pauses inside a recording are respected).
+                let time = overlapping.first.flatMap { segment -> String? in
+                    let offset = max(0, sample.interval.start.seconds - segment.interval.start.seconds)
+                    return try? TranscriptFormatter.timestamp(segment.wallClockStart.addingTimeInterval(offset), day: day)
+                } ?? covering.first?.timestamp
+                result[sample.id] = .available(VoiceSampleContext.Details(meetingTitle: snapshot.meeting.title,
+                    date: TranscriptDateSeparator.display(day.localDate), time: time,
+                    text: words.isEmpty ? nil : VoiceSampleContext.clipped(words)))
+            }
+        }
+        return result
+    }
+
     /// Current named fragments of the meeting.
     public func fragmentAnchors(meetingID: UUID) throws -> [FragmentAnchor] {
         _ = try meeting(meetingID)

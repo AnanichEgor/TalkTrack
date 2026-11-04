@@ -265,7 +265,8 @@ public enum TranscriptFormatter {
         return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
 
-    private static func timestamp(_ date: Date, day: RecordingDay) throws -> String {
+    /// `HH:mm:ss` in the capture day's frozen offset, as speech blocks show it.
+    public static func timestamp(_ date: Date, day: RecordingDay) throws -> String {
         guard let zone = TimeZone(secondsFromGMT: day.utcOffsetSeconds) else {
             throw TranscriptFormattingError.invalidWallClock
         }

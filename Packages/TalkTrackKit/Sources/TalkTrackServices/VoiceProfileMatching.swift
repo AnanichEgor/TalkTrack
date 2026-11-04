@@ -122,6 +122,22 @@ public struct VoiceWithdrawal: Equatable, Sendable {
     }
 }
 
+/// One saved sample the user removed from one voice (Settings ▸ Speakers).
+/// Keyed by the revision that holds it, so a later naming that confirms the
+/// same speech again (a new revision) counts again. Time ranges only.
+public struct VoiceSampleExclusion: Equatable, Hashable, Sendable {
+    public let profileID: UUID
+    public let revisionID: UUID
+    public let recordingID: UUID
+    public let interval: MediaInterval
+    public init(profileID: UUID, revisionID: UUID, recordingID: UUID, interval: MediaInterval) {
+        self.profileID = profileID; self.revisionID = revisionID; self.recordingID = recordingID; self.interval = interval
+    }
+    func matches(_ sample: VoiceProfileSample, of revision: VoiceProfileRevision) -> Bool {
+        revision.id == revisionID && revision.profileID == profileID && sample.recordingID == recordingID && sample.interval == interval
+    }
+}
+
 struct VoiceRecognitionProfile: Equatable, Sendable {
     let profile: VoiceProfile
     let revision: VoiceProfileRevision
@@ -163,6 +179,13 @@ struct VoiceRecognitionProfile: Equatable, Sendable {
     func withdrawing(_ withdrawals: [VoiceWithdrawal]) -> VoiceRecognitionProfile {
         guard !withdrawals.isEmpty else { return self }
         return removing { sample, revision in withdrawals.contains { $0.removes(sample, of: revision) } }
+    }
+
+    /// Without samples the user removed from this voice in Settings.
+    func excluding(_ exclusions: [VoiceSampleExclusion]) -> VoiceRecognitionProfile {
+        let own = exclusions.filter { $0.profileID == profile.id }
+        guard !own.isEmpty else { return self }
+        return removing { sample, revision in own.contains { $0.matches(sample, of: revision) } }
     }
 
     private func removing(_ removed: (VoiceProfileSample, VoiceProfileRevision) -> Bool) -> VoiceRecognitionProfile {

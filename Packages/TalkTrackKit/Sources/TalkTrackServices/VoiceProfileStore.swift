@@ -14,8 +14,10 @@ public actor VoiceProfileStore {
     /// holds the pre-upgrade file of any version below `schema`.
     private static let migrationBackup = "Speakers.v1-backup.sqlite3"
     /// 3 adds `withdrawals` (removed reply names, time ranges only).
-    static let schema = 3
+    /// 4 adds `exclusions` (samples removed from one voice, time ranges only).
+    static let schema = 4
     private static let withdrawalsTable = "CREATE TABLE withdrawals (library_id TEXT NOT NULL, recording_id TEXT NOT NULL, start_us INTEGER NOT NULL, end_us INTEGER NOT NULL, withdrawn_at REAL NOT NULL, PRIMARY KEY(library_id,recording_id,start_us,end_us))"
+    private static let exclusionsTable = "CREATE TABLE exclusions (profile_id TEXT NOT NULL, revision_id TEXT NOT NULL, recording_id TEXT NOT NULL, start_us INTEGER NOT NULL, end_us INTEGER NOT NULL, excluded_at REAL NOT NULL, PRIMARY KEY(profile_id,revision_id,recording_id,start_us,end_us))"
     private var recognitionCommit = false
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -67,6 +69,7 @@ public actor VoiceProfileStore {
         try db.transaction {
             try requireCurrent(expected, in: db)
             try db.execute("DELETE FROM revisions WHERE profile_id=?", [.text(expected.id.uuidString)])
+            try db.execute("DELETE FROM exclusions WHERE profile_id=?", [.text(expected.id.uuidString)])
             try db.execute("DELETE FROM profiles WHERE id=?", [.text(expected.id.uuidString)])
             try Task.checkCancellation()
         }
@@ -138,6 +141,7 @@ public actor VoiceProfileStore {
         }
         let current = Set(latest.values.map(\.id))
         let withdrawals = try withdrawals(in: db)
+        let exclusions = try exclusions(in: db)
         return try profiles(in: db).map { profile in
             guard let revision = try revision(profile.revisionID, in: db) else { throw VoiceEnrollmentError.damagedProfile }
             // Earlier confirmations stay in the bank: walk the immutable chain.
@@ -148,7 +152,80 @@ public actor VoiceProfileStore {
                 history.append(older)
             }
             return VoiceRecognitionProfile(profile: profile, revision: revision, history: history.filter { current.contains($0.id) })
-                .withdrawing(withdrawals)
+                .withdrawing(withdrawals).excluding(exclusions)
+        }
+    }
+
+    /// The samples `profile` currently counts (latest names, withdrawals,
+    /// exclusions and the open library's corrections applied), newest
+    /// confirmation first. Only revisions compatible with its head count.
+    public func samples(of expected: VoiceProfile, corrections: [VoiceCorrection] = []) throws -> [SavedVoiceSample] {
+        guard let db = try open(create: false) else { throw VoiceProfileSettingsError.changed }
+        return try db.transaction {
+            try requireCurrent(expected, in: db)
+            guard let voice = try recognitionProfiles(in: db).first(where: { $0.profile.id == expected.id })?.applying(corrections) else {
+                throw VoiceProfileSettingsError.changed
+            }
+            let bank = voice.bank()
+            return voice.compatibleHistory.sorted { ($0.createdAt, $0.id.uuidString) > ($1.createdAt, $1.id.uuidString) }.flatMap { revision in
+                revision.samples.filter { VoiceEnrollmentPolicy.validVector($0.vector) }.sorted { $0.interval.start < $1.interval.start }.map { sample in
+                    SavedVoiceSample(key: VoiceSampleExclusion(profileID: expected.id, revisionID: revision.id, recordingID: sample.recordingID, interval: sample.interval),
+                        libraryID: revision.libraryID, meetingID: revision.meetingID, daySpeakerID: revision.daySpeakerID,
+                        confirmedAt: revision.createdAt, usedForRecognition: bank.contains(sample))
+                }
+            }
+        }
+    }
+
+    private func exclusions(in db: SQLiteConnection) throws -> [VoiceSampleExclusion] {
+        try db.rows("SELECT profile_id, revision_id, recording_id, start_us, end_us FROM exclusions").map { row in
+            guard case .text(let profile) = row[0], case .text(let revision) = row[1], case .text(let recording) = row[2],
+                  case .integer(let start) = row[3], case .integer(let end) = row[4], let profileID = UUID(uuidString: profile),
+                  let revisionID = UUID(uuidString: revision), let recordingID = UUID(uuidString: recording) else { throw VoiceEnrollmentError.damagedProfile }
+            return VoiceSampleExclusion(profileID: profileID, revisionID: revisionID, recordingID: recordingID,
+                interval: try MediaInterval(start: MediaTime(microseconds: start), end: MediaTime(microseconds: end)))
+        }
+    }
+
+    /// Removes samples from one voice (Settings). Refused unless the voice is
+    /// unchanged and every sample still counts for it. Returns what was
+    /// inserted, which `restore` takes back exactly (Undo).
+    @discardableResult
+    public func exclude(_ samples: [VoiceSampleExclusion], from expected: VoiceProfile, at date: Date = Date()) throws -> [VoiceSampleExclusion] {
+        guard !samples.isEmpty else { return [] }
+        guard !recognitionCommit else { throw VoiceProfileSettingsError.busy }
+        guard samples.allSatisfy({ $0.profileID == expected.id }) else { throw VoiceProfileSettingsError.changed }
+        guard let db = try open(create: false) else { throw VoiceProfileSettingsError.changed }
+        return try db.transaction {
+            try requireCurrent(expected, in: db)
+            guard let voice = try recognitionProfiles(in: db).first(where: { $0.profile.id == expected.id }) else { throw VoiceProfileSettingsError.changed }
+            let unique = Array(Set(samples))
+            for item in unique {
+                guard voice.history.contains(where: { revision in revision.samples.contains { item.matches($0, of: revision) } }) else {
+                    throw VoiceProfileSettingsError.changed
+                }
+                try db.execute("INSERT INTO exclusions VALUES (?,?,?,?,?,?)", [.text(item.profileID.uuidString), .text(item.revisionID.uuidString),
+                    .text(item.recordingID.uuidString), .integer(item.interval.start.microseconds), .integer(item.interval.end.microseconds),
+                    .real(date.timeIntervalSince1970)])
+            }
+            try Task.checkCancellation()
+            return unique
+        }
+    }
+
+    /// Undo of `exclude`: deletes exactly those rows while the voice is unchanged.
+    public func restore(_ samples: [VoiceSampleExclusion], to expected: VoiceProfile) throws {
+        guard !samples.isEmpty else { return }
+        guard !recognitionCommit else { throw VoiceProfileSettingsError.busy }
+        guard let db = try open(create: false) else { throw VoiceProfileSettingsError.changed }
+        try db.transaction {
+            try requireCurrent(expected, in: db)
+            for item in samples {
+                try db.execute("DELETE FROM exclusions WHERE profile_id=? AND revision_id=? AND recording_id=? AND start_us=? AND end_us=?", [
+                    .text(item.profileID.uuidString), .text(item.revisionID.uuidString), .text(item.recordingID.uuidString),
+                    .integer(item.interval.start.microseconds), .integer(item.interval.end.microseconds)])
+            }
+            try Task.checkCancellation()
         }
     }
 
@@ -330,6 +407,7 @@ public actor VoiceProfileStore {
                 try db.execute("CREATE TABLE revisions (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, library_id TEXT NOT NULL, assignment_id TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(library_id,assignment_id))")
                 try db.execute("CREATE TABLE enrollment_receipts (library_id TEXT NOT NULL, assignment_id TEXT NOT NULL, PRIMARY KEY(library_id,assignment_id))")
                 try db.execute(Self.withdrawalsTable)
+                try db.execute(Self.exclusionsTable)
                 try db.execute("PRAGMA user_version = \(Self.schema)")
             }
         }
@@ -353,6 +431,15 @@ public actor VoiceProfileStore {
             try db.transaction {
                 try db.execute(Self.withdrawalsTable)
                 try db.execute("PRAGMA user_version = 3")
+            }
+        }
+        if try db.integer("PRAGMA user_version") == 3 {
+            if !directory.exists(Self.migrationBackup) {
+                try db.backup(to: URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(Self.migrationBackup).path)
+            }
+            try db.transaction {
+                try db.execute(Self.exclusionsTable)
+                try db.execute("PRAGMA user_version = 4")
             }
         }
         if directory.exists(Self.migrationBackup) {

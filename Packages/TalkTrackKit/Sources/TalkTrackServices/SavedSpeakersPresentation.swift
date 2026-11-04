@@ -17,6 +17,16 @@ import Observation
     public private(set) var merge: SpeakerMergeCalibration?
     /// Reads the merge calibration of the open library; set by the app.
     @ObservationIgnored public var mergeCalibration: (@Sendable () async throws -> SpeakerMergeCalibration)?
+    /// The open library's named fragments, so listed samples match recognition.
+    @ObservationIgnored public var voiceCorrections: (@Sendable () async throws -> [VoiceCorrection])?
+    /// Meeting, day, time and reply text of samples, from the open library.
+    @ObservationIgnored public var sampleContexts: (@Sendable ([SavedVoiceSample]) async -> [String: VoiceSampleContext])?
+    /// Voices whose samples are shown, and their samples by meeting day.
+    public private(set) var expanded: Set<UUID> = []
+    public private(set) var sampleDays: [UUID: [SavedVoiceSampleDay]] = [:]
+    public private(set) var contexts: [String: VoiceSampleContext] = [:]
+    /// The latest removal, offered as Undo until anything else changes.
+    public private(set) var removalUndo: SampleRemovalUndo?
     @ObservationIgnored private let defaults: UserDefaults
     private let store: VoiceProfileStore
 
@@ -29,10 +39,61 @@ import Observation
         guard !isBusy else { return }
         isBusy = true; defer { isBusy = false }
         recognitionEnabled = ProcessingPreferences.voiceRecognitionEnabled(in: defaults)
+        removalUndo = nil
         do { voices = try await store.savedVoices(); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
         status = try? await store.recognitionStatus()
         merge = try? await mergeCalibration?()
+        expanded = expanded.filter { id in voices.contains { $0.id == id } }
+        sampleDays = sampleDays.filter { expanded.contains($0.key) }
+        for id in expanded { await reloadSamples(id) }
+    }
+
+    /// Shows or hides a voice's samples; they are read when first shown.
+    public func toggleSamples(_ profile: VoiceProfile) async {
+        if expanded.remove(profile.id) != nil { sampleDays[profile.id] = nil; return }
+        expanded.insert(profile.id)
+        await reloadSamples(profile.id)
+    }
+
+    public func sampleCount(_ profileID: UUID) -> Int? { sampleDays[profileID].map { $0.reduce(0) { $0 + $1.samples.count } } }
+
+    private func reloadSamples(_ id: UUID) async {
+        guard let profile = voices.first(where: { $0.id == id })?.profile else { expanded.remove(id); sampleDays[id] = nil; return }
+        do {
+            let corrections = try await voiceCorrections?() ?? []
+            let samples = try await store.samples(of: profile, corrections: corrections)
+            let found = await sampleContexts?(samples) ?? [:]
+            contexts.merge(found) { _, new in new }
+            sampleDays[id] = SavedVoiceSampleDay.group(samples)
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    /// Removes samples from this voice only; Undo takes them back.
+    public func remove(_ samples: [SavedVoiceSample], from profile: VoiceProfile) async {
+        guard !isBusy, !samples.isEmpty else { return }
+        isBusy = true; defer { isBusy = false }
+        do {
+            let removed = try await store.exclude(samples.map(\.key), from: profile)
+            removalUndo = SampleRemovalUndo(profile: profile, removed: removed)
+            errorMessage = nil
+        } catch { errorMessage = error.localizedDescription }
+        await afterSampleChange(profile.id)
+    }
+
+    public func undoRemoval() async {
+        guard !isBusy, let undo = removalUndo else { return }
+        isBusy = true; defer { isBusy = false }
+        do { try await store.restore(undo.removed, to: undo.profile); removalUndo = nil; errorMessage = nil }
+        catch { errorMessage = error.localizedDescription }
+        await afterSampleChange(undo.profile.id)
+    }
+
+    private func afterSampleChange(_ id: UUID) async {
+        if let fresh = try? await store.savedVoices() { voices = fresh }
+        status = try? await store.recognitionStatus()
+        merge = try? await mergeCalibration?()
+        await reloadSamples(id)
     }
 
     /// Learning until named pairs calibrate merging, then active.
@@ -75,16 +136,42 @@ import Observation
         isBusy = true; defer { isBusy = false }
         do {
             _ = try await store.rename(editing, name: draftName)
-            self.editing = nil; draftName = ""
+            self.editing = nil; draftName = ""; removalUndo = nil
             voices = try await store.savedVoices(); errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
     }
     public func delete(_ profile: VoiceProfile) async {
         guard !isBusy else { return }
         isBusy = true; defer { isBusy = false }
+        removalUndo = nil
         do { try await store.delete(profile); voices = try await store.savedVoices(); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
         status = try? await store.recognitionStatus()
         merge = try? await mergeCalibration?()
+        expanded.remove(profile.id); sampleDays[profile.id] = nil
+    }
+}
+
+/// The samples one naming (a meeting day) taught a voice.
+public struct SavedVoiceSampleDay: Equatable, Identifiable, Sendable {
+    public let meetingID: UUID
+    public let daySpeakerID: UUID
+    public let samples: [SavedVoiceSample]
+    public var id: String { "\(meetingID)/\(daySpeakerID)" }
+    public var confirmedAt: Date { samples.map(\.confirmedAt).max() ?? .distantPast }
+
+    static func group(_ samples: [SavedVoiceSample]) -> [SavedVoiceSampleDay] {
+        Dictionary(grouping: samples) { "\($0.meetingID)/\($0.daySpeakerID)" }.values.map {
+            SavedVoiceSampleDay(meetingID: $0[0].meetingID, daySpeakerID: $0[0].daySpeakerID, samples: $0.sorted { $0.interval.start < $1.interval.start })
+        }.sorted { ($0.confirmedAt, $0.id) > ($1.confirmedAt, $1.id) }
+    }
+}
+
+/// Undo of the latest sample removal in Settings.
+public struct SampleRemovalUndo: Equatable, Sendable {
+    public let profile: VoiceProfile
+    public let removed: [VoiceSampleExclusion]
+    public var text: String {
+        removed.count == 1 ? "Removed 1 sample from \(profile.name)." : "Removed \(removed.count) samples from \(profile.name)."
     }
 }

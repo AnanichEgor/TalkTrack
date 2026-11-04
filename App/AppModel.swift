@@ -31,7 +31,7 @@ struct WorkspaceServices {
         case ready(WorkspacePresentation, WorkspaceServices)
     }
 
-    enum SettingsTab: Hashable { case general, audio, models, text, speakers, dictation }
+    enum SettingsTab: Hashable, CaseIterable { case general, audio, models, text, speakers, dictation }
 
     /// Moving the library to another folder (Settings ▸ General).
     enum LibraryMove: Equatable {
@@ -53,6 +53,8 @@ struct WorkspaceServices {
     /// while the Settings window is closed.
     let models: ModelSettingsPresentation?
     let speakers: SavedSpeakersPresentation
+    /// Plays saved-voice samples in Settings ▸ Speakers; nil until a library opens.
+    private(set) var samplePreview: VoiceSamplePreview?
     /// New releases on GitHub (Settings ▸ General ▸ Updates, menu bar).
     let updates = UpdateChecker(currentVersion: AppModel.version)
     /// The user's OpenAI-compatible text server (Settings ▸ Models).
@@ -253,11 +255,16 @@ struct WorkspaceServices {
             })
             // The recorder stops this player before every capture.
             let player = MeetingPlayer(library: library)
+            // Settings ▸ Speakers plays saved-voice samples on its own engine.
+            let preview = VoiceSamplePreview(library: library, store: store)
+            preview.beforePlay = { [weak player] in player?.pause() }
+            samplePreview = preview
             // The tap starts even when denied, so access is confirmed before Record.
             let systemAudioAccess: @Sendable () async throws -> Void = { try await SystemAudioAccess.shared.requireAllowed() }
             let recorder = MeetingRecorder(library: library, store: store,
                                            capture: MeetingRecorder.nativeCapture(selection: { ProcessingPreferences.microphone() }),
-                                           playback: player, jobs: policy, systemAudioAccess: systemAudioAccess)
+                                           playback: CombinedPlaybackExclusion([player, preview]), jobs: policy,
+                                           systemAudioAccess: systemAudioAccess)
             let pipeline = FinalTranscriptionPipeline(store: store, library: library, inference: runtime)
             // Summaries and translations may run on the user's own text server (Settings ▸ Models);
             // a server has nothing to download.
@@ -308,6 +315,9 @@ struct WorkspaceServices {
             models?.onChange = { [weak workspace] in Task { await workspace?.refreshMissingModels() } }
             let enrollment = VoiceProfileEnrollment(store: store, profiles: VoiceProfileStore(home: Self.profilesHome), inference: runtime)
             speakers.mergeCalibration = { try await store.mergeCalibration() }
+            speakers.voiceCorrections = { try await store.voiceCorrections() }
+            speakers.sampleContexts = { samples in await store.voiceSampleContexts(samples) }
+            preview.isCapturing = { [weak workspace] in workspace.map { $0.phase != .idle } ?? false }
             state = .ready(workspace, WorkspaceServices(store: store, notes: NotesAutosave(store: store),
                                                         enrollment: enrollment, jobPolicy: policy, player: player,
                                                         summaries: summaries, runner: runner,
