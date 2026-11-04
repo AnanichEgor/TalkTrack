@@ -48,7 +48,7 @@ Production profiles live at:
 The profile database is independent of the selected session root and Models.
 An absent registry is not created by listing profiles or ordinary renaming.
 Only successful evidence preparation proceeds to profile persistence. SQLite
-schema 2 uses a separate application ID; unsupported future schemas and unsafe
+schema 3 uses a separate application ID; unsupported future schemas and unsafe
 paths are refused. Profile revision, current head and confirmation replay guard
 commit in one transaction. A failed update preserves the previous head and
 immutable evidence. Session schema remains version 2.
@@ -104,6 +104,13 @@ Deletion uses SQLite secure deletion and DELETE journaling to clear freed cells
 and avoid retaining vectors in an application WAL. This concerns the active app
 registry and its migration backup, not copies made by OS backups or filesystem
 snapshots. The session schema remains 2.
+
+Schema 3 adds `withdrawals(library_id, recording_id, start_us, end_us,
+withdrawn_at)`: time ranges of removed reply names, never vectors. Schema 2
+upgrades the same way as schema 1 (temporary backup in the same
+`Speakers.v1-backup.sqlite3` file, `CREATE TABLE`, `user_version = 3`, backup
+removed); a schema 1 file upgrades through 2 to 3 in one open. Older builds
+refuse a schema 3 file as a newer schema.
 
 
 ## Recognition and manual correction
@@ -168,3 +175,51 @@ Apply Names rebuilds a meeting's
 voices from its kept processing results with those links; pairs of named voices
 calibrate a merge threshold used for new meetings, shown in Settings → Speakers
 as "Joining split voices".
+
+## Naming sheet, Undo and removed reply names
+
+The naming sheet opens with an empty name field; the selected speech's current
+name is shown as **Current speaker** and as the field's placeholder. **Saved
+voices (N)** lists every saved voice in a list about six rows tall that scrolls:
+the voice named like the current name first, marked Current, then the rest
+alphabetically. Typing filters it (names starting with the text, then names
+containing it); picking a voice fills the field and keeps the whole list.
+**Voices of this day** scrolls the same way. Saved voices are read each time the
+sheet opens, so a voice saved by one naming is listed in the next.
+
+After a Save a tinted banner above the transcript offers **Undo**; Edit ▸ Undo Naming (⌘Z) does the same while the banner shows. In a text field or the notes editor ⌘Z stays the ordinary text Undo. Before the Save the presentation
+reads the meeting's naming heads (`SessionStore.namingHeads`); the token
+(`NamingUndo`) keeps them, the generation the Save produced, and the saved voice
+the Save created or extended. Undo runs two separate steps, because the session
+library and `Speakers.sqlite3` share no transaction:
+
+1. `VoiceProfileStore.undoEnrollment(created:previous:)` moves the voice back to
+   its previous revision, or deletes a voice the Save created, and deletes the
+   created revision under `secure_delete`. The enrollment receipt stays, so that
+   confirmation cannot train again. It is refused when the voice changed after
+   the Save (another confirmation, a rename in Settings) or while a recognition
+   result is being committed.
+2. `SessionStore.undoNaming(_:generation:)` restores the recorded heads in one
+   transaction while the meeting is still at that generation and advances it.
+   The undone name records stay as history.
+
+The voice step runs first and is recorded as done, so after a failure of the
+names step **Retry Undo** only restores the names; the message says the voice
+already has only its earlier samples. Undo is withdrawn by the next naming
+action, Apply Names, Clear Speaker Names, Remove Reply Name, Reprocess (a new
+transcript), switching meetings, or any refresh that sees another generation.
+When names or the voice changed, nothing is undone and the message points to
+renaming the reply or voice, or Remove Reply Name. Clear Speaker Names still
+leaves saved voices unchanged.
+
+**Remove Reply Name** first removes the name (`SessionStore.removeFragmentNames`,
+which returns the removed named replies' time ranges), then records them with
+`VoiceProfileStore.withdraw`. Bank reading (`recognitionProfiles`) drops a sample
+when a withdrawal covers it under the same one-fifth overlap rule as corrections
+and was made after the sample's revision. Recognition, calibration and Settings
+status all read banks this way. Naming the reply again creates a newer revision,
+which the earlier withdrawal does not affect. Writing a withdrawal again changes
+nothing. If recording it fails, the name is still removed and the error row says
+saved voices still use the speech; Retry records it.
+
+Tests: `./scripts/test.sh --filter 'NamingUndoTests|SpeakerRenameTests|SavedSpeakersTests'`.

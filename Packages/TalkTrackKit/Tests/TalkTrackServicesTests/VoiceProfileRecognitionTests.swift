@@ -181,7 +181,7 @@ private func coactiveRecognitionFixture(_ root: URL) async throws -> (Enrollment
         let p = MeetingTranscriptPresentation(store: q.store, meetingID: q.meeting.id,
             enrollment: VoiceProfileEnrollment(store: q.store, profiles: profiles, inference: RecognitionInference()))
         await p.beginRename(recordingID: q.recording.id, segmentID: q.revision.segments[0].id)
-        #expect(p.renameTarget?.assignmentOrigin == automatic.origin && p.rememberVoice && p.draftName == "Alex")
+        #expect(p.renameTarget?.assignmentOrigin == automatic.origin && p.rememberVoice && p.draftName.isEmpty && p.currentName == "Alex")
         // This checks that a correction overrides recognition; remembering is off here.
         p.rememberVoice = false
         p.draftName = "Алексей confirmed"; await p.saveRename()

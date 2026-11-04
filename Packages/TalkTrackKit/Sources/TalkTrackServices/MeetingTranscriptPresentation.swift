@@ -49,6 +49,38 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
     }
 }
 
+/// The naming heads of a meeting at one generation; restoring them undoes
+/// the Save that followed. Only SessionStore reads them.
+public struct NamingHeads: Equatable, Sendable {
+    struct Entry: Equatable, Sendable { let kind: String; let scope: String; let id: String }
+    public let meetingID: UUID
+    public let generation: UInt64
+    let entries: [Entry]
+}
+
+public enum NamingUndoError: Error, Equatable, LocalizedError, Sendable {
+    case changed, profileChanged
+    public var errorDescription: String? {
+        switch self {
+        case .changed: "Names in this meeting changed after that Save, so it can no longer be undone. Rename the reply or voice, or use Remove Reply Name, to correct it."
+        case .profileChanged: "The saved voice changed after that Save, so it can no longer be undone. Rename the reply or voice, or use Remove Reply Name, to correct it."
+        }
+    }
+}
+
+/// What one successful Save changed, kept in memory so Undo can take back
+/// exactly that: the naming heads before it, the generation it produced, and
+/// the saved voice it created or extended. Steps run profile first; each is
+/// recorded as done, so a retry skips it.
+public struct NamingUndo: Equatable, Sendable {
+    public let heads: NamingHeads
+    public let generation: UInt64
+    /// The voice after the Save, and before it (nil when the Save created it).
+    public let created: VoiceProfile?
+    public let previous: VoiceProfile?
+    public internal(set) var profileUndone = false
+}
+
 /// Small native UI projection. SQLite and formatting run on SessionStore's
 /// executor. A failed save retains both the current transcript and the draft.
 @MainActor @Observable public final class MeetingTranscriptPresentation {
@@ -64,6 +96,9 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
     /// Recordings whose voices Apply Names can rebuild without transcribing.
     public private(set) var applicableRecordings: [UUID] = []
     public var draftName = ""
+    /// The selected speech's name when the sheet opened (the reply's name, else
+    /// its voice's). The field starts empty, so the full saved-voice list shows.
+    public private(set) var currentName: String?
     /// Remembering is the default (user decision, 2026-10-13): a chosen or
     /// same-named saved profile receives the speech; any other name creates one.
     public var rememberVoice = true
@@ -76,6 +111,9 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
     public private(set) var profiles: [VoiceProfile] = []
     public private(set) var profileLoadError: String?
     public private(set) var noticeMessage: String?
+    /// Offered after a Save until another naming change (see NamingUndo).
+    public private(set) var undo: NamingUndo?
+    public var canUndo: Bool { undo != nil && !isBusy && renameTarget == nil }
     public private(set) var isRemembering = false
     public private(set) var isBusy = false
     public private(set) var errorMessage: String?
@@ -88,11 +126,23 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
     public init(store: SessionStore, meetingID: UUID, enrollment: VoiceProfileEnrollment? = nil) {
         self.store = store; self.meetingID = meetingID; self.enrollment = enrollment
     }
+    /// The saved voice named like the current name, listed first and marked.
+    public var currentProfileID: UUID? {
+        guard let currentName else { return nil }
+        return profiles.first { $0.name.compare(currentName, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }?.id
+    }
     /// Saved profiles matching the typed name, best matches first: names
-    /// starting with it, then containing it. All profiles while it is empty.
+    /// starting with it, then containing it. While it is empty, or holds the
+    /// name of the voice just picked from the list, every profile: the current
+    /// name's first, the rest alphabetically.
     public var suggestions: [VoiceProfile] {
         let typed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !typed.isEmpty else { return profiles }
+        let picked = selectedProfileID.flatMap { id in profiles.first { $0.id == id } }?.name == draftName
+        guard !typed.isEmpty, !picked else {
+            let sorted = profiles.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            guard let current = currentProfileID, let index = sorted.firstIndex(where: { $0.id == current }) else { return sorted }
+            return [sorted[index]] + sorted.enumerated().filter { $0.offset != index }.map(\.element)
+        }
         let prefix = profiles.filter { $0.name.range(of: typed, options: [.caseInsensitive, .diacriticInsensitive, .anchored]) != nil }
         let contains = profiles.filter { $0.name.range(of: typed, options: [.caseInsensitive, .diacriticInsensitive]) != nil && !prefix.contains($0) }
         return prefix + contains
@@ -151,6 +201,7 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
         isBusy = true; defer { isBusy = false }
         do {
             snapshot = try await store.meetingTranscript(meetingID: meetingID); errorMessage = nil
+            if let undo, snapshot?.meeting.generation != undo.generation { self.undo = nil }
             applicableRecordings = try await store.namesApplicableRecordings(meetingID: meetingID)
         }
         catch { errorMessage = error.localizedDescription }
@@ -182,7 +233,8 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
             replySegmentIDs = segmentIDs
             let unidentified = snapshot?.speakers.first { $0.id == target.speakerID }?.unidentified == true
             scope = unidentified ? .reply : requested ?? .reply
-            draftName = (scope == .reply ? named : nil) ?? target.name ?? ""; rememberVoice = !unidentified; selectedProfileID = nil
+            currentName = (scope == .reply ? named : nil) ?? target.name
+            draftName = ""; rememberVoice = !unidentified; selectedProfileID = nil
             chosenVoiceID = nil
             replaceIncompatibleVoice = false; savedVoices = []
             profiles = []; profileLoadError = nil; noticeMessage = nil
@@ -203,6 +255,7 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
     public func applyNames() async {
         guard canApplyNames else { return }
         isBusy = true; defer { isBusy = false }
+        undo = nil
         do {
             let published = try await store.applyNames(meetingID: meetingID)
             snapshot = try await store.meetingTranscript(meetingID: meetingID)
@@ -215,32 +268,88 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
                 : "Names applied: \(recognized) more repl\(recognized == 1 ? "y was" : "ies were") recognized from your named replies; the rest stay VoiceN. The words are unchanged."
         } catch { errorMessage = error.localizedDescription }
     }
-    /// Removes the fragment names shown on a block; its voice name returns.
+    /// Removes the fragment names shown on a block; its voice name returns,
+    /// and saved voices stop using the reply's speech (after the name removal;
+    /// a failure there keeps the withdrawal for Retry).
     public func removeFragmentName(recordingID: UUID, segmentIDs: [UUID]) async {
         guard !isBusy, renameTarget == nil else { return }
         isBusy = true; defer { isBusy = false }
+        undo = nil
         do {
-            snapshot = try await store.removeFragmentName(meetingID: meetingID, recordingID: recordingID, segmentIDs: segmentIDs)
+            let removed = try await store.removeFragmentNames(meetingID: meetingID, recordingID: recordingID, segmentIDs: segmentIDs)
+            snapshot = removed.snapshot
             errorMessage = nil; noticeMessage = nil
+            pendingWithdrawals = removed.withdrawals
+            await recordWithdrawals()
         } catch { errorMessage = error.localizedDescription }
+    }
+    /// Speech of removed reply names not yet recorded for saved voices.
+    public private(set) var pendingWithdrawals: [VoiceWithdrawal] = []
+    private func recordWithdrawals() async {
+        guard !pendingWithdrawals.isEmpty, let enrollment else { pendingWithdrawals = []; return }
+        do { try await enrollment.withdraw(pendingWithdrawals); pendingWithdrawals = [] }
+        catch {
+            errorMessage = "The reply name is removed, but saved voices still use its speech: \(error.localizedDescription) Choose Retry."
+        }
+    }
+    /// The error row's Retry: a pending withdrawal first, otherwise a refresh.
+    public func retry() async {
+        if pendingWithdrawals.isEmpty { await refresh(); return }
+        guard !isBusy else { return }
+        isBusy = true; defer { isBusy = false }
+        errorMessage = nil
+        await recordWithdrawals()
     }
     public func clearSpeakerNames() async {
         guard !isBusy, renameTarget == nil else { return }
         isBusy = true; defer { isBusy = false }
+        undo = nil
         do { snapshot = try await store.clearSpeakerNames(meetingID: meetingID); errorMessage = nil; noticeMessage = nil }
         catch { errorMessage = error.localizedDescription }
     }
+    /// Takes back the last Save: the saved voice first (where samples are at
+    /// risk), then the names. Refused once names or that voice changed since.
+    public func undoLastNaming() async {
+        guard canUndo, var token = undo else { return }
+        isBusy = true; defer { isBusy = false }
+        let voice = token.created?.name
+        do {
+            guard try await store.namingHeads(meetingID: meetingID).generation == token.generation else { throw NamingUndoError.changed }
+            if let created = token.created, !token.profileUndone {
+                guard let enrollment else { throw VoiceEnrollmentError.unavailable }
+                do { try await enrollment.undoEnrollment(created: created, previous: token.previous) }
+                catch VoiceProfileSettingsError.changed { throw NamingUndoError.profileChanged }
+                token.profileUndone = true; undo = token
+            }
+            snapshot = try await store.undoNaming(token.heads, generation: token.generation)
+            undo = nil; errorMessage = nil
+            noticeMessage = "Undone: the previous names are back."
+                + (voice.map { token.previous == nil ? " The saved voice \($0) was removed." : " \($0) has only its earlier samples again." } ?? "")
+        } catch let error as NamingUndoError {
+            undo = nil; noticeMessage = nil
+            errorMessage = error.localizedDescription
+                + (token.profileUndone ? " \(voice ?? "The saved voice") already has only its earlier samples again." : "")
+        } catch {
+            noticeMessage = nil
+            errorMessage = token.profileUndone
+                ? "\(voice ?? "The saved voice") has only its earlier samples again, but the names were not restored: \(error.localizedDescription) Choose Undo to try again."
+                : "Nothing was undone: \(error.localizedDescription) Choose Undo to try again."
+        }
+    }
     public func cancelRename() {
         guard !isBusy else { return }
-        renameTarget = nil; replySegmentIDs = []; scope = .voice; draftName = ""; renameError = nil; rememberVoice = true; selectedProfileID = nil
+        renameTarget = nil; replySegmentIDs = []; scope = .voice; draftName = ""; currentName = nil; renameError = nil; rememberVoice = true; selectedProfileID = nil
         replaceIncompatibleVoice = false; chosenVoiceID = nil
     }
     public func cancelRemembering() { enrollmentTask?.cancel() }
     public func saveRename() async {
         guard !isBusy, let target = renameTarget else { return }
         isBusy = true; defer { isBusy = false }
+        undo = nil
         do {
             let place = fragmentSegmentIDs == nil ? "this meeting day" : "this reply"
+            let heads = try await store.namingHeads(meetingID: meetingID)
+            var remembered: (created: VoiceProfile, previous: VoiceProfile?)?
             if let voice = chosenVoiceID, let ids = fragmentSegmentIDs {
                 snapshot = try await store.assignFragment(meetingID: meetingID, recordingID: target.recordingID, segmentIDs: ids, voiceID: voice)
                 noticeMessage = nil
@@ -267,6 +376,7 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
                     enrollmentTask = task
                     defer { enrollmentTask = nil; isRemembering = false }
                     let profile = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+                    remembered = (profile, profiles.first { $0.id == profile.id })
                     noticeMessage = "Name saved for \(place). Voice remembered locally as \(profile.name)."
                 } catch is CancellationError {
                     noticeMessage = "Name saved for \(place). Voice remembering was cancelled."
@@ -280,7 +390,11 @@ public enum SpeakerRenameError: Error, Equatable, LocalizedError, Sendable {
                 snapshot = try await store.renameSpeaker(target, name: draftName)
                 noticeMessage = nil
             }
-            renameTarget = nil; replySegmentIDs = []; scope = .voice; draftName = ""; renameError = nil; errorMessage = nil
+            // Undo only when nothing else changed the names between reading them and the Save.
+            if let generation = snapshot?.meeting.generation, generation == heads.generation + 1 {
+                undo = NamingUndo(heads: heads, generation: generation, created: remembered?.created, previous: remembered?.previous)
+            }
+            renameTarget = nil; replySegmentIDs = []; scope = .voice; draftName = ""; currentName = nil; renameError = nil; errorMessage = nil
             rememberVoice = true; selectedProfileID = nil; chosenVoiceID = nil
             replaceIncompatibleVoice = false
         } catch {

@@ -416,6 +416,11 @@ struct TranscriptTab: View {
                               deleteRecording: { await workspace.deleteRecording($0) },
                               deleteRefusal: { workspace.deleteRefusal(recordingID: $0) }, export: export)
             .padding(.top, 4)
+            .focusedSceneValue(\.namingUndo, presentation.undo.map { undo in
+                NamingUndoAction(title: undo.profileUndone ? "Retry Undo Naming" : "Undo Naming", enabled: presentation.canUndo) {
+                    Task { await presentation.undoLastNaming() }
+                }
+            })
     }
 }
 

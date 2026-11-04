@@ -10,7 +10,12 @@ public actor VoiceProfileStore {
     private let rootURL: URL
     private static let applicationID = 0x54545650
     private static let fileName = "Speakers.sqlite3"
+    /// Kept from schema 1 so an interrupted older upgrade is still found; it
+    /// holds the pre-upgrade file of any version below `schema`.
     private static let migrationBackup = "Speakers.v1-backup.sqlite3"
+    /// 3 adds `withdrawals` (removed reply names, time ranges only).
+    static let schema = 3
+    private static let withdrawalsTable = "CREATE TABLE withdrawals (library_id TEXT NOT NULL, recording_id TEXT NOT NULL, start_us INTEGER NOT NULL, end_us INTEGER NOT NULL, withdrawn_at REAL NOT NULL, PRIMARY KEY(library_id,recording_id,start_us,end_us))"
     private var recognitionCommit = false
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -67,6 +72,38 @@ public actor VoiceProfileStore {
         }
     }
 
+    /// Takes back exactly what one enrollment added (Undo after a Save): the
+    /// profile returns to `previous`, or is deleted when the Save created it,
+    /// and the created revision is deleted under secure_delete. The receipt
+    /// stays, so the undone confirmation cannot train again. Refused once the
+    /// saved voice changed after that Save. Repeating a completed undo is a no-op.
+    public func undoEnrollment(created: VoiceProfile, previous: VoiceProfile?) throws {
+        guard !recognitionCommit else { throw VoiceProfileSettingsError.busy }
+        guard previous.map({ $0.id == created.id && $0.revisionID != created.revisionID }) ?? true else { throw VoiceProfileSettingsError.changed }
+        guard let db = try open(create: false) else { throw VoiceProfileSettingsError.changed }
+        try db.transaction {
+            let current = try db.rows("SELECT payload FROM profiles WHERE id=?", [.text(created.id.uuidString)]).first.map { row -> VoiceProfile in
+                guard case .blob(let bytes) = row[0] else { throw VoiceEnrollmentError.damagedProfile }
+                return try DomainCodec.decode(VoiceProfile.self, from: bytes)
+            }
+            let createdRevision = try revision(created.revisionID, in: db)
+            // Already undone: the head is back and the created revision is gone.
+            if createdRevision == nil, current?.revisionID == previous?.revisionID { return }
+            guard let current, current == created, let createdRevision, createdRevision.profileID == created.id,
+                  createdRevision.previousRevisionID == previous?.revisionID else { throw VoiceProfileSettingsError.changed }
+            if let previous {
+                guard let older = try revision(previous.revisionID, in: db), older.profileID == created.id else { throw VoiceProfileSettingsError.changed }
+                let restored = VoiceProfile(id: created.id, name: created.name, revisionID: older.id, updatedAt: previous.updatedAt)
+                try db.execute("UPDATE profiles SET name=?,revision_id=?,payload=? WHERE id=?", [.text(restored.name), .text(older.id.uuidString),
+                    .blob(DomainCodec.encode(restored)), .text(created.id.uuidString)])
+            } else {
+                try db.execute("DELETE FROM profiles WHERE id=?", [.text(created.id.uuidString)])
+            }
+            try db.execute("DELETE FROM revisions WHERE id=?", [.text(created.revisionID.uuidString)])
+            try Task.checkCancellation()
+        }
+    }
+
     private func requireCurrent(_ expected: VoiceProfile, in db: SQLiteConnection) throws {
         guard try profiles(in: db).contains(expected) else { throw VoiceProfileSettingsError.changed }
     }
@@ -100,6 +137,7 @@ public actor VoiceProfileStore {
             latest[key] = revision
         }
         let current = Set(latest.values.map(\.id))
+        let withdrawals = try withdrawals(in: db)
         return try profiles(in: db).map { profile in
             guard let revision = try revision(profile.revisionID, in: db) else { throw VoiceEnrollmentError.damagedProfile }
             // Earlier confirmations stay in the bank: walk the immutable chain.
@@ -110,6 +148,37 @@ public actor VoiceProfileStore {
                 history.append(older)
             }
             return VoiceRecognitionProfile(profile: profile, revision: revision, history: history.filter { current.contains($0.id) })
+                .withdrawing(withdrawals)
+        }
+    }
+
+    private func withdrawals(in db: SQLiteConnection) throws -> [VoiceWithdrawal] {
+        try db.rows("SELECT library_id, recording_id, start_us, end_us, withdrawn_at FROM withdrawals").map { row in
+            guard case .text(let library) = row[0], case .text(let recording) = row[1], case .integer(let start) = row[2],
+                  case .integer(let end) = row[3], case .real(let at) = row[4], let libraryID = UUID(uuidString: library),
+                  let recordingID = UUID(uuidString: recording) else { throw VoiceEnrollmentError.damagedProfile }
+            return VoiceWithdrawal(libraryID: libraryID, recordingID: recordingID,
+                interval: try MediaInterval(start: MediaTime(microseconds: start), end: MediaTime(microseconds: end)),
+                withdrawnAt: Date(timeIntervalSince1970: at))
+        }
+    }
+
+    /// Records removed reply names (time ranges only). Writing the same
+    /// withdrawal again changes nothing; a later one for the same speech also
+    /// covers confirmations made in between. Nothing is created without a registry.
+    public func withdraw(_ withdrawals: [VoiceWithdrawal]) throws {
+        guard !withdrawals.isEmpty else { return }
+        guard !recognitionCommit else { throw VoiceProfileSettingsError.busy }
+        guard let db = try open(create: false) else { return }
+        try db.transaction {
+            for item in withdrawals {
+                try db.execute("""
+                    INSERT INTO withdrawals VALUES (?,?,?,?,?) ON CONFLICT(library_id,recording_id,start_us,end_us)
+                    DO UPDATE SET withdrawn_at=max(withdrawn_at, excluded.withdrawn_at)
+                    """, [.text(item.libraryID.uuidString), .text(item.recordingID.uuidString), .integer(item.interval.start.microseconds),
+                          .integer(item.interval.end.microseconds), .real(item.withdrawnAt.timeIntervalSince1970)])
+            }
+            try Task.checkCancellation()
         }
     }
 
@@ -238,8 +307,8 @@ public actor VoiceProfileStore {
         if existing {
             if !directory.exists(Self.fileName + "-wal") && !directory.exists(Self.fileName + "-journal") {
                 let header = try SQLiteConnection.closedHeader(in: directory, fileName: Self.fileName)
-                guard header.version <= 2 else { throw StoreError.unsupportedSchema(header.version) }
-                guard header.applicationID == Self.applicationID, (1...2).contains(header.version) else { throw VoiceEnrollmentError.damagedProfile }
+                guard header.version <= Self.schema else { throw StoreError.unsupportedSchema(header.version) }
+                guard header.applicationID == Self.applicationID, (1...Self.schema).contains(header.version) else { throw VoiceEnrollmentError.damagedProfile }
             } else { try validate(SQLiteConnection(path: path, readOnly: true)) }
         }
         if directory.exists(Self.migrationBackup) {
@@ -247,7 +316,7 @@ public actor VoiceProfileStore {
                 throw VoiceEnrollmentError.damagedProfile
             }
             let header = try SQLiteConnection.closedHeader(in: directory, fileName: Self.migrationBackup)
-            guard header.applicationID == Self.applicationID, header.version == 1 else { throw VoiceEnrollmentError.damagedProfile }
+            guard header.applicationID == Self.applicationID, (1..<Self.schema).contains(header.version) else { throw VoiceEnrollmentError.damagedProfile }
         }
         let db = try SQLiteConnection(path: path)
         if existing { try validate(db) }
@@ -260,7 +329,8 @@ public actor VoiceProfileStore {
                 try db.execute("CREATE TABLE profiles (id TEXT PRIMARY KEY, name TEXT NOT NULL, revision_id TEXT NOT NULL, payload BLOB NOT NULL)")
                 try db.execute("CREATE TABLE revisions (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, library_id TEXT NOT NULL, assignment_id TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(library_id,assignment_id))")
                 try db.execute("CREATE TABLE enrollment_receipts (library_id TEXT NOT NULL, assignment_id TEXT NOT NULL, PRIMARY KEY(library_id,assignment_id))")
-                try db.execute("PRAGMA user_version = 2")
+                try db.execute(Self.withdrawalsTable)
+                try db.execute("PRAGMA user_version = \(Self.schema)")
             }
         }
         if try db.integer("PRAGMA user_version") == 1 {
@@ -275,10 +345,20 @@ public actor VoiceProfileStore {
                 try db.execute("PRAGMA user_version = 2")
             }
         }
+        if try db.integer("PRAGMA user_version") == 2 {
+            // Same pattern: a backup exists only while upgrading.
+            if !directory.exists(Self.migrationBackup) {
+                try db.backup(to: URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(Self.migrationBackup).path)
+            }
+            try db.transaction {
+                try db.execute(Self.withdrawalsTable)
+                try db.execute("PRAGMA user_version = 3")
+            }
+        }
         if directory.exists(Self.migrationBackup) {
             guard case .text("ok") = try db.rows("PRAGMA quick_check").first?.first else { throw VoiceEnrollmentError.damagedProfile }
             let backupHeader = try SQLiteConnection.closedHeader(in: directory, fileName: Self.migrationBackup)
-            guard backupHeader.applicationID == Self.applicationID, backupHeader.version == 1 else { throw VoiceEnrollmentError.damagedProfile }
+            guard backupHeader.applicationID == Self.applicationID, (1..<Self.schema).contains(backupHeader.version) else { throw VoiceEnrollmentError.damagedProfile }
             // Do not leave an app-created copy of deleted reusable vectors.
             try directory.removeFile(Self.migrationBackup)
         }
@@ -287,7 +367,7 @@ public actor VoiceProfileStore {
 
     private func validate(_ db: SQLiteConnection) throws {
         let version = try db.integer("PRAGMA user_version")
-        guard version <= 2 else { throw StoreError.unsupportedSchema(version) }
-        guard (1...2).contains(version), try db.integer("PRAGMA application_id") == Self.applicationID else { throw VoiceEnrollmentError.damagedProfile }
+        guard version <= Self.schema else { throw StoreError.unsupportedSchema(version) }
+        guard (1...Self.schema).contains(version), try db.integer("PRAGMA application_id") == Self.applicationID else { throw VoiceEnrollmentError.damagedProfile }
     }
 }

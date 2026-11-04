@@ -940,6 +940,13 @@ public actor SessionStore {
     /// Removes the fragment name shown on this block; the record stays as history.
     @discardableResult
     public func removeFragmentName(meetingID: UUID, recordingID: UUID, segmentIDs: [UUID]) throws -> MeetingTranscriptSnapshot {
+        try removeFragmentNames(meetingID: meetingID, recordingID: recordingID, segmentIDs: segmentIDs).snapshot
+    }
+
+    /// As `removeFragmentName`, also returning the removed named replies' speech,
+    /// which saved voices stop using (recorded separately, after this commit).
+    public func removeFragmentNames(meetingID: UUID, recordingID: UUID, segmentIDs: [UUID],
+                                    at date: Date = Date()) throws -> (snapshot: MeetingTranscriptSnapshot, withdrawals: [VoiceWithdrawal]) {
         try db.transaction {
             let snapshot = try meetingTranscript(meetingID: meetingID)
             let revision = snapshot.revisions.first { $0.recordingID == recordingID }
@@ -950,7 +957,11 @@ public actor SessionStore {
             for old in covered { try db.execute("DELETE FROM heads WHERE kind='fragmentAnchor' AND meeting_id=? AND scope=?", [.text(meetingID.uuidString), .text(old.segmentID.uuidString)]) }
             var owner = snapshot.meeting
             owner.generation += 1; try update(owner)
-            return try meetingTranscript(meetingID: meetingID)
+            // A reply given to a voice names nobody and taught no saved voice.
+            let withdrawals = covered.filter { $0.voiceID == nil }.map {
+                VoiceWithdrawal(libraryID: library.manifest.libraryID, recordingID: $0.recordingID, interval: $0.interval, withdrawnAt: date)
+            }
+            return (try meetingTranscript(meetingID: meetingID), withdrawals)
         }
     }
 
@@ -1085,6 +1096,39 @@ public actor SessionStore {
         let trimmed = try SpeakerRenameError.validatedName(name)
         return try db.transaction {
             try writeSpeakerName(meetingID: meetingID, speakerID: speakerID, name: trimmed, at: date)
+        }
+    }
+
+    /// The meeting's naming heads (voice names and reply names) and generation,
+    /// read before a Save so Undo can put back exactly what the Save replaced.
+    public func namingHeads(meetingID: UUID) throws -> NamingHeads {
+        let owner = try meeting(meetingID)
+        let entries = try db.rows("SELECT kind, scope, id FROM heads WHERE meeting_id=? AND kind IN (?,?) ORDER BY kind, scope",
+            [.text(meetingID.uuidString), .text(RecordKind.assignment.rawValue), .text(RecordKind.fragmentAnchor.rawValue)]).map { row in
+                guard case .text(let kind) = row[0], case .text(let scope) = row[1], case .text(let id) = row[2] else { throw StoreError.invalidResult }
+                return NamingHeads.Entry(kind: kind, scope: scope, id: id)
+            }
+        return NamingHeads(meetingID: meetingID, generation: owner.generation, entries: entries)
+    }
+
+    /// Undo of one naming Save: restores `heads` (read just before it) while the
+    /// meeting is still at `generation`, the generation that Save produced.
+    /// Replaced records stay as history; the generation advances.
+    public func undoNaming(_ heads: NamingHeads, generation: UInt64) throws -> MeetingTranscriptSnapshot {
+        try db.transaction {
+            var owner = try meeting(heads.meetingID)
+            guard owner.generation == generation else { throw NamingUndoError.changed }
+            let m = SQLValue.text(heads.meetingID.uuidString)
+            try db.execute("DELETE FROM heads WHERE meeting_id=? AND kind IN (?,?)", [m,
+                .text(RecordKind.assignment.rawValue), .text(RecordKind.fragmentAnchor.rawValue)])
+            for entry in heads.entries {
+                guard let kind = RecordKind(rawValue: entry.kind), [.assignment, .fragmentAnchor].contains(kind),
+                      let id = UUID(uuidString: entry.id), try db.rows("SELECT 1 FROM records WHERE kind=? AND id=? AND meeting_id=?",
+                        [.text(entry.kind), .text(entry.id), m]).first != nil else { throw NamingUndoError.changed }
+                try setHead(kind, meetingID: heads.meetingID, scope: entry.scope, id: id)
+            }
+            owner.generation += 1; try update(owner)
+            return try meetingTranscript(meetingID: heads.meetingID)
         }
     }
 

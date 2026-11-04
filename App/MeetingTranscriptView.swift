@@ -39,16 +39,40 @@ struct MeetingTranscriptView: View {
                 }
                 .padding(.horizontal, 32)
             }
-            if let notice = presentation.noticeMessage {
-                Text(notice).font(.callout).textSelection(.enabled)
-                    .padding(.horizontal, 32)
-                    .accessibilityLabel(notice)
+            if presentation.noticeMessage != nil || presentation.undo != nil {
+                let notice = presentation.noticeMessage ?? "Name saved."
+                // A tinted banner, so the Undo of the last Save is noticed.
+                // Never give the text `.fixedSize(horizontal: false, vertical: true)`
+                // beside the button: that blanked the whole window.
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
+                        .accessibilityHidden(true)
+                    Text(notice).font(.callout).textSelection(.enabled)
+                        .layoutPriority(1)
+                        .accessibilityLabel(notice)
+                    Spacer(minLength: 0)
+                    if let undo = presentation.undo {
+                        Button(undo.profileUndone ? "Retry Undo" : "Undo", systemImage: "arrow.uturn.backward") {
+                            Task { await presentation.undoLastNaming() }
+                        }
+                        .fixedSize()
+                        .disabled(!presentation.canUndo)
+                        .help((undo.created.map { undo.previous == nil
+                                ? "Restore the previous names and remove the saved voice \($0.name) created by this Save"
+                                : "Restore the previous names and take this Save's speech out of the saved voice \($0.name)" }
+                              ?? "Restore the previous names") + " (⌘Z, Edit ▸ Undo Naming)")
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor.opacity(0.35)))
+                .padding(.horizontal, 32)
             }
             if let error = presentation.errorMessage {
                 HStack(alignment: .center, spacing: 8) {
                     Text(error).font(.callout).foregroundStyle(Color.errorText).textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button("Retry") { Task { await presentation.refresh() } }
+                    Button("Retry") { Task { await presentation.retry() } }
                         .disabled(presentation.isBusy)
                 }
                 .padding(.horizontal, 32)
@@ -294,8 +318,7 @@ struct RenameSpeakerView: View {
     @ViewBuilder private var dayVoices: some View {
         let voices = presentation.dayVoices
         if !voices.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Voices of this day").font(.callout).foregroundStyle(.secondary)
+            VoiceList(title: "Voices of this day (\(voices.count))", count: voices.count) {
                 ForEach(voices) { voice in
                     let chosen = presentation.chosenVoiceID == voice.id || (voice.name != nil && presentation.draftName == voice.name)
                     Button { presentation.chooseVoice(voice) } label: {
@@ -312,7 +335,7 @@ struct RenameSpeakerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(unidentified ? "Who Said This?" : fragment ? "Name This Reply" : "Rename Speaker").font(.title2.bold())
-            Text("Current speaker: \(target.label)").foregroundStyle(.secondary)
+            Text("Current speaker: \(presentation.currentName ?? target.label)").foregroundStyle(.secondary)
             if unidentified {
                 Text("This phrase is too short, or overlaps another speaker, to match to a voice. Choose a voice of this day or enter a name; only this reply changes.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -338,7 +361,8 @@ struct RenameSpeakerView: View {
                               : "Applies to every reply of this voice throughout this meeting day, including matching recordings.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            TextField("Name", text: $presentation.draftName)
+            TextField("Name", text: $presentation.draftName,
+                      prompt: Text(presentation.currentName.map { "Current: \($0)" } ?? "Name").foregroundStyle(.tertiary))
                 .textFieldStyle(.roundedBorder).focused($nameFocused)
                 .accessibilityLabel("Speaker name").disabled(presentation.isBusy)
             if !unidentified { savedVoices }
@@ -378,17 +402,24 @@ struct RenameSpeakerView: View {
     @ViewBuilder private var savedVoices: some View {
         let suggestions = presentation.suggestions
         if !suggestions.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Saved voices").font(.callout).foregroundStyle(.secondary)
-                ForEach(suggestions.prefix(6)) { profile in
+            let total = presentation.profiles.count
+            VoiceList(title: suggestions.count == total ? "Saved voices (\(total))" : "Saved voices (\(suggestions.count) of \(total))",
+                      count: suggestions.count) {
+                ForEach(suggestions) { profile in
+                    let current = presentation.currentProfileID == profile.id
                     Button {
                         presentation.chooseProfile(profile)
                     } label: {
-                        Label(profile.name, systemImage: presentation.effectiveProfileID == profile.id ? "checkmark.circle.fill" : "person.wave.2")
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        HStack {
+                            Label(profile.name, systemImage: presentation.effectiveProfileID == profile.id ? "checkmark.circle.fill" : "person.wave.2")
+                            Spacer()
+                            if current { Text("Current").font(.caption).foregroundStyle(.secondary) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless).disabled(presentation.isBusy)
                     .help("Use the saved voice \(profile.name) and add this speaker's speech to it")
+                    .accessibilityLabel(current ? "\(profile.name), current speaker" : profile.name)
                 }
             }
         }
@@ -408,6 +439,29 @@ struct RenameSpeakerView: View {
         }
         if let error = presentation.profileLoadError {
             Text(error).font(.callout).foregroundStyle(Color.errorText).textSelection(.enabled)
+        }
+    }
+}
+
+/// A titled list of voices, about six rows tall, scrolling when longer, so
+/// every voice can be reached however many are saved.
+private struct VoiceList<Rows: View>: View {
+    let title: String
+    let count: Int
+    @ViewBuilder let rows: Rows
+    private static var rowHeight: CGFloat { 24 }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.callout).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) { rows.frame(height: Self.rowHeight) }
+                    .padding(.horizontal, 6)
+            }
+            // A half row past six shows that the list continues.
+            .frame(height: Self.rowHeight * (count > 6 ? 6.5 : CGFloat(max(count, 1))))
+            .scrollIndicators(count > 6 ? .visible : .never)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+            .accessibilityLabel(title)
         }
     }
 }

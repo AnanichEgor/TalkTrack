@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TalkTrackServices
 
@@ -10,8 +11,16 @@ struct MeetingActions {
     let canDelete: Bool
 }
 
+/// The Undo of the transcript's last naming Save, while it is offered.
+struct NamingUndoAction {
+    let title: String
+    let enabled: Bool
+    let perform: () -> Void
+}
+
 extension FocusedValues {
     @Entry var meetingActions: MeetingActions?
+    @Entry var namingUndo: NamingUndoAction?
 }
 
 /// Keyboard access to every main action without Full Keyboard Access: the
@@ -20,8 +29,22 @@ extension FocusedValues {
 struct MeetingCommands: Commands {
     let model: AppModel
     @FocusedValue(\.meetingActions) private var actions
+    @FocusedValue(\.namingUndo) private var namingUndo
 
     var body: some Commands {
+        // ⌘Z undoes the last naming Save while the transcript offers it; in a
+        // text field or the notes editor it stays the ordinary text Undo.
+        CommandGroup(replacing: .undoRedo) {
+            Button(namingUndo?.title ?? "Undo") {
+                // Never disabled: the naming sheet's field must keep its text Undo
+                // while the transcript (whose Undo waits) is behind it.
+                if let namingUndo, !Self.editingText { if namingUndo.enabled { namingUndo.perform() } }
+                else { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) }
+            }
+            .keyboardShortcut("z")
+            Button("Redo") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+        }
         CommandGroup(after: .textEditing) {
             Button("Find Meetings") { model.searchFocusRequests += 1 }
                 .keyboardShortcut("f")
@@ -63,4 +86,7 @@ struct MeetingCommands: Commands {
                 .disabled(!(actions?.canDelete ?? false))
         }
     }
+
+    /// A text view (a field's editor or the notes editor) has keyboard focus.
+    @MainActor private static var editingText: Bool { NSApp.keyWindow?.firstResponder is NSTextView }
 }

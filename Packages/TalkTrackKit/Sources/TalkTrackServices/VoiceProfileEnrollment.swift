@@ -24,6 +24,16 @@ public actor VoiceProfileEnrollment {
         self.store = store; self.profiles = profiles; evidenceReader = VoiceProfileEvidenceReader(inference: inference)
     }
     public func availableProfiles() async throws -> [VoiceProfile] { try await profiles.profiles() }
+    /// Undo of one Save's remembering (see VoiceProfileStore.undoEnrollment).
+    public func undoEnrollment(created: VoiceProfile, previous: VoiceProfile?) async throws {
+        try await profiles.undoEnrollment(created: created, previous: previous)
+    }
+
+    /// Removed reply names stop teaching saved voices (VoiceProfileStore.withdraw).
+    public func withdraw(_ withdrawals: [VoiceWithdrawal]) async throws {
+        try await profiles.withdraw(withdrawals)
+    }
+
     public func availableSavedVoices(models: [ModelSnapshot]) async throws -> [SavedVoice] {
         let segmentation = models.filter { $0.role == .segmentation }, embedding = models.filter { $0.role == .embedding }
         guard segmentation.count == 1, embedding.count == 1 else { throw VoiceEnrollmentError.incompatibleModels }

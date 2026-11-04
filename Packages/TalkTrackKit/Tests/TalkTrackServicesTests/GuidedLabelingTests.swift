@@ -191,9 +191,10 @@ private func pair(_ similarity: Double, same: Bool) -> NamedVoicePair {
         await p.saveRename()
         #expect(p.renameTarget == nil && p.fragmentSegmentIDs == nil && p.snapshot?.anchors.count == segments.count)
         #expect(p.hasSpeakerNames && p.canApplyNames)
-        // Reopening the sheet on a named fragment shows its name.
+        // Reopening the sheet on a named fragment shows its name outside the empty field.
         await p.beginNameFragment(recordingID: fixture.recording.id, segmentIDs: [segments[0].id])
-        #expect(p.draftName == "Alex"); p.cancelRename()
+        #expect(p.draftName.isEmpty && p.currentName == "Alex"); p.cancelRename()
+        #expect(p.currentName == nil)
         await p.applyNames()
         #expect(p.noticeMessage?.hasPrefix("Names applied") == true)
         let voices = Set(p.snapshot!.revisions.flatMap(\.segments).compactMap { segment -> UUID? in
@@ -251,9 +252,10 @@ private func pair(_ similarity: Double, same: Bool) -> NamedVoicePair {
             return before.contains { $0.interval.start <= reply.start && reply.end <= $0.interval.end }
         })
         let corrected = f.revision.segments[index].interval
-        // Selecting a named voice corrects only that reply, prefilled with its name.
+        // Selecting a named voice corrects only that reply; its name is shown, the field is empty.
         await p.beginNaming(recordingID: f.recording.id, segmentIDs: [ids[index]])
-        #expect(p.scope == .reply && p.fragmentSegmentIDs == [ids[index]] && p.draftName == "Dima")
+        #expect(p.scope == .reply && p.fragmentSegmentIDs == [ids[index]] && p.draftName.isEmpty && p.currentName == "Dima")
+        #expect(p.suggestions.first?.id == dima.id && p.currentProfileID == dima.id)
         p.draftName = "Yuri"
         #expect(p.effectiveProfileID == yuri.id)
         await p.saveRename()

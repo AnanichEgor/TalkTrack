@@ -281,4 +281,62 @@ private func labels(_ snapshot: MeetingTranscriptSnapshot, recordingID: UUID) ->
         #expect(try await f.store.speakerAssignments(meetingID: f.meetings[0].id).isEmpty)
         try await f.store.close()
     }
+
+    /// fix-speaker-naming-sheet 1.1: a named speaker opens with an empty field,
+    /// every saved voice listed (its own first), typing filters, clearing restores.
+    @Test @MainActor func namedSpeakerOpensWithEmptyFieldAndEveryVoiceCurrentFirst() async throws {
+        let root = try TemporaryFolder(); defer { root.remove() }
+        let f = try await enrollmentFixture(root.url), profiles = VoiceProfileStore(home: root.url)
+        let service = VoiceProfileEnrollment(store: f.store, profiles: profiles, inference: EnrollmentInference())
+        let names = ["Oleg", "Alex", "Natalia", "Zoe", "Boris", "Alina", "Eva", "Ivan", "Maria", "Dima"]
+        for name in names { _ = try await service.enroll(f.confirm(name).confirmation, choice: .newProfile) }
+        let p = MeetingTranscriptPresentation(store: f.store, meetingID: f.meeting.id, enrollment: service)
+        await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
+        #expect(p.draftName.isEmpty && p.currentName == "Dima")
+        let all = p.suggestions.map(\.name)
+        #expect(all == ["Dima", "Alex", "Alina", "Boris", "Eva", "Ivan", "Maria", "Natalia", "Oleg", "Zoe"])
+        #expect(p.currentProfileID == p.suggestions.first?.id && !p.canSave)
+        p.draftName = "al"
+        #expect(p.suggestions.map(\.name) == ["Alex", "Alina", "Natalia"])
+        p.draftName = ""
+        #expect(p.suggestions.map(\.name) == all)
+        // Picking a voice fills the field but keeps the whole list.
+        p.chooseProfile(try #require(p.profiles.first { $0.name == "Zoe" }))
+        #expect(p.suggestions.map(\.name) == all && p.effectiveProfileID == p.suggestions.last?.id)
+        p.draftName = "Zo"; p.clearProfileChoice(); #expect(p.suggestions.map(\.name) == ["Zoe"]); p.draftName = ""
+        // Keeping the current name means picking it; a new name is listed at the next open.
+        p.draftName = "Yana"; await p.saveRename()
+        #expect(p.currentName == nil && p.draftName.isEmpty)
+        await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
+        #expect(p.currentName == "Yana" && p.suggestions.count == 11 && p.suggestions.first?.name == "Yana")
+        p.cancelRename()
+        try await f.store.close()
+    }
+
+    /// A temporary library with one transcript and ten compatible saved voices
+    /// for the native naming-sheet walkthrough; runs only when exported.
+    @Test func exportNamingSheetFixture() async throws {
+        guard let export = ProcessInfo.processInfo.environment["TALKTRACK_NAMING_SHEET_LIBRARY"] else { return }
+        let root = URL(fileURLWithPath: export), profiles = VoiceProfileStore(home: root.appendingPathComponent("fixture-home"))
+        // With a name, only saves one more voice, from a separate scratch library.
+        if let extra = ProcessInfo.processInfo.environment["TALKTRACK_NAMING_SHEET_ADD"] {
+            let scratch = try TemporaryFolder(); defer { scratch.remove() }
+            let f = try await enrollmentFixture(scratch.url)
+            _ = try await VoiceProfileEnrollment(store: f.store, profiles: profiles, inference: EnrollmentInference())
+                .enroll(f.confirm(extra).confirmation, choice: .newProfile)
+            try await f.store.close(); return
+        }
+        // Each voice from its own meeting, so every saved voice has its own speech.
+        for name in ["Oleg", "Alex", "Natalia", "Zoe", "Boris", "Alina", "Eva", "Ivan", "Maria"] {
+            let m = try await enrollmentFixture(root)
+            _ = try await VoiceProfileEnrollment(store: m.store, profiles: profiles, inference: EnrollmentInference())
+                .enroll(m.confirm(name).confirmation, choice: .newProfile)
+            try await m.store.deleteMeeting(m.meeting.id); try await m.store.close()
+        }
+        let f = try await enrollmentFixture(root, pieces: 4)
+        let service = VoiceProfileEnrollment(store: f.store, profiles: profiles, inference: EnrollmentInference())
+        _ = try await service.enroll(f.confirm("Dima").confirmation, choice: .newProfile)
+        try await f.store.close()
+        print("Naming sheet library: \(root.path)")
+    }
 }

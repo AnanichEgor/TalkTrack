@@ -95,10 +95,30 @@ public struct VoiceCorrection: Equatable, Sendable {
         self.libraryID = libraryID; self.recordingID = recordingID; self.interval = interval; self.person = person
     }
     func covers(_ sample: VoiceProfileSample, libraryID: UUID) -> Bool {
-        guard libraryID == self.libraryID, sample.recordingID == recordingID, sample.interval.duration > .zero else { return false }
+        Self.covers(sample, libraryID: libraryID, recordingID: recordingID, interval: interval, ownLibraryID: self.libraryID)
+    }
+    static func covers(_ sample: VoiceProfileSample, libraryID: UUID, recordingID: UUID, interval: MediaInterval, ownLibraryID: UUID) -> Bool {
+        guard libraryID == ownLibraryID, sample.recordingID == recordingID, sample.interval.duration > .zero else { return false }
         let start = max(sample.interval.start, interval.start), end = min(sample.interval.end, interval.end)
         // A fifth of someone else's speech already colours a sample's vector.
         return end > start && (end.microseconds - start.microseconds) * 5 >= sample.interval.duration.microseconds
+    }
+}
+
+/// Speech whose reply name the user removed. Samples inside it that a voice
+/// learned before the removal stop counting for every saved voice; a later
+/// confirmation of the same speech counts again. Time ranges only, no vectors.
+public struct VoiceWithdrawal: Equatable, Sendable {
+    public let libraryID: UUID
+    public let recordingID: UUID
+    public let interval: MediaInterval
+    public let withdrawnAt: Date
+    public init(libraryID: UUID, recordingID: UUID, interval: MediaInterval, withdrawnAt: Date) {
+        self.libraryID = libraryID; self.recordingID = recordingID; self.interval = interval; self.withdrawnAt = withdrawnAt
+    }
+    func removes(_ sample: VoiceProfileSample, of revision: VoiceProfileRevision) -> Bool {
+        revision.createdAt < withdrawnAt && VoiceCorrection.covers(sample, libraryID: revision.libraryID, recordingID: recordingID,
+                                                                    interval: interval, ownLibraryID: libraryID)
     }
 }
 
@@ -136,8 +156,18 @@ struct VoiceRecognitionProfile: Equatable, Sendable {
         let person = profile.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let relevant = corrections.filter { $0.person != person }
         guard !relevant.isEmpty else { return self }
+        return removing { sample, revision in relevant.contains { $0.covers(sample, libraryID: revision.libraryID) } }
+    }
+
+    /// Without samples whose reply name was removed after they were learned.
+    func withdrawing(_ withdrawals: [VoiceWithdrawal]) -> VoiceRecognitionProfile {
+        guard !withdrawals.isEmpty else { return self }
+        return removing { sample, revision in withdrawals.contains { $0.removes(sample, of: revision) } }
+    }
+
+    private func removing(_ removed: (VoiceProfileSample, VoiceProfileRevision) -> Bool) -> VoiceRecognitionProfile {
         func clean(_ revision: VoiceProfileRevision) -> VoiceProfileRevision {
-            let kept = revision.samples.filter { sample in !relevant.contains { $0.covers(sample, libraryID: revision.libraryID) } }
+            let kept = revision.samples.filter { !removed($0, revision) }
             guard kept.count != revision.samples.count else { return revision }
             return VoiceProfileRevision(id: revision.id, profileID: revision.profileID, previousRevisionID: revision.previousRevisionID,
                 createdAt: revision.createdAt, libraryID: revision.libraryID, meetingID: revision.meetingID, daySpeakerID: revision.daySpeakerID,
