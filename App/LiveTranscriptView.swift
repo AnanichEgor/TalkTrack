@@ -24,7 +24,7 @@ struct LiveTranscriptView: View {
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("[\(timestamp(row))]: \(row.speakerLabel) · Provisional")
+                            Text("[\(timestamp(row))]: \(row.speakerLabel) · Draft")
                                 .font(.caption).foregroundStyle(.secondary)
                             Text(row.text).textSelection(.enabled)
                         }.frame(maxWidth: .infinity, alignment: .leading)

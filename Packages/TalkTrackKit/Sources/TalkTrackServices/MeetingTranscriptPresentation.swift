@@ -10,6 +10,12 @@ public struct MeetingTranscriptSnapshot: Equatable, Sendable {
     public let assignments: [SpeakerAssignment]
     public var anchors: [FragmentAnchor] = []
     public let items: [TranscriptDisplayItem]
+    /// Saved drafts of recordings that have no final transcript yet.
+    public var drafts: [LiveDraft] = []
+    /// Draft names not yet consumed by a final transcript.
+    public var liveNames: [LiveName] = []
+    /// What publication did with each recording's draft names, by recording.
+    public var draftNaming: [UUID: DraftNamingSummary] = [:]
 }
 
 /// A selection from a committed transcript, including the scope shown before
@@ -113,7 +119,7 @@ public struct NamingUndo: Equatable, Sendable {
     public private(set) var noticeMessage: String?
     /// Offered after a Save until another naming change (see NamingUndo).
     public private(set) var undo: NamingUndo?
-    public var canUndo: Bool { undo != nil && !isBusy && renameTarget == nil }
+    public var canUndo: Bool { undo != nil && !isBusy && renameTarget == nil && draftTarget == nil }
     public private(set) var isRemembering = false
     public private(set) var isBusy = false
     public private(set) var errorMessage: String?
@@ -125,6 +131,145 @@ public struct NamingUndo: Equatable, Sendable {
 
     public init(store: SessionStore, meetingID: UUID, enrollment: VoiceProfileEnrollment? = nil) {
         self.store = store; self.meetingID = meetingID; self.enrollment = enrollment
+    }
+
+    // MARK: Draft naming (live-draft-naming)
+
+    /// The draft row the naming sheet is open for, and whether it names the
+    /// row (`reply`) or its live voice (`voice`). Draft names never teach saved voices.
+    public private(set) var draftTarget: LiveDraftRow?
+    public private(set) var draftScope = NamingScope.reply
+
+    /// Saved rows of recordings without a final transcript, with their names.
+    public var savedDraftRows: [UUID: [LiveDraftRow]] {
+        guard let snapshot else { return [:] }
+        var rows: [UUID: [LiveDraftRow]] = [:]
+        for draft in snapshot.drafts {
+            rows[draft.recordingID] = LiveDraftRows.rows(utterances: draft.utterances,
+                                                         names: snapshot.liveNames.filter { $0.recordingID == draft.recordingID })
+        }
+        return rows
+    }
+
+    /// Rows of the recording being captured, from the live session, with saved names.
+    public func liveRows(_ utterances: [LiveUtterance]) -> [LiveDraftRow] {
+        let ids = Set(utterances.map(\.recordingID))
+        return LiveDraftRows.rows(utterances: utterances, names: snapshot?.liveNames.filter { ids.contains($0.recordingID) } ?? [])
+    }
+
+    /// Names already used in this meeting, for the draft sheet's suggestions.
+    public var meetingNames: [String] {
+        guard let snapshot else { return [] }
+        var seen = Set<String>(), result: [String] = []
+        for name in snapshot.assignments.compactMap(\.name) + snapshot.anchors.filter { $0.voiceID == nil }.map(\.name)
+            + snapshot.liveNames.map(\.name) where seen.insert(NamedSpeech.person(name)).inserted {
+            result.append(name)
+        }
+        return result.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    /// The draft sheet's suggestions: saved voices, then names of this meeting,
+    /// once each, filtered by the typed name.
+    public var draftSuggestions: [String] {
+        var seen = Set<String>(), result: [String] = []
+        for name in profiles.map(\.name) + meetingNames where seen.insert(NamedSpeech.person(name)).inserted { result.append(name) }
+        let typed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty, !result.contains(typed) else { return result }
+        return result.filter { $0.localizedCaseInsensitiveContains(typed) }
+    }
+
+    /// Name This Reply… (`.reply`) or Name Voice… (`.voice`) on a draft row.
+    public func beginDraftNaming(_ row: LiveDraftRow, scope requested: NamingScope) async {
+        guard !isBusy, renameTarget == nil, draftTarget == nil, row.canNameReply,
+              requested == .reply || row.canNameVoice else { return }
+        draftScope = requested
+        currentName = requested == .reply ? row.replyName ?? row.voiceName : row.voiceName
+        draftName = ""; selectedProfileID = nil; chosenVoiceID = nil; rememberVoice = false
+        replaceIncompatibleVoice = false; noticeMessage = nil; renameError = nil
+        profiles = []; savedVoices = []; profileLoadError = nil
+        if let enrollment, let catalog = try? ModelCatalog.bundled(),
+           let models = try? [ModelRole.segmentation, .embedding].map({ try catalog.model(for: $0).snapshot(for: $0) }) {
+            savedVoices = (try? await enrollment.availableSavedVoices(models: models)) ?? []
+            profiles = savedVoices.map(\.profile)
+        }
+        draftTarget = row
+    }
+
+    public var canSaveDraftName: Bool { !isBusy && draftTarget != nil && (try? SpeakerRenameError.validatedName(draftName)) != nil }
+
+    public func cancelDraftNaming() {
+        guard !isBusy else { return }
+        draftTarget = nil; draftName = ""; currentName = nil; renameError = nil; selectedProfileID = nil
+        rememberVoice = true
+    }
+
+    /// Saves before the sheet closes; Undo is offered until another naming change.
+    public func saveDraftName() async {
+        guard canSaveDraftName, let row = draftTarget else { return }
+        isBusy = true; defer { isBusy = false }
+        undo = nil
+        do {
+            let heads = try await store.namingHeads(meetingID: meetingID)
+            snapshot = draftScope == .voice
+                ? try await store.nameDraftVoice(meetingID: meetingID, utterance: row.utterance, name: draftName)
+                : try await store.nameDraftReply(meetingID: meetingID, utterance: row.utterance, name: draftName)
+            if let generation = snapshot?.meeting.generation, generation == heads.generation + 1 {
+                undo = NamingUndo(heads: heads, generation: generation, created: nil, previous: nil)
+            }
+            noticeMessage = nil; errorMessage = nil
+            draftTarget = nil; draftName = ""; currentName = nil; renameError = nil; selectedProfileID = nil
+            rememberVoice = true
+        } catch {
+            renameError = error.localizedDescription
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Removes the row's reply name, else the name of its live voice.
+    public func removeDraftName(_ row: LiveDraftRow) async {
+        guard !isBusy, renameTarget == nil, draftTarget == nil, row.isNamed else { return }
+        isBusy = true; defer { isBusy = false }
+        undo = nil
+        do {
+            snapshot = row.replyName != nil
+                ? try await store.removeDraftName(meetingID: meetingID, recordingID: row.utterance.recordingID, kind: .reply, target: row.id)
+                : try await store.removeDraftName(meetingID: meetingID, recordingID: row.utterance.recordingID, kind: .voice,
+                                                  target: row.utterance.speakers[0].id)
+            errorMessage = nil; noticeMessage = nil
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    /// "Named N replies from the draft. Not placed: …" for each recording whose
+    /// current transcript took names from its draft.
+    public var draftNamingMessages: [(recordingID: UUID, message: String, people: [String])] {
+        guard let snapshot else { return [] }
+        return snapshot.recordings.compactMap { recording in
+            guard let summary = snapshot.draftNaming[recording.id] else { return nil }
+            var message = "Named \(summary.namedReplies) repl\(summary.namedReplies == 1 ? "y" : "ies") from the draft."
+            if !summary.unplaced.isEmpty { message += " Not placed: " + summary.unplaced.joined(separator: ", ") + "." }
+            // Only people who still have fragment names in this recording can be remembered.
+            let people = summary.placed.filter { name in
+                snapshot.anchors.contains { $0.recordingID == recording.id && $0.voiceID == nil
+                    && NamedSpeech.person($0.name) == NamedSpeech.person(name) }
+            }
+            return (recording.id, message, people)
+        }
+    }
+
+    /// Remember Voices… for a person named from the draft: opens the naming
+    /// sheet for that person's named replies, with remembering on. Saving runs
+    /// the usual fragment confirmation and its speech checks.
+    public func beginRememberDraftVoice(recordingID: UUID, name: String) async {
+        guard let snapshot else { return }
+        let person = NamedSpeech.person(name)
+        let anchors = snapshot.anchors.filter { $0.recordingID == recordingID && $0.voiceID == nil && NamedSpeech.person($0.name) == person }
+        let ids = snapshot.revisions.first { $0.recordingID == recordingID }?.segments
+            .filter { segment in anchors.contains { $0.segmentID == segment.id } }.map(\.id) ?? []
+        guard !ids.isEmpty else { return }
+        await begin(recordingID: recordingID, segmentIDs: ids, scope: .reply)
+        guard renameTarget != nil else { return }
+        draftName = name; rememberVoice = true
+        selectedProfileID = profiles.first { NamedSpeech.person($0.name) == person }?.id
     }
     /// The saved voice named like the current name, listed first and marked.
     public var currentProfileID: UUID? {

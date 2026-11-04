@@ -45,6 +45,8 @@ public struct FinalTranscriptPublication: Codable, Equatable, Identifiable, Send
     /// The reply recognition this publication used, and how many replies it named.
     public var replyRecognition: ReplyRecognition.Measurement?
     public var recognizedReplies: Int?
+    /// Draft names this publication turned into fragment names (live-draft-naming).
+    public var draftNaming: DraftNamingSummary?
 }
 
 struct ReconciledTranscript {

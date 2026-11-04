@@ -100,6 +100,11 @@ public enum MeetingRecorderEvent: Sendable {
     case phase(MeetingRecorderPhase, meetingID: UUID?, recordingID: UUID?)
     /// Capture or storage failed; the recording is being finalized safely.
     case interrupted(meetingID: UUID, recordingID: UUID, RecorderIssue)
+    /// Both sources have stopped and every accepted frame, including the live
+    /// tail, has been handed over; the recording is not saved yet. Live text
+    /// ends here: queueing the final job checks models in the inference lane,
+    /// which the live capture lease would otherwise hold until after Stop.
+    case captureEnded(meetingID: UUID, recordingID: UUID, interrupted: Bool)
     case stopped(RecordingStopResult)
 }
 
@@ -191,7 +196,8 @@ public actor MeetingRecorder {
     /// System audio access is confirmed first (cached once allowed), so a denied
     /// tap never creates a recording of silence.
     @discardableResult
-    public func start(meetingID: UUID, live: LiveInferenceMailbox<LiveCaptureFragment>? = nil) async throws -> Recording {
+    public func start(meetingID: UUID, recordingID: UUID = UUID(),
+                      live: LiveInferenceMailbox<LiveCaptureFragment>? = nil) async throws -> Recording {
         await acquire(); defer { release() }
         guard active == nil, phase == .idle else {
             throw ServiceError(message: "Another recording is already active",
@@ -204,7 +210,7 @@ public actor MeetingRecorder {
             try await systemAudioAccess?()
             await playback?.stopPlaybackBeforeCapture()
             let startedAt = wallClock(), zone = timeZone()
-            var recording = try Recording(meetingID: meetingID, startedAt: startedAt, timeZoneIdentifier: zone)
+            var recording = try Recording(id: recordingID, meetingID: meetingID, startedAt: startedAt, timeZoneIdentifier: zone)
             let writer = try await RecordingAudioWriter.create(library: library, recording: recording)
             let id = recording.id
             let pipeline = RecordingCapturePipeline(sink: wrapSink?(writer) ?? writer, live: live, now: hostClock,
@@ -328,6 +334,8 @@ public actor MeetingRecorder {
             final = await current.writer.snapshot().recording
             final.state = .interrupted
         }
+        continuation.yield(.captureEnded(meetingID: current.recording.meetingID, recordingID: current.recording.id,
+                                         interrupted: final.state == .interrupted))
         if final.state == .interrupted, issue == nil {
             issue = RecorderIssue(ServiceError(message: "The recording was interrupted",
                 recovery: "Completed audio was kept and can be transcribed."))

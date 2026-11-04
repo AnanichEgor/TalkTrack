@@ -7,16 +7,16 @@ A processing error never means that final transcription succeeded.
 If there is no previous text, show the pending/error state and retain available
 audio for processing; an empty reading area is not proof of final completion.
 
-Native capture normalization, Stop-to-job wiring, durable live-head publication
-and the complete meeting workspace remain tasks 4.4, 4.6 and 9. The current
-capture diagnostic saves metrics only. The service and synthetic-fixture behavior
-below does not establish a complete native recording workflow.
+Recording feeds the live session through `LiveCaptureBridge`
+(live-draft-naming): the Transcript tab of the recording meeting shows the
+draft, and the draft is saved in the library until the final transcript
+replaces it (see [Saved draft](#saved-draft)).
 
 ## Text and speaker status
 
 | Result | Text and timing | Speaker meaning |
 | --- | --- | --- |
-| Live (`TranscriptKind.live`) | Rolling, revisable wording; coarse source-window times. Growing recognition can update the same row ID. | `VoiceN` is a provisional candidate within the meeting/capture day. `Voice1 / Voice2` expresses mixed or uncertain ownership. It does not identify a person. |
+| Live (`TranscriptKind.live`), shown as `· Draft` | Rolling, revisable wording; coarse source-window times. Growing recognition can update the same row ID. | `VoiceN` is a provisional candidate within the meeting/capture day. `Voice1 / Voice2` expresses mixed or uncertain ownership. It does not identify a person. |
 | Final staging (`FinalTranscriptionCheckpoint`) | Saved original ASR, aligned original words, speaker candidates and accepted indexed corrections. `run` saves complete staging at `validating`; a retained ready flag is not a published result. | System candidate UUIDs are unconfirmed. The staging helper label is `Unconfirmed system speaker`; these candidates are reconciled at publication. |
 | Published final (`TranscriptKind.final`) | A validated immutable revision is the affected recording's transcript head; its job is `completed`. Original words/timing remain alongside corrected display text. | Day-scoped identities and assignments are committed. Unknown voices keep numbered labels; uncertain confirmed-name matches have durable review records. Final text may be complete while names still need review. |
 
@@ -44,7 +44,8 @@ the full workspace, reconciliation-review UI and job wiring remain pending.
 ## Live status
 
 `LiveTranscriptionState` belongs to the live session, not the final-processing job.
-The reusable view labels every live row `Provisional`.
+The Transcript tab marks every draft row `· Draft` and shows the state message
+above the rows; `unavailable` links to Settings ▸ Models.
 
 | State | Meaning and recovery |
 | --- | --- |
@@ -64,9 +65,47 @@ Do not hide an outstanding issue solely because another window succeeded.
 
 `append` does not await inference. At most one active window and one newest
 pending window per track are retained. Live failure/backlog does not authorize
-dropping durable audio. The injected dual-AAC fixture verifies independent writer
-retention; production native writer wiring is still pending. Model changes and
-language/default edits do not alter an existing session's options/snapshots.
+dropping durable audio. Model changes and language/default edits do not alter
+an existing session's options/snapshots.
+
+## Live session in a recording
+
+`WorkspacePresentation.record()` creates a `LiveCaptureBridge` when Record
+starts, with the meeting's language and the `liveTranscriptionEnabled` setting:
+
+1. The bridge takes the runtime's capture lease (`LiveCaptureHost`). This cancels
+   the active background model call and unloads resident job and dictation models.
+   Off, or without a host, nothing is taken.
+2. It builds the session before the recorder starts. Missing live models give
+   `unavailable`; the recording proceeds either way.
+3. The recorder offers normalized blocks to the bridge's mailbox and never waits
+   for it. The bridge splits them into appends of at most 100 ms. A gap inside one
+   capture interval means the mailbox replaced blocks, and the draft says `delayed`.
+4. Pause and Resume are mirrored. Stop drains the tail (`finish()`), saves the
+   complete draft, then ends the lease. An interrupted recording uses `cancel()`
+   and keeps the rows published so far. Quit cancels within 5 s.
+
+A final transcription of another meeting running when Record starts stops at a
+checkpoint and goes back to `queued` (`FinalJobRunnerEvent.paused`); its status
+reads `Waits for the recording to stop`, and it continues after Stop from its saved
+progress. Summary and translation jobs keep their cancel-and-requeue behavior.
+
+## Saved draft
+
+The draft of a recording is a `LiveDraft` (its `LiveUtterance` rows with their
+voice candidates), one `liveDraft` record per recording with a `liveDraft` head.
+It is written at most every 10 s while rows change, at Pause, and as `complete`
+at Stop; a later incomplete save cannot replace the complete one. Saving never
+changes the meeting generation, a transcript head or a job's source.
+
+`SessionStore.meetingTranscript` returns the drafts of recordings that have no
+final transcript (`MeetingTranscriptSnapshot.drafts`). Final publication removes
+the draft head in its own transaction; a failed, cancelled or interrupted run
+keeps the draft. A draft saved after the final transcript is ignored. Deleting
+the recording or the meeting deletes the draft.
+
+Draft names (`LiveName`) and how they reach the final transcript are described
+in [remembered voices](voice-profiles.md#names-from-the-draft).
 
 ## Final job stages
 

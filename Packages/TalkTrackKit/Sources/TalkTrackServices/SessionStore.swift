@@ -12,7 +12,7 @@ public actor SessionStore {
     /// completed jobs do not change, so one computation serves the session.
     private var voiceGroups: [UUID: SpeakerVoiceGroups] = [:]
     private var replyClusters: [UUID: ReplyClusters] = [:]
-    private var db: SQLiteConnection {
+    var db: SQLiteConnection {
         get throws {
             guard let connection else { throw StoreError.database("Library is closed") }
             return connection
@@ -227,6 +227,8 @@ public actor SessionStore {
                 try db.execute("DELETE FROM records WHERE kind='fragmentAnchor' AND id=?", [.text(anchor.id.uuidString)])
                 try db.execute("DELETE FROM heads WHERE kind='fragmentAnchor' AND meeting_id=? AND scope=?", [m, .text(anchor.segmentID.uuidString)])
             }
+            // Draft names of its rows and voices (their records go with the recording's scope).
+            try db.execute("DELETE FROM heads WHERE meeting_id=? AND kind='liveName' AND scope LIKE ?", [m, .text(recordingID.uuidString + ":%")])
             // Day speakers whose capture days only this recording had.
             let remaining = Set(try recordings(meetingID: meetingID).filter { $0.id != recordingID }.flatMap { $0.days.map(\.id) })
             let speakers: [DaySpeaker] = try records(.daySpeaker, meetingID: meetingID)
@@ -328,7 +330,7 @@ public actor SessionStore {
         try meetings.removeTree(id.uuidString)
     }
 
-    private func update(_ meeting: Meeting) throws {
+    func update(_ meeting: Meeting) throws {
         try db.execute("UPDATE meetings SET payload = ? WHERE id = ?", [.blob(DomainCodec.encode(meeting)), .text(meeting.id.uuidString)])
     }
 
@@ -1023,6 +1025,8 @@ public actor SessionStore {
                 if !intervals.isEmpty { result.append(NamedSpeech(name: name, recordingID: recordingID, intervals: intervals)) }
             }
         }
+        // Names given in a draft, until its final transcript consumes them.
+        result += try draftNamedSpeech(meetingID: meetingID)
         return result.sorted { ($0.recordingID.uuidString, $0.person) < ($1.recordingID.uuidString, $1.person) }
     }
 
@@ -1061,8 +1065,16 @@ public actor SessionStore {
         let items = try TranscriptFormatter.format(meetingID: meetingID, recordings: recordings,
             segments: revisions.flatMap(\.segments), speakers: speakers, assignments: assignments, anchors: anchors,
             emptyNotes: try emptyRecordingNotes(meetingID: meetingID, recordings: recordings, revisions: revisions))
-        return MeetingTranscriptSnapshot(meeting: owner, recordings: recordings, revisions: revisions,
+        var snapshot = MeetingTranscriptSnapshot(meeting: owner, recordings: recordings, revisions: revisions,
             speakers: speakers, assignments: assignments, anchors: anchors, items: items)
+        let finals = Set(revisions.filter { $0.kind == .final }.map(\.recordingID))
+        snapshot.drafts = try liveDrafts(meetingID: meetingID).filter { !finals.contains($0.recordingID) }
+        snapshot.liveNames = try liveNames(meetingID: meetingID)
+        snapshot.draftNaming = try revisions.compactMap { revision -> (UUID, DraftNamingSummary)? in
+            let publication: FinalTranscriptPublication? = try record(.finalPublication, id: revision.id)
+            return publication?.draftNaming.map { (revision.recordingID, $0) }
+        }.reduce(into: [:]) { $0[$1.0] = $1.1 }
+        return snapshot
     }
 
     public func speakerRenameTarget(meetingID: UUID, recordingID: UUID, segmentID: UUID) throws -> SpeakerRenameTarget {
@@ -1143,8 +1155,9 @@ public actor SessionStore {
     /// read before a Save so Undo can put back exactly what the Save replaced.
     public func namingHeads(meetingID: UUID) throws -> NamingHeads {
         let owner = try meeting(meetingID)
-        let entries = try db.rows("SELECT kind, scope, id FROM heads WHERE meeting_id=? AND kind IN (?,?) ORDER BY kind, scope",
-            [.text(meetingID.uuidString), .text(RecordKind.assignment.rawValue), .text(RecordKind.fragmentAnchor.rawValue)]).map { row in
+        let entries = try db.rows("SELECT kind, scope, id FROM heads WHERE meeting_id=? AND kind IN (?,?,?) ORDER BY kind, scope",
+            [.text(meetingID.uuidString), .text(RecordKind.assignment.rawValue), .text(RecordKind.fragmentAnchor.rawValue),
+             .text(RecordKind.liveName.rawValue)]).map { row in
                 guard case .text(let kind) = row[0], case .text(let scope) = row[1], case .text(let id) = row[2] else { throw StoreError.invalidResult }
                 return NamingHeads.Entry(kind: kind, scope: scope, id: id)
             }
@@ -1159,10 +1172,10 @@ public actor SessionStore {
             var owner = try meeting(heads.meetingID)
             guard owner.generation == generation else { throw NamingUndoError.changed }
             let m = SQLValue.text(heads.meetingID.uuidString)
-            try db.execute("DELETE FROM heads WHERE meeting_id=? AND kind IN (?,?)", [m,
-                .text(RecordKind.assignment.rawValue), .text(RecordKind.fragmentAnchor.rawValue)])
+            try db.execute("DELETE FROM heads WHERE meeting_id=? AND kind IN (?,?,?)", [m,
+                .text(RecordKind.assignment.rawValue), .text(RecordKind.fragmentAnchor.rawValue), .text(RecordKind.liveName.rawValue)])
             for entry in heads.entries {
-                guard let kind = RecordKind(rawValue: entry.kind), [.assignment, .fragmentAnchor].contains(kind),
+                guard let kind = RecordKind(rawValue: entry.kind), [.assignment, .fragmentAnchor, .liveName].contains(kind),
                       let id = UUID(uuidString: entry.id), try db.rows("SELECT 1 FROM records WHERE kind=? AND id=? AND meeting_id=?",
                         [.text(entry.kind), .text(entry.id), m]).first != nil else { throw NamingUndoError.changed }
                 try setHead(kind, meetingID: heads.meetingID, scope: entry.scope, id: id)
@@ -1179,11 +1192,12 @@ public actor SessionStore {
         try db.transaction {
             var owner = try meeting(meetingID)
             let named = try !speakerAssignments(meetingID: meetingID).isEmpty || !fragmentAnchors(meetingID: meetingID).isEmpty
+                || !liveNames(meetingID: meetingID).isEmpty
             guard named else {
                 return try meetingTranscript(meetingID: meetingID)
             }
-            try db.execute("DELETE FROM heads WHERE meeting_id=? AND kind IN (?,?)", [.text(meetingID.uuidString),
-                .text(RecordKind.assignment.rawValue), .text(RecordKind.fragmentAnchor.rawValue)])
+            try db.execute("DELETE FROM heads WHERE meeting_id=? AND kind IN (?,?,?)", [.text(meetingID.uuidString),
+                .text(RecordKind.assignment.rawValue), .text(RecordKind.fragmentAnchor.rawValue), .text(RecordKind.liveName.rawValue)])
             owner.generation += 1; try update(owner)
             return try meetingTranscript(meetingID: meetingID)
         }
@@ -1245,12 +1259,13 @@ public actor SessionStore {
             let prior: FinalTranscriptPublication? = try previous.flatMap { try record(.finalPublication, id: $0.id) }
             let assignments = try speakerAssignments(meetingID: recording.meetingID)
             let anchors = try confirmedVoiceAnchors(recording: recording, assignments: assignments)
+            let named = try namedSpeech(meetingID: recording.meetingID).filter { $0.recordingID == recording.id }
             let result = try FinalSpeakerReconciler.reconcile(checkpoint: checkpoint, recording: recording,
                 previous: previous, previousPublication: prior, existingSpeakers: daySpeakers(meetingID: recording.meetingID),
                 speakersInUse: try speakersShown(meetingID: recording.meetingID, except: recording.id),
                 assignments: assignments, historicalEvidence: anchors,
                 captureDays: recordings(meetingID: recording.meetingID).flatMap(\.days),
-                named: try namedSpeech(meetingID: recording.meetingID).filter { $0.recordingID == recording.id },
+                named: named,
                 calibration: try mergeCalibration(),
                 recognition: try checkpoint.job.models.first { $0.role == .embedding }.map { try replyRecognition(embedding: $0) },
                 revisionID: UUID(), at: date)
@@ -1265,15 +1280,19 @@ public actor SessionStore {
                 try put(.assignment, id: assignment.id, meetingID: recording.meetingID, scope: assignment.daySpeakerID.uuidString, value: assignment)
                 try setHead(.assignment, meetingID: recording.meetingID, scope: assignment.daySpeakerID.uuidString, id: assignment.id)
             }
+            // Names from the draft become fragment names of the blocks they cover.
+            var publication = result.publication
+            publication.draftNaming = try consumeDraftNames(meetingID: recording.meetingID, recordingID: id,
+                                                            revision: result.revision, named: named, at: date)
             try put(.transcript, id: result.revision.id, meetingID: recording.meetingID, scope: id.uuidString, value: result.revision)
-            try put(.finalPublication, id: result.publication.id, meetingID: recording.meetingID, scope: id.uuidString, value: result.publication)
+            try put(.finalPublication, id: publication.id, meetingID: recording.meetingID, scope: id.uuidString, value: publication)
             try setHead(.transcript, meetingID: recording.meetingID, scope: id.uuidString, id: result.revision.id)
-            try setHead(.finalPublication, meetingID: recording.meetingID, scope: jobID.uuidString, id: result.publication.id)
+            try setHead(.finalPublication, meetingID: recording.meetingID, scope: jobID.uuidString, id: publication.id)
             var owner = try meeting(recording.meetingID)
             owner.generation += 1; try update(owner)
             try Task.checkCancellation()
             job.stage = .completed; job.lastError = nil; try saveJob(job)
-            return result.publication
+            return publication
         }
     }
 
@@ -1539,33 +1558,33 @@ public actor SessionStore {
         try put(.job, id: job.id, meetingID: job.snapshot.source.meetingID, value: job)
     }
 
-    private func head<T: Codable>(_ kind: RecordKind, meetingID: UUID, scope: String = "") throws -> T? {
+    func head<T: Codable>(_ kind: RecordKind, meetingID: UUID, scope: String = "") throws -> T? {
         guard case .text(let id) = try db.rows("SELECT id FROM heads WHERE meeting_id=? AND kind=? AND scope=?",
             [.text(meetingID.uuidString), .text(kind.rawValue), .text(scope)]).first?.first,
               let uuid = UUID(uuidString: id) else { return nil }
         return try record(kind, id: uuid)
     }
 
-    private func setHead(_ kind: RecordKind, meetingID: UUID, scope: String = "", id: UUID) throws {
+    func setHead(_ kind: RecordKind, meetingID: UUID, scope: String = "", id: UUID) throws {
         try db.execute("INSERT INTO heads(meeting_id,kind,scope,id) VALUES (?,?,?,?) ON CONFLICT(meeting_id,kind,scope) DO UPDATE SET id=excluded.id",
             [.text(meetingID.uuidString), .text(kind.rawValue), .text(scope), .text(id.uuidString)])
     }
 
-    enum RecordKind: String { case recording, notes, transcript, assignment, job, summary, translation, finalCheckpoint, daySpeaker, finalPublication, automaticVoiceMatch, summarySource, translationSource, fragmentAnchor }
+    enum RecordKind: String { case recording, notes, transcript, assignment, job, summary, translation, finalCheckpoint, daySpeaker, finalPublication, automaticVoiceMatch, summarySource, translationSource, fragmentAnchor, liveDraft, liveName }
 
-    private func put<T: Codable>(_ kind: RecordKind, id: UUID, meetingID: UUID, scope: String = "", value: T) throws {
-        let mutable = kind == .recording || kind == .job || kind == .finalCheckpoint
+    func put<T: Codable>(_ kind: RecordKind, id: UUID, meetingID: UUID, scope: String = "", value: T) throws {
+        let mutable = kind == .recording || kind == .job || kind == .finalCheckpoint || kind == .liveDraft
         let conflict = mutable ? " ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload WHERE records.meeting_id=excluded.meeting_id AND records.scope=excluded.scope" : ""
         try db.execute("INSERT INTO records(kind,id,meeting_id,scope,payload) VALUES (?,?,?,?,?)" + conflict,
             [.text(kind.rawValue), .text(id.uuidString), .text(meetingID.uuidString), .text(scope), .blob(DomainCodec.encode(value))])
     }
 
-    private func record<T: Codable>(_ kind: RecordKind, id: UUID) throws -> T? {
+    func record<T: Codable>(_ kind: RecordKind, id: UUID) throws -> T? {
         guard case .blob(let data) = try db.rows("SELECT payload FROM records WHERE kind=? AND id=?", [.text(kind.rawValue), .text(id.uuidString)]).first?.first else { return nil }
         return try DomainCodec.decode(T.self, from: data)
     }
 
-    private func records<T: Codable>(_ kind: RecordKind, meetingID: UUID) throws -> [T] {
+    func records<T: Codable>(_ kind: RecordKind, meetingID: UUID) throws -> [T] {
         try db.rows("SELECT payload FROM records WHERE kind=? AND meeting_id=?", [.text(kind.rawValue), .text(meetingID.uuidString)]).map {
             guard case .blob(let data) = $0[0] else { throw StoreError.database("Invalid stored record") }
             return try DomainCodec.decode(T.self, from: data)

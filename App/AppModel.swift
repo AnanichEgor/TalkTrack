@@ -298,6 +298,13 @@ struct WorkspaceServices {
             }
             // A meeting takes precedence: an active dictation is cancelled before capture.
             workspace.beforeCapture = { [weak self] in await self?.dictation?.meetingWillStart() }
+            // Live draft while recording: the capture lease, then the small live models.
+            workspace.liveHost = LiveCaptureHost(begin: {
+                let lease = try await runtime.beginCapture()
+                return LiveCaptureLease(makeSession: { meetingID, recordingID, options in
+                    try await runtime.makeLiveSession(meetingID: meetingID, recordingID: recordingID, options: options, capture: lease)
+                }, end: { try? await runtime.endCapture(lease) })
+            })
             workspace.unavailableModels = { snapshots in
                 var missing: [ModelRole] = []
                 for snapshot in snapshots where !TextServer.isServer(snapshot) {

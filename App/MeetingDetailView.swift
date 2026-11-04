@@ -398,6 +398,8 @@ struct StatusRow: View {
 }
 
 struct TranscriptTab: View {
+    @Environment(AppModel.self) private var app
+    @Environment(\.openSettings) private var openSettings
     @State private var presentation: MeetingTranscriptPresentation
     let player: MeetingPlayer
     let workspace: WorkspacePresentation
@@ -414,7 +416,10 @@ struct TranscriptTab: View {
     var body: some View {
         MeetingTranscriptView(presentation: presentation, player: player,
                               deleteRecording: { await workspace.deleteRecording($0) },
-                              deleteRefusal: { workspace.deleteRefusal(recordingID: $0) }, export: export)
+                              deleteRefusal: { workspace.deleteRefusal(recordingID: $0) }, export: export,
+                              live: workspace.liveMeetingID == presentation.meetingID ? workspace.liveDraft : nil,
+                              liveRecordingID: workspace.liveRecordingID,
+                              openModels: { app.showSettings(openSettings, tab: .models) })
             .padding(.top, 4)
             .focusedSceneValue(\.namingUndo, presentation.undo.map { undo in
                 NamingUndoAction(title: undo.profileUndone ? "Retry Undo Naming" : "Undo Naming", enabled: presentation.canUndo) {

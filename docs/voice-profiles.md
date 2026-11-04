@@ -260,3 +260,49 @@ only, never stored) and **Used for recognition** when it is among the at most
   deleted, are listed without Play, with the reason; they can still be removed.
 
 Tests: `./scripts/test.sh --filter 'VoiceSampleExclusionTests|SavedSpeakersTests'`.
+
+## Names from the draft
+
+While a meeting records, and after Stop until its final transcript is ready, the
+draft rows (`[time]: Voice3 · Draft - …`) can be named (live-draft-naming):
+
+- **Name This Reply…** names one draft row (`LiveName.kind == .reply`).
+- **Name Voice…** names a live voice on a row with exactly one voice
+  (`.voice`). All its single-voice rows show the name, including rows that
+  arrive later. Rows with several voices (`Voice1 / Voice2`) offer only Name This
+  Reply…. Microphone rows stay `You`.
+- A reply name wins over its voice's name on that row and for that speech.
+- Each naming is saved at once (`liveName` records, one head per row or live
+  voice), survives quit and relaunch, and is undone like any naming (Undo banner,
+  Edit ▸ Undo Naming). Remove Name takes a row's reply name, else its voice's
+  name, away. The sheet suggests saved voices and names used in the meeting and
+  has no Remember toggle.
+
+**How names travel.** `SessionStore.namedSpeech` includes unpublished draft names
+as speech the user named, in the recording's active media time, which live and
+final share:
+
+- A reply name covers its row's interval.
+- A voice name covers its live voice's single-voice rows without a reply name,
+  less any speech another person's reply covers.
+
+Final publication then applies the usual rules (`SpeakerLinks`): a block is
+named only when one person's named speech covers at least 0.5 of it and other
+people's at most 0.2; replies of the same people may be recognized from the
+named ones. Live voice numbers are never mapped onto final voices: live clusters
+split and merge differently, and coverage fails safe. In the same transaction,
+each final system block a draft person was given becomes a fragment name
+(`FragmentAnchor`), the draft names and the draft are retired, and the
+publication records a `DraftNamingSummary`. The transcript then shows `Named N
+replies from the draft. Not placed: …`. Names from the draft are then ordinary
+fragment names: they can be edited, removed and undone, and Reprocess uses them.
+
+**Confirmation before learning.** Draft names never add samples to saved voices
+or create them: draft timing is coarse (3–6 s windows) and would put other
+speakers into a voice. After publication, **Remember Voices…** next to a
+person in that row opens the naming sheet for the person's named replies with
+remembering on. Saving runs the fragment confirmation
+(`nameFragmentWithConfirmation`) and the usual checks: exclusive speech, enough
+clean speech, and an existing or new saved voice.
+
+Tests: `./scripts/test.sh --filter 'LiveNamingTests|LiveDraftStoreTests'`.

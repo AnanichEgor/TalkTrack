@@ -340,3 +340,53 @@ private func labels(_ snapshot: MeetingTranscriptSnapshot, recordingID: UUID) ->
         print("Naming sheet library: \(root.path)")
     }
 }
+
+extension SpeakerRenameTests {
+    /// The naming sheet in draft mode: a row or its single live voice, never
+    /// `You`; this meeting's names as suggestions; no Remember; Undo; Remove Name.
+    @MainActor @Test func draftModeNamesARowOrItsVoiceSuggestsMeetingNamesAndUndoes() async throws {
+        let f = try await DraftFixture.make()
+        defer { f.remove() }
+        let petr = ProvisionalSpeaker(id: UUID(), number: 2), anna = ProvisionalSpeaker(id: UUID(), number: 5)
+        let first = try f.row(0, 3, voices: [petr]), second = try f.row(3, 5, voices: [petr])
+        let mixed = try f.row(5, 8, voices: [petr, anna]), mine = try f.row(8, 9, track: .microphone)
+        try await f.store.saveLiveDraft(f.draft([first, second, mixed, mine], complete: false))
+        try await f.store.nameDraftReply(meetingID: f.meeting.id, utterance: mixed, name: "Anna")
+
+        let presentation = MeetingTranscriptPresentation(store: f.store, meetingID: f.meeting.id)
+        await presentation.refresh()
+        let rows = try #require(presentation.savedDraftRows[f.recording.id])
+        #expect(rows.map(\.label) == ["Voice2", "Voice2", "Anna", "You"])
+        #expect(rows[3].text.hasSuffix("You · Draft - Draft speech") && rows[2].replyName == "Anna")
+        // The live rows of a capturing recording get the same names.
+        #expect(presentation.liveRows([first, mixed]).map(\.label) == ["Voice2", "Anna"])
+
+        await presentation.beginDraftNaming(rows[3], scope: .reply)
+        #expect(presentation.draftTarget == nil)
+        await presentation.beginDraftNaming(rows[2], scope: .voice)
+        #expect(presentation.draftTarget == nil)
+
+        await presentation.beginDraftNaming(rows[0], scope: .voice)
+        #expect(presentation.draftTarget?.id == first.id && presentation.draftScope == .voice && !presentation.rememberVoice)
+        #expect(presentation.draftSuggestions == ["Anna"])
+        presentation.draftName = "an"
+        #expect(presentation.draftSuggestions == ["Anna"])
+        presentation.draftName = "Zed"
+        #expect(presentation.draftSuggestions.isEmpty)
+        presentation.draftName = "  "
+        #expect(!presentation.canSaveDraftName)
+        presentation.draftName = "Petr"
+        await presentation.saveDraftName()
+        #expect(presentation.draftTarget == nil && presentation.undo != nil && presentation.canUndo)
+        #expect(presentation.savedDraftRows[f.recording.id]?.map(\.label) == ["Petr", "Petr", "Anna", "You"])
+
+        await presentation.undoLastNaming()
+        #expect(presentation.undo == nil)
+        #expect(presentation.savedDraftRows[f.recording.id]?.map(\.label) == ["Voice2", "Voice2", "Anna", "You"])
+
+        await presentation.removeDraftName(rows[2])
+        #expect(presentation.savedDraftRows[f.recording.id]?[2].label == "Voice2 / Voice5")
+        #expect(try await f.store.liveNames(meetingID: f.meeting.id).isEmpty)
+        try await f.store.close()
+    }
+}

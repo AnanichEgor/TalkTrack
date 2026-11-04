@@ -170,6 +170,47 @@ import TalkTrackDomain
             translationLanguage: .english, contextLimit: .defaultSelection, templateVersion: IndexedTranslation.version), model: model)
         try await TranslationJobPipeline(store: store, inference: FixtureTranslation()).run(jobID: translation.id)
 
+        // live-draft-naming: a stopped call with ten live voices and only its saved draft.
+        // Three voices and one overlapping reply are named; one row overlaps two voices.
+        let call = try await store.createMeeting(MeetingDraft(title: "Звонок с незнакомыми людьми",
+                                                              description: "Черновик с именами до финальной расшифровки", language: .russian))
+        let callDate = ISO8601DateFormatter().date(from: "2026-10-09T10:00:00Z")!
+        let callRecording: Recording
+        do {
+            let seconds = 300.0, origin = AVAudioTime.hostTime(forSeconds: 50_000)
+            let recording = try Recording(meetingID: call.id, startedAt: callDate, timeZoneIdentifier: "Europe/Moscow")
+            let writer = try await RecordingAudioWriter.create(library: library, recording: recording)
+            var clock = CaptureIntervalClock()
+            try clock.begin(hostTime: origin, wallClock: callDate, timeZoneIdentifier: "Europe/Moscow")
+            try await writer.updateCaptureTiming(try clock.close(at: origin + AVAudioTime.hostTime(forSeconds: seconds)), state: .recording)
+            let silence = [Float](repeating: 0, count: 48_000)
+            for track in AudioTrack.allCases {
+                for offset in stride(from: 0, to: Int(seconds) * 48_000, by: 48_000) {
+                    try await writer.append(track: track, samples: silence, activeStartFrame: UInt64(offset),
+                                            hostTimeStart: origin + AVAudioTime.hostTime(forSeconds: Double(offset) / 48_000))
+                }
+            }
+            callRecording = try await writer.finish().recording
+            try await store.saveRecording(callRecording)
+        }
+        let liveVoices = (1...10).map { ProvisionalSpeaker(id: UUID(), number: UInt($0)) }
+        var draftRows: [LiveUtterance] = []
+        for (turn, start) in stride(from: 0.0, to: 280, by: 7).enumerated() {
+            let microphone = turn % 5 == 4
+            let voices = microphone ? [] : turn == 7 ? [liveVoices[1], liveVoices[2]] : [liveVoices[turn % 10]]
+            let interval = try MediaInterval(start: MediaTime(seconds: start), end: MediaTime(seconds: start + 6))
+            draftRows.append(LiveUtterance(id: UUID(), recordingID: callRecording.id, day: callRecording.days[0],
+                track: microphone ? .microphone : .system, context: interval, interval: interval,
+                wallClockStart: callDate.addingTimeInterval(start), speakers: voices,
+                text: Self.phrases[turn % Self.phrases.count], detectedLanguage: "Russian"))
+        }
+        try await store.saveLiveDraft(LiveDraft(meetingID: call.id, recordingID: callRecording.id, utterances: draftRows, complete: true))
+        for (index, name) in [(0, "Марина"), (1, "Олег"), (2, "Светлана Игоревна")] {
+            try await store.nameDraftVoice(meetingID: call.id, utterance: draftRows[index], name: name)
+        }
+        try await store.nameDraftReply(meetingID: call.id, utterance: draftRows[7], name: "Олег")
+        #expect(try await store.meetingTranscript(meetingID: call.id).drafts.first?.utterances.count == draftRows.count)
+
         let snapshot = try await store.meetingTranscript(meetingID: meeting.id)
         #expect(snapshot.items.count > blocks / 2)
         try await store.close()

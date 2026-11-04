@@ -181,6 +181,23 @@ public struct RecordControls: Equatable, Sendable {
     public var unavailableModels: (@Sendable ([ModelSnapshot]) async throws -> [ModelRole])?
     /// Runs before a recording takes the capture lease (dictation cancels itself).
     public var beforeCapture: (@Sendable () async -> Void)?
+    /// The runtime's live models and capture lease; nil leaves live text unavailable.
+    public var liveHost: LiveCaptureHost?
+    /// How often the draft of the recording is saved while it records.
+    public var draftSaveInterval: Duration = .seconds(10)
+    /// The draft of the recording in progress (`live-draft-naming`), with the
+    /// meeting and recording it belongs to; nil when nothing records.
+    public private(set) var liveDraft: LiveTranscriptPresentation?
+    public private(set) var liveMeetingID: UUID?
+    public private(set) var liveRecordingID: UUID?
+    /// The meeting whose final transcription waits for the recording to stop.
+    public private(set) var pausedJobMeetingID: UUID?
+    public static let waitsForRecordingMessage = "Waits for the recording to stop"
+    private var bridge: LiveCaptureBridge?
+    private var liveObserver: Task<Void, Never>?
+    private var liveEnding: Task<Void, Never>?
+    /// The recording whose live text is being ended, so it ends once.
+    private var liveEndingRecordingID: UUID?
     /// Stops playback of a meeting before one of its recordings is deleted.
     public var stopPlayback: ((UUID) -> Void)?
     /// Changes when a recording is deleted, so summary and translation views reload.
@@ -419,7 +436,9 @@ public struct RecordControls: Equatable, Sendable {
 
     /// `In queue: 2nd, after “Daily 5”` while the selected meeting waits behind another.
     public var selectedQueueMessage: String? {
-        guard case .queued? = selectedStatus, let id = selected?.id, case .queued? = queueStates[id] else { return nil }
+        guard case .queued? = selectedStatus, let id = selected?.id else { return nil }
+        if pausedJobMeetingID == id, phase != .idle { return Self.waitsForRecordingMessage }
+        guard case .queued? = queueStates[id] else { return nil }
         return queueStates[id]?.message
     }
 
@@ -523,15 +542,64 @@ public struct RecordControls: Equatable, Sendable {
     public func record() async {
         guard let id = selectedID else { return }
         await command {
+            await self.liveEnding?.value
             await self.beforeCapture?()
+            // A running final transcription stops at a checkpoint and waits for Stop.
             await self.runner.setCaptureActive(true)
-            do { try await self.recorder.start(meetingID: id) }
-            catch { await self.runner.setCaptureActive(false); throw error }
+            let language = (try? await self.store.meeting(id))?.language
+            let options = ProcessingPreferences.liveOptions(meetingLanguage: language, in: self.defaults)
+            let store = self.store
+            let bridge = LiveCaptureBridge(host: self.liveHost, options: options, saveInterval: self.draftSaveInterval,
+                                           save: { draft in try? await store.saveLiveDraft(draft) })
+            await bridge.begin()
+            let recordingID = UUID()
+            await self.attachLive(bridge, meetingID: id, recordingID: recordingID)
+            do { try await self.recorder.start(meetingID: id, recordingID: recordingID, live: bridge.mailbox) }
+            catch {
+                await self.endLive(bridge, interrupted: true)
+                await self.runner.setCaptureActive(false)
+                throw error
+            }
+            // The new recording's separator is where its draft rows appear.
+            self.transcriptGeneration += 1
         }
     }
 
-    public func pause() async { await command { try await self.recorder.pause() } }
-    public func resume() async { await command { try await self.recorder.resume() } }
+    public func pause() async {
+        await command {
+            try await self.recorder.pause()
+            await self.bridge?.pause()
+        }
+    }
+
+    public func resume() async {
+        await command {
+            await self.bridge?.resume()
+            try await self.recorder.resume()
+        }
+    }
+
+    private func attachLive(_ bridge: LiveCaptureBridge, meetingID: UUID, recordingID: UUID) async {
+        self.bridge = bridge
+        liveMeetingID = meetingID; liveRecordingID = recordingID
+        let presentation = LiveTranscriptPresentation()
+        liveDraft = presentation
+        if let session = await bridge.attach(meetingID: meetingID, recordingID: recordingID) {
+            liveObserver = Task { await presentation.observe(session) }
+        }
+    }
+
+    /// Drains the draft's tail (or drops in-flight work after an interruption),
+    /// saves it and releases the capture lease; then the saved draft is shown.
+    private func endLive(_ bridge: LiveCaptureBridge, interrupted: Bool) async {
+        if interrupted { await bridge.cancel() } else { await bridge.finish() }
+        guard self.bridge === bridge else { return }
+        await liveObserver?.value
+        liveObserver = nil
+        self.bridge = nil
+        liveDraft = nil; liveMeetingID = nil; liveRecordingID = nil
+        transcriptGeneration += 1
+    }
 
     /// Saves the recording; the `.stopped` event reports the queued job.
     public func stop() async { await command { _ = try await self.recorder.stop() } }
@@ -628,6 +696,8 @@ public struct RecordControls: Equatable, Sendable {
         let outcome = await Self.within(stopTimeout) { try? await recorder.stop() }
         let saved = outcome ?? nil
         let outcomeName = outcome == nil ? "stopTimedOut" : (saved == nil ? "none" : "saved")
+        // The draft keeps the rows published so far; in-flight live text is dropped.
+        if let bridge { _ = await Self.within(.seconds(5)) { await bridge.cancel() } }
         CaptureLog.recorder.log("quit.stop end ms=\(CaptureLog.milliseconds(since: started), privacy: .public) outcome=\(outcomeName, privacy: .public)")
         let deadline = ContinuousClock.now + processingTimeout
         while await runner.isRunning, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(50)) }
@@ -679,7 +749,11 @@ public struct RecordControls: Equatable, Sendable {
             if next == .recording || next == .idle { await reloadMeetings(); await loadSelection() }
         case let .interrupted(_, _, issue):
             self.issue = WorkspaceIssue(issue)
+        case let .captureEnded(_, recordingID, interrupted):
+            endLiveIfCapturing(recordingID, interrupted: interrupted)
         case let .stopped(result):
+            // Normally ended at `.captureEnded` already.
+            endLiveIfCapturing(result.recording.id, interrupted: result.recording.state == .interrupted)
             if let issue = result.issue { self.issue = WorkspaceIssue(issue) }
             else if let jobIssue = result.jobIssue {
                 self.issue = WorkspaceIssue(message: "The recording was saved, but transcription could not be queued: \(jobIssue)",
@@ -692,9 +766,19 @@ public struct RecordControls: Equatable, Sendable {
         }
     }
 
+    /// Not awaited: the recorder's Stop waits for the capture lease that ending
+    /// live text releases (it queues the final job after checking models in the
+    /// inference lane), and draining live text must not hold up queued work.
+    private func endLiveIfCapturing(_ recordingID: UUID, interrupted: Bool) {
+        guard let bridge, liveRecordingID == recordingID, liveEndingRecordingID != recordingID else { return }
+        liveEndingRecordingID = recordingID
+        liveEnding = Task { await self.endLive(bridge, interrupted: interrupted) }
+    }
+
     private func handle(_ event: FinalJobRunnerEvent) async {
         switch event {
         case let .started(jobID, meetingID):
+            pausedJobMeetingID = nil
             runningJobMeetingID = meetingID
             runningJobID = jobID
             await refreshQueue()
@@ -702,6 +786,15 @@ public struct RecordControls: Equatable, Sendable {
             if selectedID == meetingID { await loadSelection() }
         case let .progress(progress):
             updateProgress(progress)
+        case let .paused(_, meetingID):
+            // Queued again with its checkpoint; progress resumes after Stop.
+            runningJobMeetingID = nil
+            runningJobID = nil
+            running = nil
+            progressDisplays[meetingID] = nil
+            pausedJobMeetingID = meetingID
+            await refreshQueue()
+            if selectedID == meetingID { await loadSelection() }
         case let .finished(jobID, meetingID, error):
             runningJobMeetingID = nil
             runningJobID = nil

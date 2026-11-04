@@ -158,6 +158,13 @@ public actor LiveTranscriptionSession {
         sourceEnds[track] = activeStartFrame + UInt64(samples.count)
         for request in requests { enqueue(request) }
     }
+    /// Live audio the capture handoff replaced before it reached this session
+    /// (`LiveInferenceMailbox.OfferResult.replacedObsolete`): shown as delayed.
+    public func noteSkippedAudio() {
+        guard !stopped, options.enabled, asr != nil, diarization != nil, !paused else { return }
+        skipped += 1
+        setState(.delayed(skippedWindows: skipped))
+    }
     public func pause() {
         guard !stopped, options.enabled, asr != nil, diarization != nil else { return }
         flushBuilders(); paused = true

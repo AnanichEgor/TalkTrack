@@ -16,7 +16,14 @@ struct MeetingTranscriptView: View {
     var deleteRefusal: (UUID) -> String? = { _ in nil }
     /// Shown at the left of the action row.
     var export: ExportButton?
+    /// The capturing recording's live session, shown as draft rows after its separator.
+    var live: LiveTranscriptPresentation?
+    var liveRecordingID: UUID?
+    /// Opens Settings ▸ Models from the live "models unavailable" message.
+    var openModels: (() -> Void)?
     @State private var index: TranscriptPlaybackIndex?
+    /// The newest live row is visible; new rows keep it in view.
+    @State private var followsLive = true
     @State private var confirmClearNames = false
     @State private var deleting: Recording?
 
@@ -68,6 +75,7 @@ struct MeetingTranscriptView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor.opacity(0.35)))
                 .padding(.horizontal, 32)
             }
+            draftNamingStatus
             if let error = presentation.errorMessage {
                 HStack(alignment: .center, spacing: 8) {
                     Text(error).font(.callout).foregroundStyle(Color.errorText).textSelection(.enabled)
@@ -88,6 +96,7 @@ struct MeetingTranscriptView: View {
                             switch item {
                             case .date(let day):
                                 separator(day, in: snapshot)
+                                if day.isRecordingStart { draftSection(day.recordingID) }
                             case .speech(let block):
                                 // The name flows with the speech, so long names and
                                 // text wrap under the timestamp instead of a narrow column.
@@ -122,6 +131,26 @@ struct MeetingTranscriptView: View {
                     guard let id, player?.state == .playing else { return }
                     withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
                 }
+                // Live rows: follow the newest unless the reader scrolled up.
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 60
+                } action: { _, atEnd in
+                    if live != nil { followsLive = atEnd }
+                }
+                .onChange(of: live?.rows.last?.id) { _, id in
+                    guard followsLive, let id else { return }
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if let id = live?.rows.last?.id, !followsLive {
+                        Button("Newest", systemImage: "arrow.down.circle.fill") {
+                            followsLive = true
+                            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
+                        }
+                        .controlSize(.large).padding(20)
+                        .help("Show the newest draft text and keep following it")
+                    }
+                }
                 }
             } else if presentation.isBusy { ProgressView("Loading transcript…") }
         }
@@ -143,6 +172,11 @@ struct MeetingTranscriptView: View {
         .sheet(isPresented: Binding(get: { presentation.renameTarget != nil }, set: { if !$0 { presentation.cancelRename() } })) {
             if let target = presentation.renameTarget {
                 RenameSpeakerView(presentation: presentation, target: target)
+            }
+        }
+        .sheet(isPresented: Binding(get: { presentation.draftTarget != nil }, set: { if !$0 { presentation.cancelDraftNaming() } })) {
+            if let row = presentation.draftTarget {
+                DraftNameView(presentation: presentation, row: row)
             }
         }
         .task { await presentation.refresh() }
@@ -195,6 +229,107 @@ struct MeetingTranscriptView: View {
         return "Recording \(position) of \(recordings.count) · \(date) at \(time) · \(length). "
             + "Its audio, transcript, summary and speaker names for that day are deleted permanently and cannot be recovered. "
             + "The translation keeps only the other recordings. Notes and saved voices stay."
+    }
+
+    // MARK: Draft (live-draft-naming)
+
+    /// Draft rows of one recording: the live session while it captures, else its saved draft.
+    @ViewBuilder private func draftSection(_ recordingID: UUID) -> some View {
+        if let live, liveRecordingID == recordingID {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(live.state.message).font(.callout).foregroundStyle(.secondary)
+                    if live.state == .unavailable, let openModels {
+                        Button("Open Settings ▸ Models", action: openModels).controlSize(.small)
+                    }
+                }
+                if let issue = live.lastFailureMessage {
+                    Text("Live processing issue: \(issue)").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            ForEach(presentation.liveRows(live.rows)) { row in draftRow(row).id(row.id) }
+        } else if let rows = presentation.savedDraftRows[recordingID], !rows.isEmpty {
+            Text("Draft from the live transcript. The final transcript replaces it and keeps your names.")
+                .font(.callout).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
+            ForEach(rows) { row in draftRow(row).id(row.id) }
+        }
+    }
+
+    /// `[time]: Name - text` with a Draft caption. Selecting a system row's
+    /// name opens the draft naming sheet, so voices can be named during a call.
+    private func draftRow(_ row: LiveDraftRow) -> some View {
+        let canName = row.canNameReply && !presentation.isBusy
+        var name = AttributedString(row.label)
+        name.font = Self.nameFont
+        name.foregroundColor = row.isNamed ? Color.primary : Color.secondary
+        return HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("[\(row.timestamp)]:").foregroundStyle(.secondary).monospacedDigit()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name + AttributedString(" - " + row.utterance.text))
+                    .lineSpacing(5).textSelection(.enabled)
+                    .overlay(alignment: .topLeading) {
+                        if row.canNameReply {
+                            Button {
+                                Task { await presentation.beginDraftNaming(row, scope: row.canNameVoice ? .voice : .reply) }
+                            } label: {
+                                Text(row.label).font(Self.nameFont).lineSpacing(5).foregroundStyle(.clear).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).pointerStyle(.link).disabled(!canName)
+                            .help(row.canNameVoice ? "Name \(row.voiceLabel ?? row.label) now; you can correct it after the meeting"
+                                                   : "Several voices overlap here: name only this reply")
+                            .accessibilityLabel("Name Speaker: \(row.label), \(row.timestamp)")
+                        }
+                    }
+                Text(draftCaption(row)).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .font(.title3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .opacity(0.85)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(row.text)
+        .modifier(DraftActions(enabled: canName, row: row,
+            nameReply: { Task { await presentation.beginDraftNaming(row, scope: .reply) } },
+            nameVoice: { Task { await presentation.beginDraftNaming(row, scope: .voice) } },
+            remove: { Task { await presentation.removeDraftName(row) } }))
+    }
+
+    private func draftCaption(_ row: LiveDraftRow) -> String {
+        if row.utterance.track == .microphone { return "Draft · microphone" }
+        if row.replyName != nil { return "Draft · named reply" }
+        if row.voiceName != nil, let voice = row.voiceLabel { return "Draft · \(voice) named" }
+        return row.utterance.speakers.count > 1 ? "Draft · overlapping voices" : "Draft"
+    }
+
+    /// After publication: what happened to the draft's names, with Remember Voices… per person.
+    @ViewBuilder private var draftNamingStatus: some View {
+        let messages = presentation.draftNamingMessages
+        if !messages.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(messages, id: \.recordingID) { entry in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "person.text.rectangle").foregroundStyle(.secondary).accessibilityHidden(true)
+                        Text(entry.message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                            .layoutPriority(1)
+                        Spacer(minLength: 0)
+                        if !entry.people.isEmpty {
+                            Menu("Remember Voices…") {
+                                ForEach(entry.people, id: \.self) { person in
+                                    Button(person) { Task { await presentation.beginRememberDraftVoice(recordingID: entry.recordingID, name: person) } }
+                                }
+                            }
+                            .fixedSize().controlSize(.small)
+                            .disabled(presentation.isBusy)
+                            .help("Names from the draft are not learned as saved voices. Choose a person to confirm and remember their voice.")
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 32)
+        }
     }
 
     private struct IndexKey: Equatable { let items: [TranscriptDisplayItem]?; let meetingID: UUID?; let duration: MediaTime? }
@@ -500,5 +635,85 @@ private struct OptionalAction: ViewModifier {
     let action: () -> Void
     func body(content: Content) -> some View {
         if enabled { content.accessibilityAction(named: name, action) } else { content }
+    }
+}
+
+/// Draft row actions: context menu and VoiceOver. `You` rows have none.
+private struct DraftActions: ViewModifier {
+    let enabled: Bool
+    let row: LiveDraftRow
+    let nameReply: () -> Void
+    let nameVoice: () -> Void
+    let remove: () -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .contextMenu {
+                    Button("Name This Reply…", action: nameReply)
+                    if let voice = row.voiceLabel { Button("Name \(voice)…", action: nameVoice) }
+                    if row.isNamed { Button("Remove Name", action: remove) }
+                }
+                .accessibilityAction(named: "Name This Reply", nameReply)
+                .modifier(OptionalAction(name: "Name Voice", enabled: row.canNameVoice, action: nameVoice))
+                .modifier(OptionalAction(name: "Remove Name", enabled: row.isNamed, action: remove))
+        } else {
+            content
+        }
+    }
+}
+
+/// The naming sheet for a draft row: a name, chosen from saved voices and
+/// this meeting's names or typed. Draft names never teach saved voices.
+struct DraftNameView: View {
+    @Bindable var presentation: MeetingTranscriptPresentation
+    let row: LiveDraftRow
+    @FocusState private var nameFocused: Bool
+    private var voice: Bool { presentation.draftScope == .voice }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(voice ? "Name \(row.voiceLabel ?? "Voice")" : "Name This Reply").font(.title2.bold())
+            Text("Current speaker: \(presentation.currentName ?? (voice ? row.voiceLabel : nil) ?? row.utterance.speakerLabel)")
+                .foregroundStyle(.secondary)
+            Text(voice ? "Names every draft reply of this live voice. The final transcript moves the name to the matching voice; you can correct it there."
+                       : "Names only this draft reply. The final transcript moves the name to the matching speech.")
+                .font(.callout).foregroundStyle(.secondary)
+            TextField("Name", text: $presentation.draftName,
+                      prompt: Text(presentation.currentName.map { "Current: \($0)" } ?? "Name").foregroundStyle(.tertiary))
+                .textFieldStyle(.roundedBorder).focused($nameFocused)
+                .accessibilityLabel("Speaker name").disabled(presentation.isBusy)
+                .onSubmit { Task { await presentation.saveDraftName() } }
+            let names = presentation.draftSuggestions
+            if !names.isEmpty {
+                VoiceList(title: "Saved voices and names in this meeting (\(names.count))", count: names.count) {
+                    ForEach(names, id: \.self) { name in
+                        Button { presentation.draftName = name } label: {
+                            Label(name, systemImage: presentation.draftName == name ? "checkmark.circle.fill" : "person")
+                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.borderless).disabled(presentation.isBusy)
+                        .help("Use the name \(name)")
+                    }
+                }
+            }
+            Text("Saved voices learn from this name only after the final transcript, through Remember Voices…")
+                .font(.callout).foregroundStyle(.secondary)
+            if let error = presentation.renameError {
+                Text(error).foregroundStyle(Color.errorText).font(.callout).textSelection(.enabled)
+            }
+            HStack {
+                if presentation.isBusy { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Cancel") { presentation.cancelDraftNaming() }
+                    .keyboardShortcut(.cancelAction).disabled(presentation.isBusy)
+                Button("Save") { Task { await presentation.saveDraftName() } }
+                    .keyboardShortcut(.defaultAction).disabled(!presentation.canSaveDraftName)
+            }
+        }
+        .padding(24).frame(width: 460)
+        .fixedSize(horizontal: false, vertical: true)
+        .interactiveDismissDisabled(presentation.isBusy)
+        .onAppear { nameFocused = true }
     }
 }

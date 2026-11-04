@@ -8,6 +8,9 @@ public enum FinalJobRunnerEvent: Sendable, Equatable {
     case finished(jobID: UUID, meetingID: UUID, error: String?)
     /// Audio progress of the running final transcription.
     case progress(FinalJobProgress)
+    /// A recording started: the running final transcription stopped at a
+    /// checkpoint and is queued again; it continues after the recording stops.
+    case paused(jobID: UUID, meetingID: UUID)
 }
 
 /// Runs the configured durable job kinds one at a time, oldest first. Jobs left
@@ -27,6 +30,9 @@ public actor FinalJobRunner {
     private var skipped: Set<UUID> = []
     /// Set by `shutDown()`: no further job starts in this process.
     private var stopped = false
+    /// The final transcription cancelled because capture started; it is queued
+    /// again instead of being left interrupted.
+    private var pausedForCapture: UUID?
 
     public init(store: SessionStore, kinds: [JobKind] = [.finalTranscription], process: @escaping @Sendable (UUID) async throws -> Void) {
         self.store = store; self.kinds = kinds; self.process = process
@@ -76,14 +82,26 @@ public actor FinalJobRunner {
     }
 
     /// Capture pauses the whole queue and interrupts a running text job, including
-    /// the gaps between its model calls. Final transcription uses runtime priority.
+    /// the gaps between its model calls. A running final transcription stops at a
+    /// checkpoint and is queued again (design D5): it resumes from its saved
+    /// progress after capture ends. Returns without waiting for it to stop.
     public func setCaptureActive(_ active: Bool) async {
+        guard captureActive != active else { if !active { wake() }; return }
         captureActive = active
-        if active, let id = currentJobID, let job = try? await store.job(id), job.snapshot.kind != .finalTranscription {
-            try? await cancel(jobID: id)
+        if active, let id = currentJobID, let job = try? await store.job(id) {
+            if job.snapshot.kind == .finalTranscription {
+                pausedForCapture = id
+                current?.task.cancel()
+            } else {
+                try? await cancel(jobID: id)
+            }
         }
         if !active { wake() }
     }
+
+    /// Whether a job is waiting for a recording to stop before it continues.
+    public var hasPausedJob: Bool { captureActive && pausedJobID != nil }
+    public private(set) var pausedJobID: UUID?
 
     private func nextJob() async throws -> ProcessingJob? {
         var jobs: [ProcessingJob] = []
@@ -107,6 +125,20 @@ public actor FinalJobRunner {
 
     public var isRunning: Bool { current != nil }
 
+    /// A capture-cancelled job left `interrupted` (or still active) goes back to
+    /// `queued`, keeping its checkpoint. False when it finished or was cancelled otherwise.
+    private func requeueAfterCapture(_ id: UUID) async -> Bool {
+        guard let stage = try? await store.job(id).stage else { return false }
+        switch stage {
+        case .queued: return true
+        case .interrupted: return (try? await store.retryJob(id)) != nil
+        // Cancelled between staging and publication: the ready checkpoint publishes on the next run.
+        case .decoding, .transcribing, .aligning, .diarizing, .correcting, .validating:
+            return (try? await store.updateJob(id, stage: .queued)) != nil
+        default: return false
+        }
+    }
+
     private func drain() async {
         repeat {
             rescan = false
@@ -115,9 +147,18 @@ public actor FinalJobRunner {
                 let meetingID = job.snapshot.source.meetingID
                 let task = Task<Void, any Error> { [process] in try await process(job.id) }
                 current = (meetingID, task); currentJobID = job.id
+                if pausedJobID == job.id { pausedJobID = nil }
                 continuation.yield(.started(jobID: job.id, meetingID: meetingID))
                 let result = await task.result
                 current = nil; currentJobID = nil
+                if pausedForCapture == job.id {
+                    pausedForCapture = nil
+                    if case .failure = result, await requeueAfterCapture(job.id) {
+                        pausedJobID = job.id
+                        continuation.yield(.paused(jobID: job.id, meetingID: meetingID))
+                        continue
+                    }
+                }
                 var message: String?
                 if case .failure(let error) = result {
                     message = error is CancellationError ? "Processing was cancelled." : error.localizedDescription

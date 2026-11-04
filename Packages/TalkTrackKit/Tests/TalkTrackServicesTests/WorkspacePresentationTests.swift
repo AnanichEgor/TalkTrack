@@ -58,17 +58,19 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         try await store.updateJob(id, stage: .validating)
     })
     let defaults: UserDefaults
+    /// The recorder's model check when queueing a final job.
+    let missing = Box<@Sendable ([ModelSnapshot]) async throws -> [ModelRole]>({ _ in [] })
 
     init() async throws {
         folder = try TemporaryFolder()
         let library = try await OwnedLibrary().open(root: folder.url)
         store = try await SessionStore.open(library)
-        let captures = captures, host = host, wall = wall, stopGate = stopGate
+        let captures = captures, host = host, wall = wall, stopGate = stopGate, missing = missing
         recorder = MeetingRecorder(library: library, store: store, capture: { callbacks in
             let capture = ScriptedCapture(callbacks, stopGate: stopGate.value)
             captures.value.append(capture)
             return capture
-        }, playback: nil, jobs: FinalJobPolicy(models: { speechModels }, missing: { _ in [] },
+        }, playback: nil, jobs: FinalJobPolicy(models: { speechModels }, missing: { try await missing.value($0) },
             settings: { ProcessingSettings(meetingLanguage: $0.language) }), startTimeout: .seconds(5),
             hostClock: { host.value }, wallClock: { wall.value }, timeZone: { "Europe/Berlin" }, wrapSink: nil)
         let store = store, processed = processed, behavior = behavior
@@ -81,7 +83,8 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
     }
 
     /// Both sources deliver `seconds` of tone; the clocks then advance.
-    func deliver(seconds: Double) async {
+    /// `paced` waits between packets, so live text keeps up as it would in real time.
+    func deliver(seconds: Double, paced: Bool = false) async {
         let callbacks = await captures.value.last!.callbacks
         let origin = host.value, frames = 1_024
         let packets = Int((seconds * 48_000 / Double(frames)).rounded(.up))
@@ -92,6 +95,7 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
                     hostTime: origin + ticks(Double(index * frames) / 48_000), sampleTime: Double(index * frames), samples: samples))
             }
             if index % 64 == 63 { await recorder.drainCapture() }
+            if paced { await recorder.drainCapture(); try? await Task.sleep(for: .milliseconds(2)) }
         }
         host.value = origin + ticks(Double(packets * frames) / 48_000)
         wall.value = wall.value.addingTimeInterval(seconds)
@@ -314,8 +318,8 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
             await w.stop()
             #expect(await until { w.phase == .idle })
         }
-        // The first recording runs, the second waits behind it.
-        #expect(await until { f.processed.value.count == 1 && w.queueStates[meeting.id] == .running })
+        // The first recording runs (paused while the second recorded, then resumed), the second waits behind it.
+        #expect(await until { Set(f.processed.value).count == 1 && w.queueStates[meeting.id] == .running })
         #expect(w.canCancelProcessing && w.selectedStatus?.isQueuedOrProcessing == true)
         #expect(w.selectedProgress != nil)
 
@@ -326,7 +330,7 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(w.queueStates.isEmpty && !w.canCancelProcessing && w.selectedProgress == nil)
         // Nothing else starts; without an earlier transcript the audio can be transcribed again.
         try await Task.sleep(for: .milliseconds(100))
-        #expect(f.processed.value.count == 1)
+        #expect(Set(f.processed.value).count == 1)
         if case .notProcessed? = w.selectedStatus {} else { Issue.record("\(String(describing: w.selectedStatus))") }
         #expect(w.canReprocess)
     }
@@ -371,8 +375,8 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(w.issue == nil && stopped.value == [meeting.id])
         #expect(w.recordings.map(\.id) == [second.id])
         #expect(try await f.store.jobs(meetingID: meeting.id).allSatisfy { $0.snapshot.recordingID == second.id })
-        // The second take's transcription runs next.
-        #expect(await until { f.processed.value.count == 2 && w.queueStates[meeting.id] == .running })
+        // The second take's transcription runs next (the first one ran again after its pause).
+        #expect(await until { Set(f.processed.value).count == 2 && w.queueStates[meeting.id] == .running })
         #expect(!FileManager.default.fileExists(atPath: f.folder.url
             .appendingPathComponent(".talktrack-library/Meetings/\(meeting.id)/Recordings/\(first.id)").path))
     }
@@ -453,8 +457,9 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         // Its transcription is queued for the next launch, not started now.
         let newJob = try #require(report.saved?.job)
         #expect(try await f.store.job(newJob.id).stage == .queued)
-        // The running job stopped at a checkpoint and is queued again.
-        #expect(report.cancelledJobID == runningJob && report.requeued)
+        // The running job stopped at a checkpoint when the second recording
+        // started and stays queued for the next launch.
+        #expect(report.cancelledJobID == nil)
         #expect(try await f.store.job(runningJob).stage == .queued)
         #expect(try await f.store.notes(meetingID: recorded.id)?.text == "Follow up on budget")
 
@@ -598,5 +603,124 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(w.systemAudioHint == nil)
         await w.stop()
         #expect(await until { w.phase == .idle })
+    }
+
+    @Test func recordingStartsWithLiveTextOnOffOrWithoutModelsAndTheDraftIsSavedAtStop() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        await w.start()
+        let meeting = try await w.createMeeting(title: "Call", description: "")
+        w.selectedID = meeting.id
+        #expect(await until { w.selected?.id == meeting.id })
+
+        // Models missing: recording proceeds and the draft says why.
+        await w.record()
+        #expect(await until { w.phase == .recording && w.liveDraft?.state == .unavailable })
+        #expect(w.liveMeetingID == meeting.id && w.liveRecordingID != nil)
+        #expect(w.liveDraft?.state.message.hasPrefix("Live models are unavailable") == true)
+        await f.deliver(seconds: 1)
+        await w.stop()
+        #expect(await until { w.phase == .idle && w.liveDraft == nil && w.recordings.count == 1 })
+        #expect(try await f.store.liveDrafts(meetingID: meeting.id).isEmpty)
+
+        // Live text off.
+        f.defaults.set(false, forKey: ProcessingPreferences.liveEnabledKey)
+        await w.record()
+        #expect(await until { w.phase == .recording && w.liveDraft?.state == .disabled })
+        await w.stop()
+        #expect(await until { w.phase == .idle && w.recordings.count == 2 })
+
+        // Live text on with models: rows arrive while recording and are saved at Stop.
+        f.defaults.set(true, forKey: ProcessingPreferences.liveEnabledKey)
+        let recorded = BridgeRecorded()
+        w.liveHost = bridgeHost(BridgeInference(), recorded)
+        await w.record()
+        #expect(await until { w.phase == .recording && w.liveDraft?.state == .ready })
+        let recordingID = try #require(w.liveRecordingID)
+        await f.deliver(seconds: 4, paced: true)
+        #expect(await until { !(w.liveDraft?.rows.isEmpty ?? true) })
+        #expect(w.liveDraft?.rows.allSatisfy { $0.recordingID == recordingID } == true)
+        await w.stop()
+        #expect(await until { w.phase == .idle && w.liveDraft == nil && recorded.ends == 1 })
+        let draft = try #require(try await f.store.liveDrafts(meetingID: meeting.id).first)
+        #expect(draft.recordingID == recordingID && draft.complete && !draft.utterances.isEmpty)
+        #expect(recorded.begins == 1)
+    }
+
+    /// The app's model check waits in the inference lane, which admits nothing
+    /// while the live capture lease is held. Stop must end live text (releasing
+    /// the lease) before the recorder queues the final job, or Stop never returns.
+    @Test func stopReleasesTheLiveLeaseBeforeTheFinalJobChecksModels() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        await w.start()
+        let meeting = try await w.createMeeting(title: "Call", description: "")
+        w.selectedID = meeting.id
+        #expect(await until { w.selected?.id == meeting.id })
+        let recorded = BridgeRecorded()
+        w.liveHost = bridgeHost(BridgeInference(), recorded)
+        f.missing.value = { _ in
+            while recorded.ends == 0 { try await Task.sleep(for: .milliseconds(5)) }
+            return []
+        }
+        await w.record()
+        #expect(await until { w.phase == .recording && w.liveDraft?.state == .ready })
+        await f.deliver(seconds: 4, paced: true)
+        #expect(await until { !(w.liveDraft?.rows.isEmpty ?? true) })
+        await w.stop()
+        #expect(await until { w.phase == .idle && w.liveDraft == nil && recorded.ends == 1 })
+        #expect(w.issue == nil)
+        let draft = try #require(try await f.store.liveDrafts(meetingID: meeting.id).first)
+        #expect(draft.complete && !draft.utterances.isEmpty)
+        #expect(await until { f.processed.value.count == 1 })
+    }
+
+    @Test func aRunningFinalTranscriptionPausesWhileRecordingAndResumesAfterStop() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        await w.start()
+        let earlier = try await w.createMeeting(title: "Earlier call", description: "")
+        w.selectedID = earlier.id
+        #expect(await until { w.selected?.id == earlier.id })
+        // The first run keeps working until cancelled, like a long transcription;
+        // the run after the pause records the progress it found and finishes.
+        let progress = Box(0), resumedFrom = Box<[Int]>([]), stages = Box<[JobStage]>([])
+        f.behavior.value = { id, store in
+            resumedFrom.value.append(progress.value)
+            if progress.value == 0 {
+                try await store.updateJob(id, stage: .transcribing)
+                progress.value = 1
+                do { while true { try await Task.sleep(for: .milliseconds(5)) } }
+                catch { try? await store.updateJob(id, stage: .interrupted, error: "cancelled"); throw CancellationError() }
+            }
+            try await store.updateJob(id, stage: .validating)
+        }
+        await w.record()
+        #expect(await until { w.phase == .recording })
+        await f.deliver(seconds: 2)
+        await w.stop()
+        #expect(await until { w.phase == .idle && progress.value == 1 })
+        let jobID = try #require(f.processed.value.first)
+
+        let next = try await w.createMeeting(title: "Next call", description: "")
+        w.selectedID = next.id
+        #expect(await until { w.selected?.id == next.id })
+        await w.record()
+        #expect(await until { w.phase == .recording && w.pausedJobMeetingID == earlier.id })
+        stages.value.append(try await f.store.job(jobID).stage)
+        #expect(stages.value == [.queued])
+        w.selectedID = earlier.id
+        #expect(await until { w.selected?.id == earlier.id })
+        #expect(w.selectedQueueMessage == WorkspacePresentation.waitsForRecordingMessage)
+        await f.deliver(seconds: 1)
+        await w.stop()
+        // The same job continues after Stop from what it had done, and is never failed.
+        #expect(await until { try! await f.store.job(jobID).stage == .validating })
+        #expect(f.processed.value.filter { $0 == jobID }.count == 2)
+        #expect(resumedFrom.value.prefix(2) == [0, 1])
+        #expect(w.pausedJobMeetingID == nil)
     }
 }
