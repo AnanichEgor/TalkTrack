@@ -29,25 +29,30 @@ struct SavedSpeakersView: View {
                 Text("No saved speakers").foregroundStyle(.secondary)
             }
             ForEach(presentation.voices) { voice in
-                VStack(alignment: .leading, spacing: 6) {
-                    // Recreate selectable text on rename so its accessibility value is not stale.
-                    Text(voice.profile.name).fontWeight(.medium).textSelection(.enabled)
-                        .id(voice.profile.name)
-                    Text(voice.needsNewSpeech ? "Needs new confirmed speech" : "Voice saved")
-                        .font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Button("Rename…") { presentation.beginRename(voice.profile) }
-                            .accessibilityLabel("Rename saved speaker \(voice.profile.name)")
-                        if voice.needsNewSpeech {
-                            Button("How to Update…") { recovery = voice.profile }
-                                .accessibilityLabel("Update saved voice \(voice.profile.name)")
-                        }
-                        Spacer()
-                        Button("Delete…", role: .destructive) { deleting = voice.profile }
-                            .accessibilityLabel("Delete saved speaker \(voice.profile.name)")
-                    }.disabled(presentation.isBusy)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .center, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            // Recreate selectable text on rename so its accessibility value is not stale.
+                            Text(voice.profile.name).fontWeight(.medium).textSelection(.enabled)
+                                .lineLimit(1).truncationMode(.tail)
+                                .id(voice.profile.name)
+                            Text(voice.needsNewSpeech ? "Needs new confirmed speech" : "Voice saved")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.layoutPriority(1)
+                        Spacer(minLength: 8)
+                        HStack(spacing: 8) {
+                            if voice.needsNewSpeech {
+                                Button("How to Update…") { recovery = voice.profile }
+                                    .accessibilityLabel("Update saved voice \(voice.profile.name)")
+                            }
+                            Button("Rename…") { presentation.beginRename(voice.profile) }
+                                .accessibilityLabel("Rename saved speaker \(voice.profile.name)")
+                            Button("Delete…", role: .destructive) { deleting = voice.profile }
+                                .accessibilityLabel("Delete saved speaker \(voice.profile.name)")
+                        }.fixedSize().disabled(presentation.isBusy)
+                    }
                     samples(voice.profile)
-                }.padding(.vertical, 4)
+                }.padding(.vertical, 2)
             }
             Text("Renaming changes future automatic names. Deleting removes all saved voice versions and stops future matches. Existing meeting names and recordings are kept.")
                 .font(.callout).foregroundStyle(.secondary)
