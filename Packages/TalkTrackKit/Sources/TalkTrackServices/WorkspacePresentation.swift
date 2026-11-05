@@ -170,6 +170,21 @@ public struct RecordControls: Equatable, Sendable {
         return Self.systemAudioHintText
     }
     public static let systemAudioHintText = "System audio is silent while you speak. Check that TalkTrack is switched on under System Audio Recording Only in System Settings > Privacy & Security."
+    /// The recording being captured (recording or paused); nil when idle.
+    public private(set) var activeRecordingID: UUID?
+    /// The recording whose headset notification the user closed.
+    public private(set) var headsetHintDismissedRecordingID: UUID?
+    /// A non-blocking notification while the microphone hears the loudspeakers
+    /// (detect-loudspeaker-echo D6). Hidden while paused, after Stop, once closed
+    /// for this recording, and while the system-audio warning is shown.
+    public var headsetHint: String? {
+        guard phase == .recording, let id = activeRecordingID, headsetHintDismissedRecordingID != id,
+              systemAudioHint == nil, levels.read().playbackEcho == .loudspeaker else { return nil }
+        return Self.headsetHintText
+    }
+    public static let headsetHintText = "Speakers detected. Use a headset for better transcription."
+    /// Closes the headset notification for the rest of the current recording.
+    public func dismissHeadsetHint() { headsetHintDismissedRecordingID = activeRecordingID }
     public private(set) var isCommandRunning = false
     public private(set) var runningJobMeetingID: UUID?
     public var issue: WorkspaceIssue?
@@ -738,8 +753,9 @@ public struct RecordControls: Equatable, Sendable {
 
     private func handle(_ event: MeetingRecorderEvent) async {
         switch event {
-        case let .phase(next, meetingID, _):
+        case let .phase(next, meetingID, recordingID):
             phase = next
+            if next == .idle { activeRecordingID = nil } else if let recordingID { activeRecordingID = recordingID }
             await runner.setCaptureActive(next != .idle)
             if let meetingID, next != .idle {
                 if activeMeeting?.id != meetingID { activeMeeting = try? await store.meeting(meetingID) }

@@ -213,10 +213,11 @@ public actor MeetingRecorder {
             var recording = try Recording(id: recordingID, meetingID: meetingID, startedAt: startedAt, timeZoneIdentifier: zone)
             let writer = try await RecordingAudioWriter.create(library: library, recording: recording)
             let id = recording.id
-            let pipeline = RecordingCapturePipeline(sink: wrapSink?(writer) ?? writer, live: live, now: hostClock,
-                failure: { [weak self] error in Task { await self?.failed(recordingID: id, error: error) } })
             let levels = levels
             levels.reset()
+            let echo = PlaybackEchoMonitor(recordingID: id, onChange: { levels.setPlaybackEcho($0) })
+            let pipeline = RecordingCapturePipeline(sink: wrapSink?(writer) ?? writer, live: live, echo: echo, now: hostClock,
+                failure: { [weak self] error in Task { await self?.failed(recordingID: id, error: error) } })
             let capture = makeCapture(MeetingCaptureCallbacks(
                 receive: { levels.record($0); pipeline.receive($0) },
                 restarted: { pipeline.sourceRestarted($0, reason: $1) },

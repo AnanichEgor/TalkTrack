@@ -75,6 +75,10 @@ coordinator and drivers, `recorder` for recorder phases, Stop and Quit. Rules:
 - Free-text errors can name devices: log them only with `privacy: .private`.
 - Never log meeting titles or descriptions, transcript, note or dictation text,
   speaker names or audio.
+- Loudspeaker detection (`PlaybackEchoMonitor`) logs each classification change in
+  category `capture`: `playback-echo <loudspeaker|headset|unknown> run=<id>
+  activeS=<active seconds> peak=<median correlation> lagMs=<median delay>`. Numbers
+  only; the audio it measures is never logged or saved.
 
 Collect with `log show --predicate 'subsystem == "local.talktrack.app"' --last 1h --info`.
 

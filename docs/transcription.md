@@ -157,6 +157,25 @@ an already completed job returns its original artifact and does not replace a
 newer head again. Low-level `publishTranscript` is retained for persistence
 fixtures; application final processing must consume validated staging.
 
+## Microphone gating by loudspeaker detection
+
+System audio is the primary final source. How the microphone is filtered depends
+on what capture measured (`Recording.playbackEcho`, see `PlaybackEchoDetector.swift`):
+
+| Stretch | Microphone in the final transcript |
+| --- | --- |
+| `loudspeaker` or `unknown` (also every recording made before detection) | Only where it is 6 dB louder than the system track for at least 300 ms (`MicrophoneGate.louderFrames`); blocks whose words were also heard from the system within 1.5 s are dropped (`MicrophoneEcho`). |
+| `headset` | Also wherever the user speaks above the floor for 300 ms, even while the system track is louder (`MicrophoneGate.headsetFrames`); `MicrophoneEcho` skips blocks wholly inside the stretch. |
+
+Capture classifies 3 s windows every 1.5 s by correlating the system track with
+the microphone: at least 8 measurements with 70% strong (peak > 0.1) on one delay
+mean `loudspeaker`; at least 12 with a median peak below 0.06 mean `headset`
+(Bluetooth headsets leave residual echo peaks, so a share rule is not used); a device
+change or gap returns to `unknown`, and the next 6 s are ignored while a headset's echo
+canceller settles. Stretches are saved with the timing
+checkpoints. Checkpoints carry `echoModeVersion`; one saved before it resumes with
+the strict gate throughout. Stored audio never changes.
+
 ## Progress, estimate and queue
 
 The workspace shows final transcription from the runner, not from the stored

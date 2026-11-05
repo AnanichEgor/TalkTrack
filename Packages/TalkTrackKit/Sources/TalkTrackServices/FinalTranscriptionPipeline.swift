@@ -129,11 +129,16 @@ public actor FinalTranscriptionPipeline {
         }
         let models = Dictionary(uniqueKeysWithValues: job.snapshot.models.map { ($0.role, $0) })
         let fingerprint = try SessionStore.fingerprint(recording)
-        var checkpoint = try await store.finalCheckpoint(jobID: jobID) ?? FinalTranscriptionCheckpoint(
-            version: 1, correctionPromptVersion: IndexedSpellingCorrection.promptVersion,
-            job: job.snapshot, recordingFingerprint: fingerprint, windows: [],
-            completedTracks: [], speakerCheckpoint: nil, correctionBatches: [], readyForPublication: false)
+        var checkpoint: FinalTranscriptionCheckpoint
+        if let saved = try await store.finalCheckpoint(jobID: jobID) { checkpoint = saved } else {
+            checkpoint = FinalTranscriptionCheckpoint(
+                version: 1, correctionPromptVersion: IndexedSpellingCorrection.promptVersion,
+                job: job.snapshot, recordingFingerprint: fingerprint, windows: [],
+                completedTracks: [], speakerCheckpoint: nil, correctionBatches: [], readyForPublication: false)
+            checkpoint.echoModeVersion = Self.echoModeVersion
+        }
         if checkpoint.correctionPromptVersion != IndexedSpellingCorrection.promptVersion {
+            let echoMode = checkpoint.echoModeVersion
             // A job checkpointed by an earlier correction prompt keeps its
             // recognition, alignment and speakers and redoes correction only.
             var windows = checkpoint.windows
@@ -143,6 +148,7 @@ public actor FinalTranscriptionPipeline {
                 recordingFingerprint: checkpoint.recordingFingerprint, windows: windows,
                 completedTracks: checkpoint.completedTracks, speakerCheckpoint: checkpoint.speakerCheckpoint,
                 correctionBatches: [], readyForPublication: false)
+            checkpoint.echoModeVersion = echoMode
         }
         guard checkpoint.version == 1, checkpoint.job == job.snapshot,
               checkpoint.correctionPromptVersion == IndexedSpellingCorrection.promptVersion,
@@ -162,6 +168,14 @@ public actor FinalTranscriptionPipeline {
         // At most `2 * asrBatchSize` ten-second PCM windows are read ahead. A resumed
         // job revalidates the AAC receipts but skips already-checkpointed inference.
         var saved = ContinuousClock.now
+        // Loudspeaker/headset stretches measured during capture (absent: unknown).
+        let echo = recording.playbackEcho ?? []
+        let headsetGate = checkpoint.echoModeVersion == Self.echoModeVersion && echo.contains { $0.state == .headset }
+        func gate(_ window: RecordingAudioWindow, levels: [Float]) -> Set<Int> {
+            var keep = MicrophoneGate.louderFrames(window.samples, start: window.active.start, system: levels)
+            if headsetGate { keep.formUnion(MicrophoneGate.headsetFrames(window.samples, start: window.active.start, echo: echo)) }
+            return keep
+        }
         let total = FinalJobProgress.audio(recording.activeDuration)
         var processed = 0.0, resumed = 0.0
         func advance(_ window: FinalWindowCheckpoint, resumedWindow: Bool) {
@@ -210,9 +224,7 @@ public actor FinalTranscriptionPipeline {
                         }
                         checkpoint.windows[index].blocks = []
                     case .audio(let window):
-                        let louder = track == .microphone ? checkpoint.systemLevels.map {
-                            MicrophoneGate.louderFrames(window.samples, start: window.active.start, system: $0)
-                        } : nil
+                        let louder = track == .microphone ? checkpoint.systemLevels.map { gate(window, levels: $0) } : nil
                         if checkpoint.windows[index].asr == nil, louder?.isEmpty == true {
                             // Nowhere louder than the system track: nothing of the user's to recognize.
                             checkpoint.windows[index].asr = FinalASRText(text: "", language: job.snapshot.settings.meetingLanguage)
@@ -231,7 +243,7 @@ public actor FinalTranscriptionPipeline {
                                         guard !earlier.complete, earlier.asr == nil else { return }
                                     }
                                     if track == .microphone, let levels = checkpoint.systemLevels,
-                                       MicrophoneGate.louderFrames(next.samples, start: next.active.start, system: levels).isEmpty { return }
+                                       gate(next, levels: levels).isEmpty { return }
                                     batch.append((aheadPosition, next.samples))
                                 }
                                 for (offset, ahead) in lookahead.enumerated() { add(ahead, at: position + 1 + offset) }
@@ -342,6 +354,8 @@ public actor FinalTranscriptionPipeline {
     /// text was identical at 1, 2, 4 and 8, taking 19.3, 13.5, 10.8 and 9.9 s
     /// (peak MLX 3.27 GiB up to 4, 3.51 GiB at 8).
     static let asrBatchSize = 4
+    /// Checkpoints created now gate the microphone per loudspeaker/headset stretch.
+    static let echoModeVersion = 1
 
     /// Window progress is saved at most this often. Each save rewrites the
     /// whole checkpoint (about 2 MB for a 22-minute call, most of it speaker

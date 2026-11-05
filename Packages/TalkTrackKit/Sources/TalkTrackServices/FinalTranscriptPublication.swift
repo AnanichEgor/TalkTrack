@@ -171,7 +171,8 @@ enum FinalSpeakerReconciler {
             if $0.track != $1.track { return $0.track == .system }
             return $0.id.uuidString < $1.id.uuidString
         }
-        let echoes = MicrophoneEcho.blocks(in: allBlocks)
+        let echoes = MicrophoneEcho.blocks(in: allBlocks, headset: checkpoint.echoModeVersion == FinalTranscriptionPipeline.echoModeVersion
+                                           ? recording.playbackEcho ?? [] : [])
         // Who each system reply is: named by the user, else recognized by voice.
         func own(_ block: FinalTextBlock) -> [[Float]]? {
             original[block.id].flatMap { ids in ids.count == 1 ? vectors[ids[0]].flatMap { $0.isEmpty ? nil : $0 } : nil }
@@ -316,12 +317,14 @@ enum MicrophoneEcho {
     /// Share of a microphone block's words that must also be heard from the system.
     static let shared = 0.5
 
-    static func blocks(in blocks: [FinalTextBlock]) -> Set<UUID> {
+    /// Microphone blocks wholly inside `headset` stretches are never echoes: the
+    /// microphone did not hear the loudspeakers (detect-loudspeaker-echo D5).
+    static func blocks(in blocks: [FinalTextBlock], headset echo: [PlaybackEchoStretch] = []) -> Set<UUID> {
         let system = blocks.filter { $0.track == .system }.flatMap { block in
             block.words.map { (block.recordingID, $0.active, IndexedSpellingCorrection.lexicalKey($0.text)) }
         }
         var echoes: Set<UUID> = []
-        for block in blocks where block.track == .microphone {
+        for block in blocks where block.track == .microphone && !echo.isHeadset(block.interval) {
             let start = block.interval.start.microseconds - tolerance, end = block.interval.end.microseconds + tolerance
             let heard = Set(system.filter { $0.0 == block.recordingID && $0.1.start.microseconds < end && $0.1.end.microseconds > start }.map(\.2))
             let words = block.words.map { IndexedSpellingCorrection.lexicalKey($0.text) }.filter { !$0.isEmpty }

@@ -123,5 +123,9 @@ public struct FinalTranscriptionCheckpoint: Codable, Equatable, Sendable {
     /// The system track's RMS per `MicrophoneGate.frame` of active time. Nil in
     /// checkpoints saved before the gate; their microphone is not gated.
     public var systemLevels: [Float]? = nil
+    /// 1: microphone frames in `headset` stretches use the own-speech rule
+    /// (detect-loudspeaker-echo D5). Nil in checkpoints saved before it: a
+    /// resumed job keeps the strict gate throughout, so one job never mixes rules.
+    public var echoModeVersion: Int? = nil
     public var blocks: [FinalTextBlock] { windows.flatMap { $0.blocks ?? [] } }
 }

@@ -50,6 +50,16 @@ public enum MicrophoneGate {
         return keep
     }
 
+    /// In `headset` stretches the microphone does not hear the other participants,
+    /// so the user's speech counts wherever it is above the floor for
+    /// `minimumRun` frames, even while the system track is louder
+    /// (detect-loudspeaker-echo D5). Frames outside such stretches are not returned.
+    public static func headsetFrames(_ samples: [Float], start: MediaTime, echo: [PlaybackEchoStretch]) -> Set<Int> {
+        louderFrames(samples, start: start, system: []).filter { index in
+            (try? MediaTime(microseconds: Int64(index) * frame)).map { echo.state(at: $0) == .headset } ?? false
+        }
+    }
+
     /// Words mostly spoken in louder frames. Recognition runs on the whole
     /// microphone window (silencing frames made the model invent sentences);
     /// the quieter loudspeaker playback is removed word by word afterwards.

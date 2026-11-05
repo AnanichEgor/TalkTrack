@@ -74,6 +74,7 @@ private actor FullDiskSink: CaptureAudioSink {
         try await writer.recordGap(track: track, active: active, reason: reason)
     }
     func finish(interrupted: Bool) async throws -> RecordingAudioManifest { try await writer.finish(interrupted: interrupted) }
+    func updatePlaybackEcho(_ stretches: [PlaybackEchoStretch]) async throws { await writer.updatePlaybackEcho(stretches) }
 }
 
 private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {

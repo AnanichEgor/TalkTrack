@@ -380,6 +380,23 @@ func resegment(_ input: FinalTranscriptionCheckpoint, split: Bool = false,
         try await fixture.store.close()
     }
 
+    /// detect-loudspeaker-echo 4.2: in a headset the microphone cannot hear the
+    /// participants, so the user repeating their words stays `You`.
+    @Test(arguments: [PlaybackEchoState.headset, .loudspeaker])
+    func repeatedWordsInAHeadsetStayYou(state: PlaybackEchoState) async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let fixture = try await finalFixture(folder, playbackEcho: state)
+        let staged = try await stageFinal(fixture, microphone: "Alex will not pay 42 rubles tomorow")
+        let microphone = Set(staged.blocks.filter { $0.track == .microphone }.map(\.id))
+        #expect(!microphone.isEmpty)
+        let headset = state == .headset ? fixture.recording.playbackEcho! : []
+        #expect(MicrophoneEcho.blocks(in: staged.blocks, headset: headset) == (state == .headset ? [] : microphone))
+        let result = try await fixture.store.publishFinalTranscript(jobID: fixture.job.id)
+        let revision = try #require(try await fixture.store.transcriptRevision(result.id))
+        #expect(revision.segments.contains { $0.track == .microphone } == (state == .headset))
+        try await fixture.store.close()
+    }
+
     @Test func loudspeakerEchoOnTheMicrophoneIsNotPublishedAsYou() async throws {
         let folder = try TemporaryFolder(); defer { folder.remove() }
         let fixture = try await finalFixture(folder)

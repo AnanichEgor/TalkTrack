@@ -13,6 +13,8 @@ public protocol CaptureAudioSink: Actor {
     func updateCaptureTiming(_ timing: CaptureTimingSnapshot, state: RecordingState) async throws
     func recordGap(track: AudioTrack, active: MediaInterval, reason: String) async throws
     func finish(interrupted: Bool) async throws -> RecordingAudioManifest
+    /// Loudspeaker/headset stretches so far; saved with the next timing checkpoint.
+    func updatePlaybackEcho(_ stretches: [PlaybackEchoStretch]) async throws
 }
 
 extension RecordingAudioWriter: CaptureAudioSink {}
@@ -180,6 +182,8 @@ public actor RecordingCapturePipeline {
     private nonisolated let capacity: Int
     private let sink: any CaptureAudioSink
     private let live: LiveInferenceMailbox<LiveCaptureFragment>?
+    /// Loudspeaker detection beside the pipeline; fed, never awaited (design D3).
+    private let echo: PlaybackEchoMonitor?
     private let now: @Sendable () -> UInt64
     private let failure: @Sendable (Error) -> Void
     private var clock = CaptureIntervalClock()
@@ -203,12 +207,13 @@ public actor RecordingCapturePipeline {
     /// default is about 30 seconds). `failure` reports the first storage or
     /// overflow error; the owner should stop and surface it.
     public init(sink: any CaptureAudioSink, live: LiveInferenceMailbox<LiveCaptureFragment>? = nil,
+                echo: PlaybackEchoMonitor? = nil,
                 capacity: Int = 1_024, now: @escaping @Sendable () -> UInt64 = { mach_absolute_time() },
                 failure: @escaping @Sendable (Error) -> Void) {
         precondition(capacity > 0)
         let stream = AsyncStream<Item>.makeStream(bufferingPolicy: .unbounded)
         continuation = stream.continuation
-        self.sink = sink; self.live = live; self.capacity = capacity; self.now = now; self.failure = failure
+        self.sink = sink; self.live = live; self.echo = echo; self.capacity = capacity; self.now = now; self.failure = failure
         let items = stream.stream
         Task { await self.run(items) }
     }
@@ -336,9 +341,11 @@ public actor RecordingCapturePipeline {
             for output in outputs {
                 switch output {
                 case let .gap(start, end, reason):
+                    echo?.interrupt()
                     try await flush(key, through: nil)
                     try await gap(key, start: start, end: end, reason: reason)
                 case let .audio(start, audio):
+                    echo?.append(key, samples: audio, start: start)
                     if let current = pending[key], current.start + UInt64(current.samples.count) != start {
                         try await flush(key, through: nil)
                     }
@@ -351,6 +358,7 @@ public actor RecordingCapturePipeline {
 
     private func checkpoint(at host: UInt64, state: RecordingState) async throws {
         let snapshot = try clock.checkpoint(at: host)
+        if let echo { try await sink.updatePlaybackEcho(echo.stretches()) }
         try await sink.updateCaptureTiming(snapshot, state: state)
         timing = snapshot; checkpointHost = host; checkpointFrame = snapshot.activeFrameCount
     }
@@ -394,6 +402,10 @@ public actor RecordingCapturePipeline {
         noteDropped()
         let host = max(now(), latestHost, checkpointHost)
         let snapshot = try clock.close(at: host)
+        if let echo {
+            echo.pause()
+            try await sink.updatePlaybackEcho(echo.stretches())
+        }
         try await sink.updateCaptureTiming(snapshot, state: state)
         timing = snapshot; checkpointFrame = snapshot.activeFrameCount
         for key in AudioTrack.allCases {

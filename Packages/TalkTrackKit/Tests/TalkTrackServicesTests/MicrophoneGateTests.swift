@@ -25,6 +25,18 @@ import TalkTrackDomain
         #expect(!MicrophoneGate.keep(try word(0.3, 0.95), louder: louder))  // mostly echo
     }
 
+    @Test func headsetFramesKeepQuieterSpeechOnlyInsideHeadsetStretches() throws {
+        // Quieter microphone speech for 2 s; only the second second is a headset stretch.
+        let stretch = PlaybackEchoStretch(active: try MediaInterval(start: MediaTime(seconds: 1), end: MediaTime(seconds: 3)),
+                                          state: .headset, peak: 0.01, lagMilliseconds: nil)
+        let frames = MicrophoneGate.headsetFrames(Self.tone(2, amplitude: 0.1), start: .zero, echo: [stretch])
+        #expect(frames == Set(10...22))   // 10–19 plus hangover beyond the window, all inside the stretch
+        // Silence is never speech, and loudspeaker stretches add nothing.
+        #expect(MicrophoneGate.headsetFrames(Array(repeating: 0, count: 32_000), start: .zero, echo: [stretch]).isEmpty)
+        let loud = PlaybackEchoStretch(active: stretch.active, state: .loudspeaker, peak: 0.3, lagMilliseconds: 90)
+        #expect(MicrophoneGate.headsetFrames(Self.tone(2, amplitude: 0.1), start: .zero, echo: [loud]).isEmpty)
+    }
+
     @Test func echoOnlyWindowHasNoLouderFrames() {
         var levels: [Float] = []
         MicrophoneGate.record(Self.tone(2, amplitude: 0.5), start: .zero, into: &levels)

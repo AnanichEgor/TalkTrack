@@ -2,6 +2,7 @@ import Accelerate
 import Foundation
 import os
 import TalkTrackAudio
+import TalkTrackDomain
 
 /// Input levels and captured duration of the active recording, for display only.
 /// Capture callbacks write it without waiting; the interface polls `read()`.
@@ -15,6 +16,8 @@ public final class AudioLevelMeter: Sendable {
         /// The system track has delivered only exact zeros for a long stretch while
         /// the microphone heard speech: access may have been revoked (design D6).
         public var systemSilentWhileSpeaking = false
+        /// Whether the microphone hears the loudspeakers (detect-loudspeaker-echo D6).
+        public var playbackEcho = PlaybackEchoState.unknown
     }
 
     private struct State {
@@ -25,6 +28,7 @@ public final class AudioLevelMeter: Sendable {
         var systemZeroRun: Double = 0
         /// Microphone speech seconds within that run.
         var speechDuringZeroRun: Double = 0
+        var playbackEcho = PlaybackEchoState.unknown
     }
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let now: @Sendable () -> Date
@@ -40,6 +44,9 @@ public final class AudioLevelMeter: Sendable {
 
     /// A new recording starts from zero; a resumed one keeps counting.
     public func reset() { state.withLock { $0 = State() } }
+
+    /// Set by the recording's loudspeaker detector.
+    public func setPlaybackEcho(_ value: PlaybackEchoState) { state.withLock { $0.playbackEcho = value } }
 
     public func record(_ packet: AudioPacket) {
         guard !packet.samples.isEmpty, packet.sampleRate > 0 else { return }
@@ -76,7 +83,8 @@ public final class AudioLevelMeter: Sendable {
             return Reading(microphone: level(.microphone), system: level(.system),
                            seconds: state.seconds.values.max() ?? 0,
                            systemSilentWhileSpeaking: state.systemZeroRun >= silentHintAfter
-                               && state.speechDuringZeroRun >= Self.speechNeeded)
+                               && state.speechDuringZeroRun >= Self.speechNeeded,
+                           playbackEcho: state.playbackEcho)
         }
     }
 

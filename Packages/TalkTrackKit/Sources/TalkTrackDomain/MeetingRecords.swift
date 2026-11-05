@@ -118,6 +118,10 @@ public struct Recording: Codable, Equatable, Identifiable, Sendable {
     public var trackIntervals: [TrackInterval]
     public var chunks: [TrackChunk]
     public var generation: UInt64
+    /// Loudspeaker/headset stretches measured during capture. Nil for recordings
+    /// made before detection (all unknown); encoded only when present, so their
+    /// job fingerprints stay unchanged.
+    public var playbackEcho: [PlaybackEchoStretch]? = nil
 
     public init(id: UUID = UUID(), meetingID: UUID, startedAt: Date = Date(), timeZoneIdentifier: String) throws {
         self.id = id

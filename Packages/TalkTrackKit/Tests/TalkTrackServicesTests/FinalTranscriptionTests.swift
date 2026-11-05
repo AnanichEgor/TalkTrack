@@ -93,7 +93,8 @@ struct FinalFixture {
 }
 func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: MeetingLanguage = .english,
                           microphoneOnly: Bool = false, resumed: Bool = false, meetingID: UUID? = nil,
-                          spelling: Bool = true, quietMicrophone: Bool = false) async throws -> FinalFixture {
+                          spelling: Bool = true, quietMicrophone: Bool = false,
+                          playbackEcho: PlaybackEchoState? = nil) async throws -> FinalFixture {
     let library = try await OwnedLibrary().open(root: folder.url)
     let store = try await SessionStore.open(library)
     let owner: Meeting
@@ -129,7 +130,12 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
             offset += count
         }
     }
-    let saved = try await writer.finish().recording
+    var saved = try await writer.finish().recording
+    if let playbackEcho {
+        // As measured during capture, over the whole recording.
+        saved.playbackEcho = [PlaybackEchoStretch(active: try MediaInterval(start: .zero, end: saved.activeDuration),
+            state: playbackEcho, peak: playbackEcho == .loudspeaker ? 0.27 : 0.01, lagMilliseconds: playbackEcho == .loudspeaker ? 90 : nil)]
+    }
     try await store.saveRecording(saved)
     let catalog = try ModelCatalog.bundled()
     let models = try FinalTranscriptionPipeline.requiredRoles.map { try catalog.model(for: $0).snapshot(for: $0) }
@@ -179,6 +185,42 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
         let chunks = try FileManager.default.contentsOfDirectory(atPath: fixture.library.directory
             .appendingPathComponent("Meetings/\(fixture.recording.meetingID.uuidString)/Recordings/\(fixture.recording.id.uuidString)/microphone").path)
         #expect(!chunks.isEmpty)
+        try await fixture.store.close()
+    }
+
+    /// detect-loudspeaker-echo 4.1: in a headset the user's quieter speech over a
+    /// louder participant is kept; on loudspeakers it is gated as before.
+    @Test(arguments: [PlaybackEchoState.headset, .loudspeaker, .unknown])
+    func headsetStretchesKeepQuieterMicrophoneSpeech(state: PlaybackEchoState) async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let fixture = try await finalFixture(folder, quietMicrophone: true, playbackEcho: state == .unknown ? nil : state)
+        let probe = FinalProbe(); await probe.configure(microphoneText: "Sorry, one question")
+        let result = try await FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe)
+            .run(jobID: fixture.job.id)
+        #expect(result.echoModeVersion == FinalTranscriptionPipeline.echoModeVersion)
+        let microphone = result.blocks.filter { $0.track == .microphone }
+        let calls = await probe.textCalls
+        if state == .headset {
+            #expect(microphone.count == 1 && calls == 2)
+        } else {
+            #expect(microphone.isEmpty && calls == 1)
+        }
+        try await fixture.store.close()
+    }
+
+    @Test func checkpointFromBeforeDetectionResumesWithTheStrictGate() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let fixture = try await finalFixture(folder, quietMicrophone: true, playbackEcho: .headset)
+        // Saved by an earlier build: no echo mode.
+        let old = FinalTranscriptionCheckpoint(version: 1, correctionPromptVersion: IndexedSpellingCorrection.promptVersion,
+            job: fixture.job.snapshot, recordingFingerprint: try SessionStore.fingerprint(fixture.recording), windows: [],
+            completedTracks: [], speakerCheckpoint: nil, correctionBatches: [], readyForPublication: false)
+        try await fixture.store.saveFinalCheckpoint(old, stage: .decoding)
+        let probe = FinalProbe()
+        let result = try await FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe)
+            .run(jobID: fixture.job.id)
+        #expect(result.echoModeVersion == nil)
+        #expect(result.blocks.allSatisfy { $0.track == .system })
         try await fixture.store.close()
     }
 

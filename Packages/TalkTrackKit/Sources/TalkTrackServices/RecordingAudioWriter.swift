@@ -64,6 +64,7 @@ public actor RecordingAudioWriter {
     private var nextFrame: [AudioTrack: UInt64] = [:]
     private var stopped = false
     private var failure: String?
+    private var echo: [PlaybackEchoStretch] = []
     private let commitHook: (@Sendable (AudioCommitPoint) throws -> Void)?
 
     private final class OpenChunk {
@@ -87,6 +88,7 @@ public actor RecordingAudioWriter {
                  hook: (@Sendable (AudioCommitPoint) throws -> Void)? = nil) {
         self.library = library
         manifest = RecordingAudioManifest(recording: recording, audio: [])
+        echo = recording.playbackEcho ?? []
         commitHook = hook
     }
 
@@ -198,6 +200,7 @@ public actor RecordingAudioWriter {
         recording.captureIntervals = timing.intervals
         recording.days = timing.days
         recording.state = state
+        recording.playbackEcho = Self.clamped(echo, to: timing.activeDuration)
         _ = try MeetingTimeline(meetingID: recording.meetingID, recordings: [recording])
         manifest.recording = recording
         do { try saveManifest() } catch { failure = error.localizedDescription; throw error }
@@ -227,6 +230,23 @@ public actor RecordingAudioWriter {
 
     /// Flush the remaining independently decodable chunks. A failed source
     /// cannot prevent attempting to preserve the other source's accepted audio.
+    /// Kept in memory and saved with the next timing checkpoint, clamped to the
+    /// committed active duration, so it is never newer than durable audio.
+    public func updatePlaybackEcho(_ stretches: [PlaybackEchoStretch]) {
+        guard !stopped else { return }
+        echo = stretches
+    }
+
+    static func clamped(_ stretches: [PlaybackEchoStretch], to duration: MediaTime) -> [PlaybackEchoStretch]? {
+        let kept = stretches.compactMap { stretch -> PlaybackEchoStretch? in
+            guard stretch.active.start < duration else { return nil }
+            guard stretch.active.end > duration else { return stretch }
+            guard let active = try? MediaInterval(start: stretch.active.start, end: duration) else { return nil }
+            return PlaybackEchoStretch(active: active, state: stretch.state, peak: stretch.peak, lagMilliseconds: stretch.lagMilliseconds)
+        }
+        return kept.isEmpty ? nil : kept
+    }
+
     public func finish(interrupted: Bool = false) throws -> RecordingAudioManifest {
         if stopped {
             if let failure { throw audioStorageError(failure) }

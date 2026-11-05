@@ -62,6 +62,7 @@ private actor MarkerSink: CaptureAudioSink {
         self.interrupted = interrupted
         return RecordingAudioManifest(recording: recording, audio: [])
     }
+    func updatePlaybackEcho(_ stretches: [PlaybackEchoStretch]) {}
     var intervals: [CaptureInterval] { recording.captureIntervals }
     var duration: MediaTime { recording.activeDuration }
 }

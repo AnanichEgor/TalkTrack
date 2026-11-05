@@ -33,6 +33,9 @@ struct MeetingDetailView: View {
             }
             header
                 .padding(.horizontal, 32).padding(.top, 20).padding(.bottom, 12)
+            if workspace.activeMeeting?.id == meeting.id, workspace.phase != .idle {
+                HeadsetHintBanner(workspace: workspace)
+            }
             Picker("Content", selection: $tab) {
                 ForEach(MeetingTab.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -231,6 +234,39 @@ struct RecordingIndicator: View {
             .accessibilityLabel("\(paused ? "Paused" : "Recording") \(PlayerBar.clock(reading.seconds))")
         }
         .help("Recording time and input levels: microphone (you) and system audio (other participants)")
+    }
+}
+
+/// Asks for a headset while the microphone hears the loudspeakers
+/// (detect-loudspeaker-echo D6). Polled like the level meters; never blocks recording.
+struct HeadsetHintBanner: View {
+    let workspace: WorkspacePresentation
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+            if let text = workspace.headsetHint {
+                // As the naming Undo banner: the text keeps `.layoutPriority(1)` and is
+                // never `.fixedSize(horizontal: false, vertical: true)` beside a button.
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "headphones").foregroundStyle(Color.accentColor)
+                        .accessibilityHidden(true)
+                    Text(text).font(.callout)
+                        .layoutPriority(1)
+                    Spacer(minLength: 0)
+                    Button { workspace.dismissHeadsetHint() } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.borderless)
+                        .fixedSize()
+                        .help("Hide for this recording")
+                        .accessibilityLabel("Hide for this recording")
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor.opacity(0.35)))
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(text)
+                .padding(.horizontal, 32).padding(.bottom, 12)
+            }
+        }
     }
 }
 

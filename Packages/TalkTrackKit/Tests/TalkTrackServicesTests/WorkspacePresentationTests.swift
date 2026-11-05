@@ -605,6 +605,57 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(await until { w.phase == .idle })
     }
 
+    @Test func headsetHintFollowsLoudspeakersPauseDismissalAndTheNextRecording() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        await w.start()
+        let meeting = try await w.createMeeting(title: "Call", description: "")
+        w.selectedID = meeting.id
+        #expect(await until { w.selected?.id == meeting.id })
+        await w.record()
+        #expect(await until { w.phase == .recording && w.activeRecordingID != nil })
+        let first = w.activeRecordingID
+        #expect(w.headsetHint == nil)
+        w.levels.setPlaybackEcho(.loudspeaker)
+        #expect(w.headsetHint == WorkspacePresentation.headsetHintText)
+        // A headset, or not enough of the others heard: no notification.
+        w.levels.setPlaybackEcho(.headset)
+        #expect(w.headsetHint == nil)
+        w.levels.setPlaybackEcho(.unknown)
+        #expect(w.headsetHint == nil)
+        w.levels.setPlaybackEcho(.loudspeaker)
+        await w.pause()
+        #expect(await until { w.phase == .paused })
+        #expect(w.headsetHint == nil)
+        await w.resume()
+        #expect(await until { w.phase == .recording })
+        #expect(w.activeRecordingID == first)
+        #expect(w.headsetHint == WorkspacePresentation.headsetHintText)
+        // The system-audio warning takes precedence.
+        func second(_ source: CaptureSource, _ value: Float) {
+            w.levels.record(AudioPacket(source: source, sampleRate: 10, hostTime: 1, sampleTime: 0,
+                                        samples: (0..<10).map { value * Float(sin(Double($0))) }))
+        }
+        for index in 0..<700 { second(.system, 0); second(.microphone, index % 10 == 0 ? 0.2 : 0) }
+        #expect(w.systemAudioHint != nil && w.headsetHint == nil)
+        second(.system, 0.01)
+        #expect(w.headsetHint == WorkspacePresentation.headsetHintText)
+        // Closed: stays hidden for this recording.
+        w.dismissHeadsetHint()
+        #expect(w.headsetHint == nil)
+        await w.stop()
+        #expect(await until { w.phase == .idle && w.activeRecordingID == nil })
+        #expect(w.headsetHint == nil)
+        // The next recording on loudspeakers shows it again.
+        await w.record()
+        #expect(await until { w.phase == .recording && w.activeRecordingID != nil && w.activeRecordingID != first })
+        w.levels.setPlaybackEcho(.loudspeaker)
+        #expect(w.headsetHint == WorkspacePresentation.headsetHintText)
+        await w.stop()
+        #expect(await until { w.phase == .idle })
+    }
+
     @Test func recordingStartsWithLiveTextOnOffOrWithoutModelsAndTheDraftIsSavedAtStop() async throws {
         let f = try await WorkspaceFixture()
         defer { f.remove() }
