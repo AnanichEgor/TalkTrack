@@ -71,6 +71,8 @@ public actor SessionStore {
         try? reconcileMovedRecordingFolders()
         // Files of splits committed just before a crash (split-recording D3).
         try? recoverSplits()
+        // Imports interrupted before or just after their commit (import-teams-session D2).
+        try? recoverImports()
     }
 
     private func validateDatabase(_ db: SQLiteConnection) throws {
@@ -1145,6 +1147,25 @@ public actor SessionStore {
             return ConfirmedSpeakerRename(snapshot: snapshot, confirmation: VoiceEnrollmentConfirmation(library: library,
                 speakerID: target.speakerID, assignment: assignment, recordings: recordings, revisions: revisions))
         }
+    }
+
+    /// The confirmation a background learning task stored (D1), read again from
+    /// this library. Nil when the task belongs to another library; throws
+    /// `VoiceEnrollmentError.changed` when its names or transcripts changed.
+    public func voiceConfirmation(for request: VoiceLearningRequest) throws -> VoiceEnrollmentConfirmation? {
+        guard request.libraryID == library.manifest.libraryID else { return nil }
+        let snapshot: MeetingTranscriptSnapshot
+        do { snapshot = try meetingTranscript(meetingID: request.meetingID) } catch { throw VoiceEnrollmentError.changed }
+        let recordings = request.recordingIDs.compactMap { id in snapshot.recordings.first { $0.id == id } }
+        let revisions = request.revisionIDs.compactMap { id in snapshot.revisions.first { $0.id == id } }
+        guard recordings.count == request.recordingIDs.count, revisions.count == request.revisionIDs.count else {
+            throw VoiceEnrollmentError.changed
+        }
+        var confirmation = VoiceEnrollmentConfirmation(library: library, speakerID: request.speakerID, assignment: request.assignment,
+                                                       recordings: recordings, revisions: revisions)
+        confirmation.fragments = request.fragments
+        try validateVoiceConfirmation(confirmation)
+        return confirmation
     }
 
     /// Rechecked after asynchronous audio/model work. No automatic assignment

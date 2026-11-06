@@ -34,9 +34,12 @@ public struct VoiceProfileRevision: Codable, Equatable, Identifiable, Sendable {
     public let enrollmentPolicyVersion: String
     public let calibrationVersion: String?
     public let samples: [VoiceProfileSample]
+    /// How the samples were chosen; nil for the original spread rule. Kept out
+    /// of `enrollmentPolicyVersion`, which recognition compatibility uses (D4).
+    public var selectionVersion: String? = nil
 }
 
-public enum VoiceProfileChoice: Equatable, Sendable {
+public enum VoiceProfileChoice: Codable, Equatable, Sendable {
     case newProfile
     case existing(profileID: UUID, revisionID: UUID)
     /// Explicitly selected in the rename dialog; requires a fresh manual Save.
@@ -151,5 +154,98 @@ enum VoiceEnrollmentPolicy {
         guard vector.count == 256, vector.allSatisfy(\.isFinite) else { return false }
         let norm = vector.reduce(0.0) { $0 + Double($1) * Double($1) }
         return abs(norm - 1) <= 0.02
+    }
+}
+
+// MARK: Background voice learning (background-voice-learning D1)
+
+public enum VoiceLearningState: String, Codable, Sendable {
+    case queued, running, awaitingReview, learned, insufficientSpeech, failed, cancelled, superseded
+    /// Still able to change saved voices.
+    public var isPending: Bool { [.queued, .running, .awaitingReview].contains(self) }
+    public var isFinished: Bool { !isPending }
+}
+
+/// What a learning task needs to rebuild its confirmation after relaunch:
+/// identifiers only, re-read and re-validated from the library when it runs.
+public struct VoiceLearningRequest: Codable, Equatable, Sendable {
+    public let libraryID: UUID
+    public let meetingID: UUID
+    public let speakerID: UUID
+    public let assignment: SpeakerAssignment
+    public let recordingIDs: [UUID]
+    public let revisionIDs: [UUID]
+    public let fragments: [FragmentAnchor]
+    public let choice: VoiceProfileChoice
+    /// The confirmed name, for display.
+    public var name: String { assignment.name ?? "" }
+
+    public init(_ confirmation: VoiceEnrollmentConfirmation, choice: VoiceProfileChoice) {
+        libraryID = confirmation.library.manifest.libraryID
+        meetingID = confirmation.assignment.meetingID
+        speakerID = confirmation.speakerID
+        assignment = confirmation.assignment
+        recordingIDs = confirmation.recordings.map(\.id)
+        revisionIDs = confirmation.revisions.map(\.id)
+        fragments = confirmation.fragments
+        self.choice = choice
+    }
+}
+
+/// Speech held back because it does not sound like the chosen saved voice
+/// (D5). Nothing is added until the user answers.
+public struct VoiceLearningReview: Codable, Equatable, Sendable {
+    public let profileID: UUID
+    public let profileName: String
+    public let segmentation: ModelSnapshot
+    public let embedding: ModelSnapshot
+    public let samples: [VoiceProfileSample]
+    public let score: Double
+    public let threshold: Double
+}
+
+/// The user's answer to a review.
+public enum VoiceReviewAnswer: Equatable, Sendable {
+    /// Add the held speech to the saved voice anyway.
+    case add
+    /// Save it as a new voice with this name; the meeting's names stay.
+    case differentPerson(name: String)
+    case dontRemember
+}
+
+public struct VoiceLearningTask: Codable, Equatable, Identifiable, Sendable {
+    public let id: UUID
+    public let request: VoiceLearningRequest
+    public var state: VoiceLearningState
+    public let createdAt: Date
+    public var updatedAt: Date
+    /// After `learned`: the voice after and before (nil: created), for Undo.
+    public var created: VoiceProfile?
+    public var previous: VoiceProfile?
+    public var review: VoiceLearningReview?
+    /// Why it failed, for display.
+    public var message: String?
+    /// Seen by the user; finished acknowledged tasks are hidden and pruned.
+    public var acknowledged: Bool
+
+    public var meetingID: UUID { request.meetingID }
+    public var name: String { request.name }
+
+    init(id: UUID = UUID(), request: VoiceLearningRequest, at date: Date) {
+        self.id = id; self.request = request; state = .queued; createdAt = date; updatedAt = date
+        acknowledged = false
+    }
+}
+
+public enum VoiceLearningError: Error, Equatable, LocalizedError, Sendable {
+    /// The task is not in a state that allows this action.
+    case changed
+    /// The speech was held for review (internal to the runner).
+    case needsReview(VoiceLearningReview)
+    public var errorDescription: String? {
+        switch self {
+        case .changed: "This voice learning changed meanwhile. Check Settings ▸ Speakers."
+        case .needsReview(let review): "The speech does not sound like the saved voice \(review.profileName)."
+        }
     }
 }

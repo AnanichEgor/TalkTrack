@@ -169,6 +169,18 @@ public struct TranscriptSegment: Codable, Equatable, Identifiable, Sendable {
 
 public enum TranscriptKind: String, Codable, Sendable { case live, final }
 
+/// The file an imported final transcript came from (import-teams-session D4).
+public struct TranscriptImportSource: Codable, Equatable, Sendable {
+    /// `docx` or `vtt`.
+    public let format: String
+    public let fileName: String
+    public let sha256: String
+
+    public init(format: String, fileName: String, sha256: String) {
+        self.format = format; self.fileName = fileName; self.sha256 = sha256
+    }
+}
+
 public struct TranscriptRevision: Codable, Equatable, Identifiable, Sendable {
     public let id: UUID
     public let recordingID: UUID
@@ -177,9 +189,14 @@ public struct TranscriptRevision: Codable, Equatable, Identifiable, Sendable {
     public let segments: [TranscriptSegment]
     public let modelRevisions: [ModelSnapshot]
     public let createdAt: Date
+    /// Set for a transcript imported from a file; encoded only when present,
+    /// so revisions from models keep their stored form and fingerprints.
+    public let importSource: TranscriptImportSource?
 
     public init(id: UUID = UUID(), recordingID: UUID, sourceGeneration: UInt64,
-                kind: TranscriptKind, segments: [TranscriptSegment], modelRevisions: [ModelSnapshot], createdAt: Date = Date()) {
+                kind: TranscriptKind, segments: [TranscriptSegment], modelRevisions: [ModelSnapshot], createdAt: Date = Date(),
+                importSource: TranscriptImportSource? = nil) {
+        self.importSource = importSource
         self.id = id
         self.recordingID = recordingID
         self.sourceGeneration = sourceGeneration

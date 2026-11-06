@@ -62,7 +62,7 @@ private func makeIncompatible(_ profile: VoiceProfile, store: VoiceProfileStore)
         let db = try profileDB(profiles)
         #expect(try db.integer("SELECT count(*) FROM revisions") == 0)
         #expect(try db.integer("SELECT count(*) FROM enrollment_receipts") == 2)
-        #expect(try db.integer("PRAGMA user_version") == 4)
+        #expect(try db.integer("PRAGMA user_version") == 5)
         #expect(try Data(contentsOf: profiles.databaseURL).range(of: Data("\"vector\":[".utf8)) == nil)
         for suffix in ["-journal", "-wal", "-shm"] { #expect(!FileManager.default.fileExists(atPath: profiles.databaseURL.path + suffix)) }
         await #expect(throws: VoiceEnrollmentError.changed) { try await enrollment.enroll(confirmation, choice: .newProfile) }
@@ -187,7 +187,8 @@ private func makeIncompatible(_ profile: VoiceProfile, store: VoiceProfileStore)
         p.rememberVoice = true; p.selectedProfileID = first.id; p.draftName = "Local corrected"
         #expect(p.selectedProfileNeedsNewSpeech && !p.replaceIncompatibleVoice && !p.canSave)
         p.replaceIncompatibleVoice = true; #expect(p.canSave)
-        await p.saveRename()
+        await p.saveRename(); await p.waitForLearning()
+        #expect(try await enrollment.tasks().map(\.state) == [.learned])
         let next = try #require(try await profiles.profiles().first)
         #expect(next.id == first.id && next.name == "Alex" && next.revisionID != first.revisionID)
         #expect(try await profiles.revision(first.revisionID) == old)
@@ -206,7 +207,7 @@ private func makeIncompatible(_ profile: VoiceProfile, store: VoiceProfileStore)
         let first = try await remember(f, profiles: profiles), old = try await profiles.revision(first.revisionID)
         do {
             let db = try profileDB(profiles)
-            try db.execute("DROP TABLE enrollment_receipts"); try db.execute("DROP TABLE withdrawals"); try db.execute("DROP TABLE exclusions"); try db.execute("PRAGMA user_version = 1")
+            try db.execute("DROP TABLE enrollment_receipts"); try db.execute("DROP TABLE withdrawals"); try db.execute("DROP TABLE exclusions"); try db.execute("DROP TABLE learning_tasks"); try db.execute("PRAGMA user_version = 1")
         }
         let reopened = VoiceProfileStore(home: root.url)
         #expect(try await reopened.profiles() == [first])
@@ -227,19 +228,19 @@ private func makeIncompatible(_ profile: VoiceProfile, store: VoiceProfileStore)
         let revisions = [try await profiles.revision(first.revisionID), try await profiles.revision(second.revisionID)]
         do {
             let db = try profileDB(profiles)
-            try db.execute("DROP TABLE withdrawals"); try db.execute("DROP TABLE exclusions"); try db.execute("PRAGMA user_version = 2")
+            try db.execute("DROP TABLE withdrawals"); try db.execute("DROP TABLE exclusions"); try db.execute("DROP TABLE learning_tasks"); try db.execute("PRAGMA user_version = 2")
         }
         let receipts = try profileDB(profiles).integer("SELECT count(*) FROM enrollment_receipts")
         let reopened = VoiceProfileStore(home: root.url)
         #expect(try await reopened.profiles() == [first, second].sorted { $0.name < $1.name })
         #expect([try await reopened.revision(first.revisionID), try await reopened.revision(second.revisionID)] == revisions)
         let db = try profileDB(reopened)
-        #expect(try db.integer("PRAGMA user_version") == 4 && db.integer("SELECT count(*) FROM withdrawals") == 0)
+        #expect(try db.integer("PRAGMA user_version") == 5 && db.integer("SELECT count(*) FROM withdrawals") == 0)
         #expect(try db.integer("SELECT count(*) FROM enrollment_receipts") == receipts && receipts == 2)
         #expect(!FileManager.default.fileExists(atPath: reopened.databaseURL.deletingLastPathComponent().appendingPathComponent("Speakers.v1-backup.sqlite3").path))
-        try db.execute("PRAGMA user_version = 5")
+        try db.execute("PRAGMA user_version = 6")
         let before = try Data(contentsOf: reopened.databaseURL)
-        await #expect(throws: StoreError.unsupportedSchema(5)) { try await VoiceProfileStore(home: root.url).profiles() }
+        await #expect(throws: StoreError.unsupportedSchema(6)) { try await VoiceProfileStore(home: root.url).profiles() }
         #expect(try Data(contentsOf: reopened.databaseURL) == before)
         try await f.store.close()
     }
@@ -254,14 +255,14 @@ private func makeIncompatible(_ profile: VoiceProfile, store: VoiceProfileStore)
         let revisions = [try await profiles.revision(first.revisionID), try await profiles.revision(second.revisionID)]
         do {
             let db = try profileDB(profiles)
-            try db.execute("DROP TABLE exclusions"); try db.execute("PRAGMA user_version = 3")
+            try db.execute("DROP TABLE exclusions"); try db.execute("DROP TABLE learning_tasks"); try db.execute("PRAGMA user_version = 3")
         }
         let counts = try ["enrollment_receipts", "withdrawals", "revisions", "profiles"].map { try profileDB(profiles).integer("SELECT count(*) FROM \($0)") }
         let reopened = VoiceProfileStore(home: root.url)
         #expect(try await reopened.profiles() == [first, second].sorted { $0.name < $1.name })
         #expect([try await reopened.revision(first.revisionID), try await reopened.revision(second.revisionID)] == revisions)
         let db = try profileDB(reopened)
-        #expect(try db.integer("PRAGMA user_version") == 4 && db.integer("SELECT count(*) FROM exclusions") == 0)
+        #expect(try db.integer("PRAGMA user_version") == 5 && db.integer("SELECT count(*) FROM exclusions") == 0)
         #expect(try ["enrollment_receipts", "withdrawals", "revisions", "profiles"].map { try db.integer("SELECT count(*) FROM \($0)") } == counts)
         #expect(counts == [2, 1, 2, 2])
         #expect(!FileManager.default.fileExists(atPath: reopened.databaseURL.deletingLastPathComponent().appendingPathComponent("Speakers.v1-backup.sqlite3").path))
@@ -303,7 +304,7 @@ private func makeIncompatible(_ profile: VoiceProfile, store: VoiceProfileStore)
         let first = try await remember(f, profiles: profiles)
         do {
             let db = try profileDB(profiles)
-            try db.execute("DROP TABLE enrollment_receipts"); try db.execute("DROP TABLE withdrawals"); try db.execute("DROP TABLE exclusions")
+            try db.execute("DROP TABLE enrollment_receipts"); try db.execute("DROP TABLE withdrawals"); try db.execute("DROP TABLE exclusions"); try db.execute("DROP TABLE learning_tasks")
             try db.execute("CREATE TABLE enrollment_receipts (wrong TEXT)")
             try db.execute("PRAGMA user_version = 1")
         }

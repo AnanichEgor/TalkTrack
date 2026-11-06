@@ -10,6 +10,7 @@ struct SavedSpeakersView: View {
     @State private var recovery: VoiceProfile?
 
     var body: some View {
+        learningSection
         Section("Saved Speakers") {
             Toggle("Recognize saved voices", isOn: $presentation.recognitionEnabled)
                 .help("Controls automatic names in future processing. Existing meeting names stay unchanged.")
@@ -108,6 +109,49 @@ struct SavedSpeakersView: View {
                     .font(.callout).foregroundStyle(.secondary)
                 HStack { Spacer(); Button("Done") { recovery = nil }.keyboardShortcut(.defaultAction) }
             }.padding(24).frame(width: 460).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: Learning
+
+    /// Voices being learned in the background, and those that need an answer.
+    @ViewBuilder private var learningSection: some View {
+        if !presentation.learning.isEmpty {
+            Section("Learning") {
+                ForEach(presentation.learning) { task in
+                    HStack(alignment: .center, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(task.name).fontWeight(.medium).lineLimit(1).truncationMode(.tail)
+                            Text(SavedSpeakersPresentation.learningStatus(task)
+                                 + (presentation.learningMeetings[task.request.meetingID].map { " · \($0)" } ?? ""))
+                                .font(.caption).foregroundStyle(task.state == .awaitingReview ? .primary : .secondary)
+                                .lineLimit(2)
+                        }.layoutPriority(1)
+                        Spacer(minLength: 8)
+                        HStack(spacing: 8) {
+                            switch task.state {
+                            case .queued, .running:
+                                if task.state == .running { ProgressView().controlSize(.small) }
+                                Button("Cancel") { Task { await presentation.cancelLearning(task) } }
+                                    .accessibilityLabel("Stop learning the voice of \(task.name)")
+                            case .awaitingReview:
+                                Button("Review…") { presentation.openMeeting?(task.request.meetingID) }
+                                    .disabled(presentation.openMeeting == nil || presentation.learningMeetings[task.request.meetingID] == nil)
+                                    .help("Open the meeting to play the speech and choose")
+                                Button("Don't Remember") { Task { await presentation.cancelLearning(task) } }
+                            case .insufficientSpeech, .failed:
+                                Button("Retry") { Task { await presentation.retryLearning(task) } }
+                                Button("Dismiss") { Task { await presentation.dismissLearning(task) } }
+                            default: EmptyView()
+                            }
+                        }
+                        .fixedSize().disabled(!presentation.canChangeLearning)
+                    }
+                    .padding(.vertical, 2)
+                }
+                Text("Naming a speaker with Remember voice learns the voice here, in the background. Recording pauses learning; it continues after Stop and after relaunch.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
         }
     }
 

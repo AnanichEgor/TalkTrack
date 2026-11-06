@@ -271,9 +271,9 @@ extension SessionStore {
                 }
             }
             let firstRevision = TranscriptRevision(recordingID: first.id, sourceGeneration: needsTranscription ? shownText.sourceGeneration : first.generation,
-                kind: shownText.kind, segments: early, modelRevisions: shownText.modelRevisions, createdAt: date)
+                kind: shownText.kind, segments: early, modelRevisions: shownText.modelRevisions, createdAt: date, importSource: shownText.importSource)
             let secondRevision = TranscriptRevision(recordingID: second.id, sourceGeneration: needsTranscription ? 0 : second.generation,
-                kind: shownText.kind, segments: late, modelRevisions: shownText.modelRevisions, createdAt: date)
+                kind: shownText.kind, segments: late, modelRevisions: shownText.modelRevisions, createdAt: date, importSource: shownText.importSource)
             try put(.transcript, id: firstRevision.id, meetingID: meetingID, scope: a, value: firstRevision)
             try put(.transcript, id: secondRevision.id, meetingID: meetingID, scope: b, value: secondRevision)
             try setHead(.transcript, meetingID: meetingID, scope: a, id: firstRevision.id)

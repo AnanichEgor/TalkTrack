@@ -40,6 +40,11 @@ struct TalkTrackApp: App {
                     model.newMeetingRequests += 1
                 }
                 .keyboardShortcut("n")
+                Button("Import Session…") {
+                    openWindow(id: "main")
+                    model.importRequests += 1
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
             }
             MeetingCommands(model: model)
         }
@@ -92,8 +97,14 @@ private struct MenuBarContent: View {
             Divider()
         }
         Button("Open TalkTrack") { showMainWindow() }
-        Button("Settings…") {
-            model.showSettings(openSettings)
+        if model.speakers.reviewCount > 0 {
+            Button(model.speakers.reviewCount == 1 ? "Settings… (1 voice to review)" : "Settings… (\(model.speakers.reviewCount) voices to review)") {
+                model.showSettings(openSettings, tab: .speakers)
+            }
+        } else {
+            Button("Settings…") {
+                model.showSettings(openSettings)
+            }
         }
         Divider()
         Button("Quit TalkTrack") { NSApp.terminate(nil) }

@@ -110,6 +110,10 @@ struct MeetingDetailView: View {
                     Button { sheet = .edit(meeting) } label: { Image(systemName: "pencil") }
                         .help("Rename meeting")
                         .accessibilityLabel("Rename meeting")
+                    Button { sheet = .importSession(meeting.id) } label: { Image(systemName: "square.and.arrow.down") }
+                        .disabled(workspace.importRefusal(into: meeting.id) != nil)
+                        .help(workspace.importRefusal(into: meeting.id)?.errorDescription ?? "Import a Teams recording and transcript into this meeting")
+                        .accessibilityLabel("Import Recording")
                     Button { deleting = meeting } label: { Image(systemName: "trash") }
                         .disabled(!workspace.canDelete(meeting.id))
                         .help(workspace.canDelete(meeting.id) ? "Delete meeting and its audio" : "Stop the recording before deleting this meeting")

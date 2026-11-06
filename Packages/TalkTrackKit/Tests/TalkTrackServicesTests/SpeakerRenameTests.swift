@@ -276,7 +276,7 @@ private func labels(_ snapshot: MeetingTranscriptSnapshot, recordingID: UUID) ->
         #expect(p.renameTarget == nil && p.errorMessage?.contains("You") == true)
         await p.beginRename(recordingID: f.recordings[1].id, segmentID: f.revisions[1].segments[0].id)
         p.draftName = "Discard this draft"; p.cancelRename()
-        await p.saveRename()
+        await p.saveRename(); await p.waitForLearning()
         #expect(p.snapshot == before && p.renameTarget == nil && p.draftName.isEmpty)
         #expect(try await f.store.speakerAssignments(meetingID: f.meetings[0].id).isEmpty)
         try await f.store.close()
@@ -305,7 +305,7 @@ private func labels(_ snapshot: MeetingTranscriptSnapshot, recordingID: UUID) ->
         #expect(p.suggestions.map(\.name) == all && p.effectiveProfileID == p.suggestions.last?.id)
         p.draftName = "Zo"; p.clearProfileChoice(); #expect(p.suggestions.map(\.name) == ["Zoe"]); p.draftName = ""
         // Keeping the current name means picking it; a new name is listed at the next open.
-        p.draftName = "Yana"; await p.saveRename()
+        p.draftName = "Yana"; await p.saveRename(); await p.waitForLearning()
         #expect(p.currentName == nil && p.draftName.isEmpty)
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
         #expect(p.currentName == "Yana" && p.suggestions.count == 11 && p.suggestions.first?.name == "Yana")

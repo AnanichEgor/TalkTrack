@@ -27,6 +27,15 @@ import Observation
     public private(set) var contexts: [String: VoiceSampleContext] = [:]
     /// The latest removal, offered as Undo until anything else changes.
     public private(set) var removalUndo: SampleRemovalUndo?
+    /// Voice learning that is pending or needs the user (D7).
+    public private(set) var learning: [VoiceLearningTask] = []
+    /// Meeting titles of `learning`, from the open library.
+    public private(set) var learningMeetings: [UUID: String] = [:]
+    @ObservationIgnored public var meetingTitle: (@Sendable (UUID) async -> String?)?
+    /// Review: shows the meeting, where the held speech can be played and answered.
+    @ObservationIgnored public var openMeeting: (@MainActor (UUID) -> Void)?
+    @ObservationIgnored private var enrollment: VoiceProfileEnrollment?
+    @ObservationIgnored private var learningUpdates: Task<Void, Never>?
     @ObservationIgnored private let defaults: UserDefaults
     private let store: VoiceProfileStore
 
@@ -44,9 +53,72 @@ import Observation
         catch { errorMessage = error.localizedDescription }
         status = try? await store.recognitionStatus()
         merge = try? await mergeCalibration?()
+        await reloadLearning()
         expanded = expanded.filter { id in voices.contains { $0.id == id } }
         sampleDays = sampleDays.filter { expanded.contains($0.key) }
         for id in expanded { await reloadSamples(id) }
+    }
+
+    // MARK: Learning (background-voice-learning D7)
+
+    /// The open library's learner, or nil while no library is open; its
+    /// changes keep the list current.
+    public func attach(_ enrollment: VoiceProfileEnrollment?) {
+        learningUpdates?.cancel(); learningUpdates = nil
+        self.enrollment = enrollment
+        guard let enrollment else { learning = []; return }
+        learningUpdates = Task { [weak self] in
+            let updates = await enrollment.updates()
+            await self?.reloadLearning()
+            for await task in updates {
+                // A learned voice changes the saved voices too.
+                if task.state == .learned { await self?.refresh() } else { await self?.reloadLearning() }
+            }
+        }
+    }
+    /// Voices waiting for the user's answer: the Speakers tab's badge.
+    public var reviewCount: Int { learning.filter { $0.state == .awaitingReview }.count }
+    public var canChangeLearning: Bool { enrollment != nil }
+
+    public func reloadLearning() async {
+        guard let all = try? await store.learningTasks() else { return }
+        learning = all.filter { task in
+            switch task.state {
+            case .queued, .running, .awaitingReview: true
+            case .insufficientSpeech, .failed: !task.acknowledged
+            case .learned, .cancelled, .superseded: false
+            }
+        }.sorted { $0.createdAt < $1.createdAt }
+        for task in learning where learningMeetings[task.request.meetingID] == nil {
+            if let title = await meetingTitle?(task.request.meetingID) { learningMeetings[task.request.meetingID] = title }
+        }
+    }
+    public static func learningStatus(_ task: VoiceLearningTask) -> String {
+        switch task.state {
+        case .queued: "Waiting"
+        case .running: "Learning…"
+        case .awaitingReview: "Sounds different from \(task.review?.profileName ?? task.name): waiting for your answer"
+        case .insufficientSpeech: "Not enough clear speech"
+        case .failed: task.message ?? "Failed"
+        case .learned: "Remembered"
+        case .cancelled: "Stopped"
+        case .superseded: "Names changed"
+        }
+    }
+    public func cancelLearning(_ task: VoiceLearningTask) async {
+        guard let enrollment else { return }
+        do { _ = try await enrollment.cancel(task.id); errorMessage = nil } catch { errorMessage = error.localizedDescription }
+        await reloadLearning()
+    }
+    public func retryLearning(_ task: VoiceLearningTask) async {
+        guard let enrollment else { return }
+        do { try await enrollment.retry(task.id); errorMessage = nil } catch { errorMessage = error.localizedDescription }
+        await reloadLearning()
+    }
+    public func dismissLearning(_ task: VoiceLearningTask) async {
+        guard let enrollment else { return }
+        do { try await enrollment.acknowledge(task.id); errorMessage = nil } catch { errorMessage = error.localizedDescription }
+        await reloadLearning()
     }
 
     /// Shows or hides a voice's samples; they are read when first shown.

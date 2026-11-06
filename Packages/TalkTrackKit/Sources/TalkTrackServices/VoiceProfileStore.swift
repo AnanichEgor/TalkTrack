@@ -15,9 +15,11 @@ public actor VoiceProfileStore {
     private static let migrationBackup = "Speakers.v1-backup.sqlite3"
     /// 3 adds `withdrawals` (removed reply names, time ranges only).
     /// 4 adds `exclusions` (samples removed from one voice, time ranges only).
-    static let schema = 4
+    /// 5 adds `learning_tasks` (background voice learning, D1).
+    static let schema = 5
     private static let withdrawalsTable = "CREATE TABLE withdrawals (library_id TEXT NOT NULL, recording_id TEXT NOT NULL, start_us INTEGER NOT NULL, end_us INTEGER NOT NULL, withdrawn_at REAL NOT NULL, PRIMARY KEY(library_id,recording_id,start_us,end_us))"
     private static let exclusionsTable = "CREATE TABLE exclusions (profile_id TEXT NOT NULL, revision_id TEXT NOT NULL, recording_id TEXT NOT NULL, start_us INTEGER NOT NULL, end_us INTEGER NOT NULL, excluded_at REAL NOT NULL, PRIMARY KEY(profile_id,revision_id,recording_id,start_us,end_us))"
+    private static let learningTasksTable = "CREATE TABLE learning_tasks (id TEXT PRIMARY KEY, library_id TEXT NOT NULL, meeting_id TEXT NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL, payload BLOB NOT NULL)"
     private var recognitionCommit = false
 
     public init(home: URL = FileManager.default.homeDirectoryForCurrentUser) {
@@ -308,7 +310,8 @@ public actor VoiceProfileStore {
     /// Revision plus head plus replay guard commit together, or all roll back.
     func enroll(_ confirmation: VoiceEnrollmentConfirmation, choice: VoiceProfileChoice,
                 segmentation: ModelSnapshot, embedding: ModelSnapshot,
-                samples: [VoiceProfileSample], at date: Date = Date()) throws -> VoiceProfile {
+                samples: [VoiceProfileSample], selectionVersion: String? = nil, taskID: UUID? = nil,
+                profileName: String? = nil, at date: Date = Date()) throws -> VoiceProfile {
         try Task.checkCancellation()
         guard !recognitionCommit else { throw VoiceRecognitionError.busy }
         // A corrected fragment added to an existing voice may be short: the
@@ -321,9 +324,17 @@ public actor VoiceProfileStore {
               correction || samples.reduce(0, { $0 + $1.interval.duration.microseconds }) >= VoiceEnrollmentPolicy.minimumMicroseconds else {
             throw VoiceEnrollmentError.insufficientSpeech
         }
-        let name = try SpeakerRenameError.validatedName(proposedName)
+        let name = try SpeakerRenameError.validatedName(profileName ?? proposedName)
         guard let db = try open(create: true) else { throw VoiceEnrollmentError.unavailable }
         return try db.transaction {
+            // A task cancelled meanwhile (Undo) adds nothing (D6).
+            var task: VoiceLearningTask?
+            if let taskID {
+                guard let current = try learningTask(taskID, in: db), current.state == .running || current.state == .awaitingReview else {
+                    throw VoiceLearningError.changed
+                }
+                task = current
+            }
             // A repeated confirmation cannot silently train twice or train a
             // second person. A fresh explicit Save creates a new confirmation.
             guard try db.rows("SELECT assignment_id FROM enrollment_receipts WHERE library_id=? AND assignment_id=?", [
@@ -351,8 +362,15 @@ public actor VoiceProfileStore {
                 libraryID: confirmation.library.manifest.libraryID, meetingID: confirmation.assignment.meetingID,
                 daySpeakerID: confirmation.speakerID, assignmentID: confirmation.assignment.id,
                 segmentation: segmentation, embedding: embedding, preprocessingVersion: VoiceEnrollmentPolicy.preprocessing,
-                enrollmentPolicyVersion: VoiceEnrollmentPolicy.version, calibrationVersion: nil, samples: samples)
+                enrollmentPolicyVersion: VoiceEnrollmentPolicy.version, calibrationVersion: nil, samples: samples,
+                selectionVersion: selectionVersion)
             let profile = VoiceProfile(id: id, name: displayName, revisionID: revision.id, updatedAt: date)
+            if var task {
+                task.state = .learned; task.updatedAt = date; task.review = nil; task.message = nil
+                task.created = profile
+                task.previous = try previous.flatMap { _ in try profiles(in: db).first { $0.id == id } }
+                try write(task, in: db)
+            }
             try db.execute("INSERT INTO enrollment_receipts VALUES (?,?)", [.text(revision.libraryID.uuidString), .text(revision.assignmentID.uuidString)])
             try db.execute("INSERT INTO revisions VALUES (?,?,?,?,?)", [.text(revision.id.uuidString), .text(id.uuidString),
                 .text(revision.libraryID.uuidString), .text(revision.assignmentID.uuidString), .blob(DomainCodec.encode(revision))])
@@ -408,6 +426,7 @@ public actor VoiceProfileStore {
                 try db.execute("CREATE TABLE enrollment_receipts (library_id TEXT NOT NULL, assignment_id TEXT NOT NULL, PRIMARY KEY(library_id,assignment_id))")
                 try db.execute(Self.withdrawalsTable)
                 try db.execute(Self.exclusionsTable)
+                try db.execute(Self.learningTasksTable)
                 try db.execute("PRAGMA user_version = \(Self.schema)")
             }
         }
@@ -442,6 +461,15 @@ public actor VoiceProfileStore {
                 try db.execute("PRAGMA user_version = 4")
             }
         }
+        if try db.integer("PRAGMA user_version") == 4 {
+            if !directory.exists(Self.migrationBackup) {
+                try db.backup(to: URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(Self.migrationBackup).path)
+            }
+            try db.transaction {
+                try db.execute(Self.learningTasksTable)
+                try db.execute("PRAGMA user_version = 5")
+            }
+        }
         if directory.exists(Self.migrationBackup) {
             guard case .text("ok") = try db.rows("PRAGMA quick_check").first?.first else { throw VoiceEnrollmentError.damagedProfile }
             let backupHeader = try SQLiteConnection.closedHeader(in: directory, fileName: Self.migrationBackup)
@@ -456,5 +484,76 @@ public actor VoiceProfileStore {
         let version = try db.integer("PRAGMA user_version")
         guard version <= Self.schema else { throw StoreError.unsupportedSchema(version) }
         guard (1...Self.schema).contains(version), try db.integer("PRAGMA application_id") == Self.applicationID else { throw VoiceEnrollmentError.damagedProfile }
+    }
+}
+
+// MARK: Learning tasks (background-voice-learning D1)
+
+extension VoiceProfileStore {
+    fileprivate func learningTask(_ id: UUID, in db: SQLiteConnection) throws -> VoiceLearningTask? {
+        guard let row = try db.rows("SELECT payload FROM learning_tasks WHERE id=?", [.text(id.uuidString)]).first else { return nil }
+        guard case .blob(let bytes) = row[0] else { throw VoiceEnrollmentError.damagedProfile }
+        return try DomainCodec.decode(VoiceLearningTask.self, from: bytes)
+    }
+
+    fileprivate func write(_ task: VoiceLearningTask, in db: SQLiteConnection) throws {
+        try db.execute("""
+            INSERT INTO learning_tasks VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state, payload=excluded.payload
+            """, [.text(task.id.uuidString), .text(task.request.libraryID.uuidString), .text(task.request.meetingID.uuidString),
+                  .text(task.state.rawValue), .real(task.createdAt.timeIntervalSince1970), .blob(DomainCodec.encode(task))])
+    }
+
+    /// Creates the registry when needed: a queued task is an explicit Save.
+    func addLearningTask(_ request: VoiceLearningRequest, at date: Date = Date()) throws -> VoiceLearningTask {
+        guard let db = try open(create: true) else { throw VoiceEnrollmentError.unavailable }
+        let task = VoiceLearningTask(request: request, at: date)
+        try db.transaction { try write(task, in: db) }
+        return task
+    }
+
+    /// Oldest first. Reading never creates the registry.
+    public func learningTasks() throws -> [VoiceLearningTask] {
+        guard let db = try open(create: false) else { return [] }
+        return try db.rows("SELECT payload FROM learning_tasks ORDER BY created_at, id").map { row in
+            guard case .blob(let bytes) = row[0] else { throw VoiceEnrollmentError.damagedProfile }
+            return try DomainCodec.decode(VoiceLearningTask.self, from: bytes)
+        }
+    }
+
+    public func learningTask(_ id: UUID) throws -> VoiceLearningTask? {
+        guard let db = try open(create: false) else { return nil }
+        return try learningTask(id, in: db)
+    }
+
+    /// Changes a task only from one of `from`; returns the stored result.
+    @discardableResult
+    func updateLearningTask(_ id: UUID, from states: Set<VoiceLearningState>, at date: Date = Date(),
+                            _ change: (inout VoiceLearningTask) -> Void) throws -> VoiceLearningTask {
+        guard let db = try open(create: false) else { throw VoiceLearningError.changed }
+        return try db.transaction {
+            guard var task = try learningTask(id, in: db), states.contains(task.state) else { throw VoiceLearningError.changed }
+            change(&task)
+            task.updatedAt = date
+            // Held vectors leave with the review; secure_delete clears them.
+            if task.state != .awaitingReview { task.review = nil }
+            try write(task, in: db)
+            return task
+        }
+    }
+
+    /// At launch: a task that was running when TalkTrack stopped runs again.
+    /// Finished tasks the user saw more than `retention` ago are removed.
+    func prepareLearningTasks(now: Date = Date(), retention: TimeInterval = 7 * 86_400) throws {
+        guard let db = try open(create: false) else { return }
+        try db.transaction {
+            for row in try db.rows("SELECT payload FROM learning_tasks") {
+                guard case .blob(let bytes) = row[0] else { throw VoiceEnrollmentError.damagedProfile }
+                var task = try DomainCodec.decode(VoiceLearningTask.self, from: bytes)
+                if task.state == .running { task.state = .queued; try write(task, in: db) }
+                else if task.state.isFinished, task.acknowledged, now.timeIntervalSince(task.updatedAt) > retention {
+                    try db.execute("DELETE FROM learning_tasks WHERE id=?", [.text(task.id.uuidString)])
+                }
+            }
+        }
     }
 }

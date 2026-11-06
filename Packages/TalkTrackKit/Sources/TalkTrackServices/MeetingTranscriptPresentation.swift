@@ -84,6 +84,8 @@ public struct NamingUndo: Equatable, Sendable {
     /// The voice after the Save, and before it (nil when the Save created it).
     public let created: VoiceProfile?
     public let previous: VoiceProfile?
+    /// The background learning the Save queued (background-voice-learning D6).
+    public var learningTaskID: UUID? = nil
     public internal(set) var profileUndone = false
 }
 
@@ -117,16 +119,18 @@ public struct NamingUndo: Equatable, Sendable {
     public private(set) var profiles: [VoiceProfile] = []
     public private(set) var profileLoadError: String?
     public private(set) var noticeMessage: String?
+    /// Where the newest Save applied, while its notice still says "Learning…".
+    private var learningNoticePlace: String?
     /// Offered after a Save until another naming change (see NamingUndo).
     public private(set) var undo: NamingUndo?
+    /// This meeting's voice-learning tasks that are pending or not yet dismissed.
+    public private(set) var learningTasks: [VoiceLearningTask] = []
     public var canUndo: Bool { undo != nil && !isBusy && renameTarget == nil && draftTarget == nil }
-    public private(set) var isRemembering = false
     public private(set) var isBusy = false
     public private(set) var errorMessage: String?
     public private(set) var renameError: String?
     private let store: SessionStore
     private let enrollment: VoiceProfileEnrollment?
-    @ObservationIgnored private var enrollmentTask: Task<VoiceProfile, any Error>?
     public let meetingID: UUID
 
     public init(store: SessionStore, meetingID: UUID, enrollment: VoiceProfileEnrollment? = nil) {
@@ -457,7 +461,7 @@ public struct NamingUndo: Equatable, Sendable {
     public func undoLastNaming() async {
         guard canUndo, var token = undo else { return }
         isBusy = true; defer { isBusy = false }
-        let voice = token.created?.name
+        var voice = token.created?.name, previous = token.previous, stopped = false
         do {
             guard try await store.namingHeads(meetingID: meetingID).generation == token.generation else { throw NamingUndoError.changed }
             if let created = token.created, !token.profileUndone {
@@ -465,11 +469,20 @@ public struct NamingUndo: Equatable, Sendable {
                 do { try await enrollment.undoEnrollment(created: created, previous: token.previous) }
                 catch VoiceProfileSettingsError.changed { throw NamingUndoError.profileChanged }
                 token.profileUndone = true; undo = token
+            } else if let id = token.learningTaskID, !token.profileUndone {
+                // Pending learning stops; finished learning gives its samples back (D6).
+                guard let enrollment else { throw VoiceEnrollmentError.unavailable }
+                do {
+                    if let undone = try await enrollment.undoLearning(id) { voice = undone.created.name; previous = undone.previous }
+                    else { stopped = true }
+                } catch VoiceProfileSettingsError.changed { throw NamingUndoError.profileChanged }
+                token.profileUndone = true; undo = token
             }
             snapshot = try await store.undoNaming(token.heads, generation: token.generation)
             undo = nil; errorMessage = nil
             noticeMessage = "Undone: the previous names are back."
-                + (voice.map { token.previous == nil ? " The saved voice \($0) was removed." : " \($0) has only its earlier samples again." } ?? "")
+                + (voice.map { previous == nil ? " The saved voice \($0) was removed." : " \($0) has only its earlier samples again." }
+                   ?? (stopped ? " Learning the voice was stopped." : ""))
         } catch let error as NamingUndoError {
             undo = nil; noticeMessage = nil
             errorMessage = error.localizedDescription
@@ -481,12 +494,70 @@ public struct NamingUndo: Equatable, Sendable {
                 : "Nothing was undone: \(error.localizedDescription) Choose Undo to try again."
         }
     }
+    /// Until queued voice learning finished (fixtures and validation).
+    func waitForLearning() async { await enrollment?.waitUntilIdle() }
+
+    // MARK: Background voice learning (D7)
+
+    /// Watches this meeting's learning tasks until the caller is cancelled.
+    public func observeLearning() async {
+        guard let enrollment else { return }
+        let updates = await enrollment.updates()
+        if let all = try? await enrollment.tasks() { for task in all { receive(task) } }
+        for await task in updates { receive(task) }
+    }
+    private func receive(_ task: VoiceLearningTask) {
+        guard task.request.meetingID == meetingID else { return }
+        // The Save notice stops saying "Learning…" once its task has an outcome,
+        // which the task's own row then reports.
+        if task.id == undo?.learningTaskID, !task.state.isPending || task.state == .awaitingReview, let place = learningNoticePlace {
+            noticeMessage = "Name saved for \(place)."; learningNoticePlace = nil
+        }
+        learningTasks.removeAll { $0.id == task.id }
+        // Cancelled tasks were stopped by the user; nothing to report.
+        guard task.state != .cancelled, task.state.isPending || !task.acknowledged else { return }
+        learningTasks.append(task)
+        learningTasks.sort { $0.createdAt < $1.createdAt }
+    }
+    /// What the meeting shows: the newest Save's pending task is already named
+    /// by its notice with Undo, so it is left out while pending.
+    public var learningNotices: [VoiceLearningTask] {
+        learningTasks.filter { !($0.state.isPending && $0.state != .awaitingReview && $0.id == undo?.learningTaskID) }
+    }
+    public static func learningMessage(_ task: VoiceLearningTask) -> String {
+        switch task.state {
+        case .queued: "\(task.name)'s voice will be learned in the background."
+        case .running: "Learning \(task.name)'s voice…"
+        case .awaitingReview:
+            "The speech named \(task.name) does not sound like the saved voice \(task.review?.profileName ?? task.name). Nothing was added. Play it, then choose."
+        case .learned: "\(task.name)'s voice remembered."
+        case .insufficientSpeech: "\(task.name)'s voice was not remembered: " + (task.message ?? VoiceEnrollmentError.insufficientSpeech.localizedDescription)
+        case .failed: "\(task.name)'s voice was not remembered: " + (task.message ?? "learning failed.")
+        case .superseded: "\(task.name)'s voice was not remembered: the names changed before it was learned."
+        case .cancelled: "Learning \(task.name)'s voice was stopped."
+        }
+    }
+    public func cancelLearning(_ id: UUID) async { await learningAction { _ = try await $0.cancel(id) } }
+    public func retryLearning(_ id: UUID) async { await learningAction { try await $0.retry(id) } }
+    public func dismissLearning(_ id: UUID) async { await learningAction { try await $0.acknowledge(id) } }
+    public func resolveLearning(_ id: UUID, _ answer: VoiceReviewAnswer) async {
+        await learningAction { try await $0.resolve(id, answer) }
+    }
+    private func learningAction(_ action: (VoiceProfileEnrollment) async throws -> Void) async {
+        guard let enrollment else { return }
+        do { try await action(enrollment); errorMessage = nil }
+        catch { errorMessage = error.localizedDescription }
+        // The stored state wins, also after an error.
+        if let all = try? await enrollment.tasks() {
+            learningTasks.removeAll()
+            for task in all { receive(task) }
+        }
+    }
     public func cancelRename() {
         guard !isBusy else { return }
         renameTarget = nil; replySegmentIDs = []; scope = .voice; draftName = ""; currentName = nil; renameError = nil; rememberVoice = true; selectedProfileID = nil
         replaceIncompatibleVoice = false; chosenVoiceID = nil
     }
-    public func cancelRemembering() { enrollmentTask?.cancel() }
     public func saveRename() async {
         guard !isBusy, let target = renameTarget else { return }
         isBusy = true; defer { isBusy = false }
@@ -494,7 +565,7 @@ public struct NamingUndo: Equatable, Sendable {
         do {
             let place = fragmentSegmentIDs == nil ? "this meeting day" : "this reply"
             let heads = try await store.namingHeads(meetingID: meetingID)
-            var remembered: (created: VoiceProfile, previous: VoiceProfile?)?
+            var learningTaskID: UUID?
             if let voice = chosenVoiceID, let ids = fragmentSegmentIDs {
                 snapshot = try await store.assignFragment(meetingID: meetingID, recordingID: target.recordingID, segmentIDs: ids, voiceID: voice)
                 noticeMessage = nil
@@ -516,15 +587,10 @@ public struct NamingUndo: Equatable, Sendable {
                             choice = .replaceIncompatible(profileID: profile.id, revisionID: profile.revisionID)
                         } else { choice = .existing(profileID: profile.id, revisionID: profile.revisionID) }
                     } else { choice = .newProfile }
-                    isRemembering = true
-                    let task = Task { try await enrollment.enroll(saved.confirmation, choice: choice) }
-                    enrollmentTask = task
-                    defer { enrollmentTask = nil; isRemembering = false }
-                    let profile = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
-                    remembered = (profile, profiles.first { $0.id == profile.id })
-                    noticeMessage = "Name saved for \(place). Voice remembered locally as \(profile.name)."
-                } catch is CancellationError {
-                    noticeMessage = "Name saved for \(place). Voice remembering was cancelled."
+                    // The sheet closes now; the voice is learned in the background (D2).
+                    let task = try await enrollment.learn(saved.confirmation, choice: choice)
+                    learningTaskID = task.id; learningNoticePlace = place
+                    noticeMessage = "Name saved for \(place). Learning the voice of \(task.name) in the background."
                 } catch {
                     noticeMessage = "Name saved for \(place). Voice was not remembered. \(error.localizedDescription)"
                 }
@@ -537,7 +603,7 @@ public struct NamingUndo: Equatable, Sendable {
             }
             // Undo only when nothing else changed the names between reading them and the Save.
             if let generation = snapshot?.meeting.generation, generation == heads.generation + 1 {
-                undo = NamingUndo(heads: heads, generation: generation, created: remembered?.created, previous: remembered?.previous)
+                undo = NamingUndo(heads: heads, generation: generation, created: nil, previous: nil, learningTaskID: learningTaskID)
             }
             renameTarget = nil; replySegmentIDs = []; scope = .voice; draftName = ""; currentName = nil; renameError = nil; errorMessage = nil
             rememberVoice = true; selectedProfileID = nil; chosenVoiceID = nil

@@ -33,6 +33,7 @@ struct SettingsView: View {
             Tab("Speakers", systemImage: "person.2", value: AppModel.SettingsTab.speakers) {
                 Form { SavedSpeakersView(presentation: model.speakers, preview: model.samplePreview) }.formStyle(.grouped)
             }
+            .badge(model.speakers.reviewCount)
             Tab("Dictation", systemImage: "mic", value: AppModel.SettingsTab.dictation) {
                 if let dictation = model.dictation {
                     DictationSettingsView(model: model, dictation: dictation)

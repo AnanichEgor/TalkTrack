@@ -63,6 +63,9 @@ struct MeetingTranscriptView: View {
     @State private var confirmClearNames = false
     @State private var deleting: Recording?
     @State private var splitting: PendingSplit?
+    /// `Different Person…` of a review: the name of the new saved voice.
+    @State private var differentPerson: VoiceLearningTask?
+    @State private var differentName = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -113,6 +116,7 @@ struct MeetingTranscriptView: View {
                 .padding(.horizontal, 32)
             }
             draftNamingStatus
+            learningStatus
             if let error = presentation.errorMessage {
                 HStack(alignment: .center, spacing: 8) {
                     Text(error).font(.callout).foregroundStyle(Color.errorText).textSelection(.enabled)
@@ -226,6 +230,20 @@ struct MeetingTranscriptView: View {
             }
         }
         .task { await presentation.refresh() }
+        .task { await presentation.observeLearning() }
+        .alert("Different Person", isPresented: Binding(get: { differentPerson != nil }, set: { if !$0 { differentPerson = nil } })) {
+            TextField("Name", text: $differentName)
+            Button("Save Voice") {
+                if let task = differentPerson {
+                    let name = differentName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task { await presentation.resolveLearning(task.id, .differentPerson(name: name)) }
+                }
+            }
+            .disabled(differentName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Saves this speech as a new saved voice. The names in this meeting stay unchanged.")
+        }
         .onChange(of: IndexKey(items: presentation.snapshot?.items, meetingID: player?.meetingID, duration: player?.duration),
                   initial: true) { rebuildIndex() }
     }
@@ -386,6 +404,84 @@ struct MeetingTranscriptView: View {
     }
 
     /// After publication: what happened to the draft's names, with Remember Voices… per person.
+    /// Background voice learning of this meeting (D7): progress lines, a
+    /// remembered line that fades, and tinted banners that need the user.
+    @ViewBuilder private var learningStatus: some View {
+        let notices = presentation.learningNotices
+        if !notices.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(notices) { task in learningRow(task) }
+            }
+            .padding(.horizontal, 32)
+        }
+    }
+
+    @ViewBuilder private func learningRow(_ task: VoiceLearningTask) -> some View {
+        let message = MeetingTranscriptPresentation.learningMessage(task)
+        let needsUser = [.awaitingReview, .insufficientSpeech, .failed, .superseded].contains(task.state)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            switch task.state {
+            case .running, .queued: ProgressView().controlSize(.mini).accessibilityHidden(true)
+            case .learned: Image(systemName: "checkmark.circle").foregroundStyle(.secondary).accessibilityHidden(true)
+            default: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).accessibilityHidden(true)
+            }
+            Text(message).font(.callout).foregroundStyle(needsUser ? .primary : .secondary)
+                .textSelection(.enabled).layoutPriority(1).accessibilityLabel(message)
+            Spacer(minLength: 0)
+            HStack(spacing: 6) {
+                switch task.state {
+                case .queued, .running:
+                    Button("Cancel") { Task { await presentation.cancelLearning(task.id) } }
+                        .help("Stop learning this voice. The name stays.")
+                case .awaitingReview:
+                    playMenu(task)
+                    Button("Add to \(task.review?.profileName ?? task.name)") {
+                        Task { await presentation.resolveLearning(task.id, .add) }
+                    }
+                    .help("Add this speech to the saved voice anyway")
+                    Button("Different Person…") { differentName = ""; differentPerson = task }
+                        .help("Save this speech as a new saved voice. The meeting's names stay unchanged.")
+                    Button("Don't Remember") { Task { await presentation.resolveLearning(task.id, .dontRemember) } }
+                        .help("Keep the name; no saved voice changes")
+                case .insufficientSpeech, .failed:
+                    Button("Retry") { Task { await presentation.retryLearning(task.id) } }
+                    Button("Dismiss") { Task { await presentation.dismissLearning(task.id) } }
+                case .learned, .superseded, .cancelled:
+                    Button("Dismiss") { Task { await presentation.dismissLearning(task.id) } }
+                }
+            }
+            .fixedSize().controlSize(.small)
+        }
+        .padding(.horizontal, needsUser ? 12 : 0).padding(.vertical, needsUser ? 8 : 0)
+        .background(needsUser ? Color.orange.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8))
+        .task(id: task.state) {
+            // "Remembered" fades after a moment.
+            guard task.state == .learned else { return }
+            try? await Task.sleep(for: .seconds(5))
+            await presentation.dismissLearning(task.id)
+        }
+    }
+
+    /// Play for a review: each held clip from its start in the meeting's playback.
+    @ViewBuilder private func playMenu(_ task: VoiceLearningTask) -> some View {
+        let clips = (task.review?.samples ?? []).sorted { ($0.recordingID.uuidString, $0.interval.start) < ($1.recordingID.uuidString, $1.interval.start) }
+        let timeline = player?.meetingID == presentation.meetingID ? player?.timeline : nil
+        let starts: [(label: String, time: MediaTime)] = clips.compactMap { clip in
+            guard let timeline, let time = try? timeline.globalTime(recordingID: clip.recordingID, activeTime: clip.interval.start) else { return nil }
+            let recording = presentation.snapshot?.recordings.first { $0.id == clip.recordingID }
+            return (recording?.clockLabel(at: clip.interval.start) ?? "", time)
+        }.sorted { $0.time < $1.time }
+        Menu("Play") {
+            ForEach(Array(starts.enumerated()), id: \.offset) { index, start in
+                Button("Speech \(index + 1)" + (start.label.isEmpty ? "" : " · \(start.label)")) {
+                    player?.play(from: start.time, meetingID: presentation.meetingID)
+                }
+            }
+        }
+        .disabled(starts.isEmpty)
+        .help(starts.isEmpty ? "Play the meeting once, then play the held speech from here" : "Play the held speech in the meeting")
+    }
+
     @ViewBuilder private var draftNamingStatus: some View {
         let messages = presentation.draftNamingMessages
         if !messages.isEmpty {
@@ -582,13 +678,6 @@ struct RenameSpeakerView: View {
                 .textFieldStyle(.roundedBorder).focused($nameFocused)
                 .accessibilityLabel("Speaker name").disabled(presentation.isBusy)
             if !unidentified { savedVoices }
-            if presentation.isRemembering {
-                HStack {
-                    ProgressView().controlSize(.small)
-                    Text("Checking saved speech…").font(.callout)
-                    Button("Cancel Remembering") { presentation.cancelRemembering() }
-                }
-            }
             if let error = presentation.renameError {
                 Text(error).foregroundStyle(Color.errorText).font(.callout).textSelection(.enabled)
             }

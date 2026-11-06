@@ -188,7 +188,7 @@ private func pair(_ similarity: Double, same: Bool) -> NamedVoicePair {
         await p.beginNameFragment(recordingID: fixture.recording.id, segmentIDs: segments.map(\.id))
         #expect(p.fragmentSegmentIDs == segments.map(\.id) && p.draftName.isEmpty)
         p.draftName = "Alex"; p.rememberVoice = false
-        await p.saveRename()
+        await p.saveRename(); await p.waitForLearning()
         #expect(p.renameTarget == nil && p.fragmentSegmentIDs == nil && p.snapshot?.anchors.count == segments.count)
         #expect(p.hasSpeakerNames && p.canApplyNames)
         // Reopening the sheet on a named fragment shows its name outside the empty field.
@@ -243,7 +243,7 @@ private func pair(_ similarity: Double, same: Bool) -> NamedVoicePair {
         #expect(p.scope == .reply && p.fragmentSegmentIDs == [ids[0]])
         p.scope = .voice
         #expect(p.fragmentSegmentIDs == nil)
-        p.draftName = "Dima"; await p.saveRename()
+        p.draftName = "Dima"; await p.saveRename(); await p.waitForLearning()
         let dima = try #require(try await profiles.profiles().first { $0.name == "Dima" })
         // Correct a later reply that lies inside one of Dima's saved samples.
         let before = try #require(try await profiles.recognitionProfiles().first { $0.profile.id == dima.id }).bank()
@@ -258,8 +258,8 @@ private func pair(_ similarity: Double, same: Bool) -> NamedVoicePair {
         #expect(p.suggestions.first?.id == dima.id && p.currentProfileID == dima.id)
         p.draftName = "Yuri"
         #expect(p.effectiveProfileID == yuri.id)
-        await p.saveRename()
-        #expect(p.noticeMessage?.hasPrefix("Name saved for this reply. Voice remembered locally as Yuri") == true)
+        await p.saveRename(); await p.waitForLearning()
+        #expect(p.noticeMessage?.hasPrefix("Name saved for this reply. Learning the voice of Yuri") == true)
         let labels = p.snapshot!.items.compactMap { item -> String? in if case .speech(let block) = item { block.speakerLabel } else { nil } }
         #expect(labels.first == "Dima" && labels.contains("Yuri") && labels.filter { $0 == "Yuri" }.count == 1)
         #expect(p.snapshot!.assignments.map(\.name) == ["Dima"])

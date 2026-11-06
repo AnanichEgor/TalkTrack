@@ -203,6 +203,32 @@ confirmed before a split resolve to the part that holds them
 (`resolveRecordingTime`, later cuts first). Withdrawals or exclusions made after a
 split name the part and do not match samples saved before it.
 
+### Importing a session
+
+`SessionImporter.run` (`SessionImport.swift`, import-teams-session) adds an audio or
+video file, optionally with its Teams transcript, as a new recording of a new or an
+existing meeting:
+
+- `SessionMedia.probe` refuses unsupported extensions, unreadable, protected and
+  silent files before anything is written. `SessionMedia.decode` writes 48 kHz mono
+  through `RecordingAudioWriter` (the same AAC chunks and receipts as a capture) into
+  `Recordings/.import-<recording id>/`. Several tracks are mixed by
+  `AVAssetReaderAudioMixOutput`; one compressed track is decoded packet by packet,
+  and a packet the decoder refuses becomes silence of its own length (at most 1% of
+  the audio and 10 s, otherwise `damaged`). Video is not kept. The microphone track
+  is one `imported` gap.
+- Capture timing starts at the chosen wall clock and splits at midnight and offset
+  changes like a capture; days reuse the ids of the meeting's days with the same date
+  and offset, so a name on that day applies to the import too.
+- `publishImport` commits in one transaction: the new meeting (if any), the recording
+  row, and with a transcript its final revision, day speakers and manual assignments.
+  The committed row is the only marker; afterwards the staging folder is renamed to
+  `Recordings/<recording id>` with `RENAME_EXCL`.
+- Cancel or any error finishes the writer, removes the staging folder (and a new
+  meeting's empty folder) and leaves no rows. Opening the store (`recoverImports`)
+  removes staging folders without a committed recording and finishes the rename of
+  those with one; orphan recovery ignores dotted folders.
+
 Notes have immutable revisions and a separately stored visible head. Edits first
 write a recovery file, then stage a database entry. A failed database write
 retains the file; a failed filesystem write retains the editor's in-memory text

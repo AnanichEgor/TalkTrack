@@ -865,3 +865,95 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(w.pausedJobMeetingID == nil)
     }
 }
+
+/// Import from the workspace (import-teams-session task 3.1).
+extension WorkspacePresentationTests {
+    private func importPolicy() -> FinalJobPolicy {
+        FinalJobPolicy(models: { speechModels }, missing: { _ in [] }, settings: { ProcessingSettings(meetingLanguage: $0.language) })
+    }
+
+    @Test func anImportWithoutATranscriptIsQueuedForTranscriptionAndSelected() async throws {
+        let f = try await WorkspaceFixture(); defer { f.remove() }
+        await f.workspace.start()
+        let wav = f.folder.url.appending(path: "call.wav")
+        try ImportMedia.audioFile(wav, seconds: 3, rate: 48_000)
+        try f.workspace.importSession(SessionImportRequest(destination: .newMeeting(MeetingDraft(title: "Teams call", description: "Q&A")),
+            media: wav, start: Date(), timeZoneIdentifier: "UTC"), policy: importPolicy())
+        #expect(f.workspace.importStatus?.title == "Teams call" && f.workspace.importStatus?.meetingID == nil)
+        await f.workspace.waitForImport()
+        #expect(f.workspace.importStatus == nil && f.workspace.issue == nil)
+        #expect(f.workspace.selected?.title == "Teams call" && f.workspace.recordings.count == 1)
+        let recording = try #require(f.workspace.recordings.first)
+        #expect(await until { f.processed.value.count == 1 })
+        let jobs = try await f.store.jobs(meetingID: recording.meetingID)
+        #expect(jobs.map(\.snapshot.recordingID) == [recording.id] && jobs.first?.snapshot.kind == .finalTranscription)
+    }
+
+    @Test func importsReportProgressCancelAndAreRefusedWhileBusyOrIntoTheRecordingMeeting() async throws {
+        let f = try await WorkspaceFixture(); defer { f.remove() }
+        await f.workspace.start()
+        let meeting = try await f.store.createMeeting(MeetingDraft(title: "Daily", description: ""))
+        let other = try await f.store.createMeeting(MeetingDraft(title: "Other", description: ""))
+        await f.workspace.reloadMeetings()
+        let wav = f.folder.url.appending(path: "long.wav")
+        try ImportMedia.audioFile(wav, seconds: 180, rate: 48_000)
+        try f.workspace.importSession(SessionImportRequest(destination: .existing(meeting.id), media: wav,
+            start: Date(), timeZoneIdentifier: "UTC"), policy: importPolicy())
+        #expect(f.workspace.selectedID == meeting.id && f.workspace.importStatus?.meetingID == meeting.id)
+        #expect(throws: SessionImportError.busy) {
+            try f.workspace.importSession(SessionImportRequest(destination: .existing(other.id), media: wav,
+                start: Date(), timeZoneIdentifier: "UTC"), policy: nil)
+        }
+        #expect(await until { (f.workspace.importStatus?.fraction ?? 0) > 0.05 })
+        f.workspace.cancelImport()
+        await f.workspace.waitForImport()
+        #expect(f.workspace.importStatus == nil && f.workspace.issue == nil)
+        #expect(try await f.store.recordings(meetingID: meeting.id).isEmpty && f.processed.value.isEmpty)
+
+        f.workspace.selectedID = meeting.id
+        await f.workspace.record()
+        #expect(f.workspace.activeMeeting?.id == meeting.id)
+        #expect(f.workspace.importRefusal(into: meeting.id) == .recordingMeeting)
+        #expect(throws: SessionImportError.recordingMeeting) {
+            try f.workspace.importSession(SessionImportRequest(destination: .existing(meeting.id), media: wav,
+                start: Date(), timeZoneIdentifier: "UTC"), policy: nil)
+        }
+        #expect(f.workspace.importRefusal(into: other.id) == nil && f.workspace.importRefusal(into: nil) == nil)
+        await f.deliver(seconds: 0.5)
+        await f.workspace.stop()
+    }
+
+    @Test func importedNamesQueueVoiceLearningOnlyWhenAsked() async throws {
+        let f = try await WorkspaceFixture(); defer { f.remove() }
+        await f.workspace.start()
+        let profiles = VoiceProfileStore(home: f.folder.url.appending(path: "home"))
+        let enrollment = VoiceProfileEnrollment(store: f.store, profiles: profiles, inference: EnrollmentInference())
+        f.workspace.voiceLearning = enrollment
+        let wav = f.folder.url.appending(path: "call.wav")
+        try ImportMedia.audioFile(wav, seconds: 20, rate: 48_000)
+        let transcript = try TeamsTranscriptParser.vtt(Data("""
+            WEBVTT
+
+            00:00:01.000 --> 00:00:08.000
+            <v Mark Davis>Okay, great.</v>
+
+            00:00:09.000 --> 00:00:18.000
+            <v Ana Lee>Yep, everything is working.</v>
+            """.utf8), file: "t.vtt")
+        for remember in [false, true] {
+            try f.workspace.importSession(SessionImportRequest(destination: .newMeeting(MeetingDraft(title: "Call \(remember)", description: "")),
+                media: wav, transcript: transcript, start: Date(), timeZoneIdentifier: "UTC", rememberVoices: remember,
+                speakerModels: speechModels), policy: importPolicy())
+            await f.workspace.waitForImport()
+            #expect(f.workspace.issue == nil)
+        }
+        let tasks = try await enrollment.tasks()
+        #expect(tasks.map(\.name).sorted() == ["Ana Lee", "Mark Davis"])
+        #expect(Set(tasks.map(\.request.meetingID)) == [try #require(f.workspace.selectedID)])
+        // A transcript makes the recording final: nothing is queued for transcription,
+        // and the meeting is ready rather than offering to transcribe it.
+        #expect(f.processed.value.isEmpty)
+        #expect(f.workspace.selectedStatus == .ready)
+        await enrollment.waitUntilIdle()
+    }
+}

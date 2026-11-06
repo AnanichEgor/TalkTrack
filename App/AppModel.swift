@@ -44,6 +44,8 @@ struct WorkspaceServices {
     private(set) var state: State = .loading
     /// Incremented by the File ▸ New Meeting command; the window presents the sheet.
     var newMeetingRequests = 0
+    /// File ▸ Import Session… asks the window to open the import sheet.
+    var importRequests = 0
     /// Incremented by Edit ▸ Find Meetings; the sidebar focuses its search field.
     var searchFocusRequests = 0
     var settingsTab: SettingsTab = .general
@@ -227,7 +229,11 @@ struct WorkspaceServices {
         await dictation?.shutdown()
         async let downloads: Void = { await self.models?.cancelAll() }()
         if case .ready(let workspace, let services) = state {
+            // A running voice-learning task stays queued for the next launch.
+            speakers.attach(nil)
+            async let learning: Void = services.enrollment.shutDown()
             await workspace.prepareToQuit(notes: services.notes)
+            await learning
         }
         await downloads
     }
@@ -321,9 +327,19 @@ struct WorkspaceServices {
             }
             models?.onChange = { [weak workspace] in Task { await workspace?.refreshMissingModels() } }
             let enrollment = VoiceProfileEnrollment(store: store, profiles: VoiceProfileStore(home: Self.profilesHome), inference: runtime)
+            // Voices named with Remember voice are learned in the background; recording pauses it.
+            workspace.captureActivity = { active in await enrollment.setCaptureActive(active) }
+            workspace.voiceLearning = enrollment
             speakers.mergeCalibration = { try await store.mergeCalibration() }
             speakers.voiceCorrections = { try await store.voiceCorrections() }
             speakers.sampleContexts = { samples in await store.voiceSampleContexts(samples) }
+            speakers.meetingTitle = { id in try? await store.meeting(id).title }
+            speakers.openMeeting = { [weak self, weak workspace] id in
+                workspace?.selectedID = id
+                self?.openMainWindowAction?()
+                self?.showMainWindow()
+            }
+            speakers.attach(enrollment)
             preview.isCapturing = { [weak workspace] in workspace.map { $0.phase != .idle } ?? false }
             state = .ready(workspace, WorkspaceServices(store: store, notes: NotesAutosave(store: store),
                                                         enrollment: enrollment, jobPolicy: policy, player: player,
@@ -344,6 +360,7 @@ struct WorkspaceServices {
                                                             try TextServerPreferences.snapshot(for: .translation)
                                                                 ?? current().model(for: .translation).snapshot(for: .translation) }))
             await workspace.start()
+            await enrollment.start()
         } catch {
             state = .failed(error.localizedDescription, recovery: (error as? LocalizedError)?.recoverySuggestion)
         }
@@ -407,6 +424,8 @@ struct WorkspaceServices {
         moveTask = Task {
             defer { moveTask = nil }
             services.player.pause()
+            speakers.attach(nil)
+            await services.enrollment.shutDown()
             await workspace.prepareToQuit(notes: services.notes)
             let source = services.store.library
             do {

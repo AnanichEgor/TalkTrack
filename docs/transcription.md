@@ -41,6 +41,24 @@ text and speaker IDs intact. No production calibration is bundled yet, so the
 default service returns `uncalibrated` before loading any models. Calibration,
 the full workspace, reconciliation-review UI and job wiring remain pending.
 
+## Imported transcripts
+
+An imported Teams transcript (DOCX or VTT, `TeamsTranscriptParser`) becomes the
+recording's final revision directly, without a job; the revision carries
+`importSource` (format, file name, SHA-256) and the segmentation/embedding snapshots
+current at import, so naming and voice learning accept its evidence. Each reply is
+one segment from its start to the next reply's start or, when earlier, 1 s + 0.5 s per
+word later, so a short interjection does not own the monologue around it (a VTT keeps
+its own end),
+clipped to the audio; a transcript that starts more than two seconds past the audio
+is refused. Each distinct name is a day speaker with a manual assignment whose
+evidence is its replies, so Reprocess names the new voices from those replies, like
+any manual name. Status reads such a recording as `Transcript ready` although it has
+no final job. Without a transcript the recording is queued for final transcription
+like a stopped capture. With Remember participants' voices on (the default) every
+name is queued for background learning, into the saved voice of the same name when a
+compatible one exists.
+
 ## Live status
 
 `LiveTranscriptionState` belongs to the live session, not the final-processing job.

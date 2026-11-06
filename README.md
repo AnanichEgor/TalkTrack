@@ -29,6 +29,12 @@ supported.
   committed chunks and recovered at the next launch. Microphone device changes are handled without
   stopping the recording.
 
+- Import a Microsoft Teams session (File ▸ Import Session…, ⇧⌘I, or Import Recording
+  in a meeting): an MP4/MOV/M4A/MP3/WAV recording becomes a new recording of a new or
+  an existing meeting, only its audio is kept, and its Teams DOCX or VTT transcript,
+  if given, becomes the transcript with the participants' names (their voices are
+  learned in the background). Without a transcript the recording is transcribed.
+
 **Transcription**
 - Optional live transcript while recording (lightweight model, provisional).
 - After Stop, the whole recording is transcribed again with a stronger model, word

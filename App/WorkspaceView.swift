@@ -36,7 +36,8 @@ struct WorkspaceView: View {
                     }
                 }
             case let .ready(workspace, services):
-                WorkspaceSplitView(workspace: workspace, services: services, newMeetingRequests: model.newMeetingRequests)
+                WorkspaceSplitView(workspace: workspace, services: services, newMeetingRequests: model.newMeetingRequests,
+                                   importRequests: model.importRequests)
             }
         }
         .task { await model.load() }
@@ -84,11 +85,14 @@ enum MeetingSheet: Identifiable {
     case edit(Meeting)
     /// A new meeting for a recording of the selected meeting, which moves into it.
     case moveRecording(UUID)
+    /// Import a Teams session into a new meeting (nil) or this meeting.
+    case importSession(UUID?)
     var id: String {
         switch self {
         case .create: "create"
         case .edit(let meeting): "edit:\(meeting.id)"
         case .moveRecording(let recording): "move:\(recording)"
+        case .importSession(let meeting): "import:\(meeting?.uuidString ?? "new")"
         }
     }
 }
@@ -97,6 +101,7 @@ struct WorkspaceSplitView: View {
     @Bindable var workspace: WorkspacePresentation
     let services: WorkspaceServices
     let newMeetingRequests: Int
+    let importRequests: Int
     @State private var sheet: MeetingSheet?
     @State private var deleting: Meeting?
 
@@ -116,9 +121,14 @@ struct WorkspaceSplitView: View {
             }
         }
         .onChange(of: newMeetingRequests) { if sheet == nil { sheet = .create } }
+        .onChange(of: importRequests) { if sheet == nil { sheet = .importSession(nil) } }
         .onChange(of: workspace.selectedID) { if workspace.selectedID == nil { services.player.load(meetingID: nil, recordings: []) } }
         .sheet(item: $sheet) { sheet in
-            MeetingFormView(workspace: workspace, sheet: sheet, policy: services.jobPolicy)
+            if case .importSession(let meetingID) = sheet {
+                ImportSessionView(workspace: workspace, policy: services.jobPolicy, meetingID: meetingID)
+            } else {
+                MeetingFormView(workspace: workspace, sheet: sheet, policy: services.jobPolicy)
+            }
         }
         .confirmationDialog(deleting.map { "Delete “\($0.title)”?" } ?? "",
                             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
@@ -156,6 +166,7 @@ struct WorkspaceSplitView: View {
 
 struct MeetingSidebar: View {
     @Environment(AppModel.self) private var app
+    @Environment(\.openSettings) private var openSettings
     @Bindable var workspace: WorkspacePresentation
     let services: WorkspaceServices
     @Binding var sheet: MeetingSheet?
@@ -165,11 +176,20 @@ struct MeetingSidebar: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Meetings").font(.title2.bold())
-                Button { sheet = .create } label: {
-                    Label("New Meeting", systemImage: "plus").frame(maxWidth: .infinity)
+                HStack(spacing: 8) {
+                    Button { sheet = .create } label: {
+                        Label("New Meeting", systemImage: "plus").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .help("Create a meeting (⌘N)")
+                    Button { sheet = .importSession(nil) } label: {
+                        Image(systemName: "square.and.arrow.down")
+                    }
+                    .controlSize(.large)
+                    .disabled(workspace.importStatus != nil)
+                    .help(workspace.importStatus != nil ? "Wait for the running import to finish" : "Import a Teams recording and transcript (⇧⌘I)")
+                    .accessibilityLabel("Import Session")
                 }
-                .buttonStyle(.borderedProminent).controlSize(.large)
-                .help("Create a meeting (⌘N)")
                 SearchField(text: $workspace.search, prompt: "Search meetings (⌘F)", focusRequests: app.searchFocusRequests)
             }
             .padding(.horizontal, 16).padding(.top, 12).padding(.bottom, 8)
@@ -194,6 +214,8 @@ struct MeetingSidebar: View {
                                 .tag(meeting.id)
                                 .contextMenu {
                                     Button("Rename…") { sheet = .edit(meeting) }
+                                    Button("Import Recording…") { sheet = .importSession(meeting.id) }
+                                        .disabled(workspace.importRefusal(into: meeting.id) != nil)
                                     Button("Export All…") {
                                         Task { await MarkdownExporter.export(meetingID: meeting.id, section: nil, services: services, workspace: workspace) }
                                     }
@@ -210,11 +232,32 @@ struct MeetingSidebar: View {
                 }
             }
 
-            Divider()
-            SettingsLink {
-                Label("Settings", systemImage: "gear")
+            if let status = workspace.importStatus {
+                Divider()
+                ImportProgressRow(status: status, cancel: workspace.cancelImport)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
             }
-            .buttonStyle(.borderless)
+            Divider()
+            HStack {
+                SettingsLink {
+                    Label("Settings", systemImage: "gear")
+                }
+                .buttonStyle(.borderless)
+                Spacer()
+                // Settings tabs cannot show badges: voices waiting for an answer
+                // are counted here and open Settings ▸ Speakers.
+                let reviews = app.speakers.reviewCount
+                if reviews > 0 {
+                    Button { app.showSettings(openSettings, tab: .speakers) } label: {
+                        Text(reviews == 1 ? "1 voice to review" : "\(reviews) voices to review")
+                            .font(.caption.weight(.medium)).foregroundStyle(.white)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Capsule().fill(.orange))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Saved voices waiting for your answer in Settings ▸ Speakers")
+                }
+            }
             .padding(.horizontal, 16).padding(.vertical, 10)
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -323,6 +366,7 @@ struct MeetingFormView: View {
         case .create: "New Meeting"
         case .edit: "Rename Meeting"
         case .moveRecording: "Move to New Meeting"
+        case .importSession: "Import Session"
         }
     }
     private var action: String {
@@ -330,6 +374,7 @@ struct MeetingFormView: View {
         case .create: "Create"
         case .edit: "Save"
         case .moveRecording: "Create and Move"
+        case .importSession: "Import"
         }
     }
     private var canSave: Bool { !saving && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -371,6 +416,7 @@ struct MeetingFormView: View {
             case .edit(let meeting): try await workspace.renameMeeting(meeting.id, title: title, description: description)
             case .moveRecording(let recording):
                 try await workspace.moveRecordingToNewMeeting(recording, title: title, description: description, policy: policy)
+            case .importSession: break
             }
             dismiss()
         } catch {

@@ -16,6 +16,8 @@ xcuserdata/
 __pycache__/
 *.pyc
 /docs/SESSION_HANDOFF.md
+# Real meeting files used for local import checks.
+/tmp/
 
 # Developer-only material kept locally, not published:
 # agent notes, the original brief, validation evidence, debug screens,

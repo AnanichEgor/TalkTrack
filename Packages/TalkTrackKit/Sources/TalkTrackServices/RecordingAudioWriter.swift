@@ -84,9 +84,14 @@ public actor RecordingAudioWriter {
         deinit { encoder.abort(); close(fd) }
     }
 
+    /// The recording's folder name under `Recordings`; an import writes into a
+    /// dotted staging name that recovery ignores until it is published.
+    private var folderName: String
+
     private init(library: OpenedLibrary, recording: Recording,
-                 hook: (@Sendable (AudioCommitPoint) throws -> Void)? = nil) {
+                 hook: (@Sendable (AudioCommitPoint) throws -> Void)? = nil, folderName: String? = nil) {
         self.library = library
+        self.folderName = folderName ?? recording.id.uuidString
         manifest = RecordingAudioManifest(recording: recording, audio: [])
         echo = recording.playbackEcho ?? []
         commitHook = hook
@@ -97,10 +102,10 @@ public actor RecordingAudioWriter {
     }
 
     static func create(library: OpenedLibrary, recording: Recording,
-                       hook: (@Sendable (AudioCommitPoint) throws -> Void)?) async throws -> RecordingAudioWriter {
+                       hook: (@Sendable (AudioCommitPoint) throws -> Void)?, folderName: String? = nil) async throws -> RecordingAudioWriter {
         guard recording.chunks.isEmpty, recording.activeDuration == .zero,
               recording.state == .preparing else { throw audioStorageError("A new recording is required") }
-        let writer = RecordingAudioWriter(library: library, recording: recording, hook: hook)
+        let writer = RecordingAudioWriter(library: library, recording: recording, hook: hook, folderName: folderName)
         try await writer.prepare()
         return writer
     }
@@ -110,7 +115,7 @@ public actor RecordingAudioWriter {
         let meetings = try owned.directory("Meetings")
         let meeting = try meetings.createDirectory(manifest.recording.meetingID.uuidString)
         let recordings = try meeting.createDirectory("Recordings")
-        let name = manifest.recording.id.uuidString
+        let name = folderName
         guard mkdirat(recordings.fd, name, 0o700) == 0 else {
             throw LibraryError.io(operation: "create a new recording folder", code: errno)
         }

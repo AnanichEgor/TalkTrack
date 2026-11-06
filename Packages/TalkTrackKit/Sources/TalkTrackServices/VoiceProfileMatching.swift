@@ -196,7 +196,7 @@ struct VoiceRecognitionProfile: Equatable, Sendable {
                 createdAt: revision.createdAt, libraryID: revision.libraryID, meetingID: revision.meetingID, daySpeakerID: revision.daySpeakerID,
                 assignmentID: revision.assignmentID, segmentation: revision.segmentation, embedding: revision.embedding,
                 preprocessingVersion: revision.preprocessingVersion, enrollmentPolicyVersion: revision.enrollmentPolicyVersion,
-                calibrationVersion: revision.calibrationVersion, samples: kept)
+                calibrationVersion: revision.calibrationVersion, samples: kept, selectionVersion: revision.selectionVersion)
         }
         return VoiceRecognitionProfile(profile: profile, revision: clean(revision), history: history.map(clean))
     }

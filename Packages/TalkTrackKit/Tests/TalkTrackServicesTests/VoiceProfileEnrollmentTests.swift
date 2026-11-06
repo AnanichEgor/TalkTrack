@@ -103,16 +103,17 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
         #expect(!FileManager.default.fileExists(atPath: profiles.databaseURL.path))
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
         p.draftName = "Alex"; #expect(p.effectiveProfileID == nil)
-        await p.saveRename()
+        await p.saveRename(); await p.waitForLearning()
         let alex = try #require(try await profiles.profiles().first)
-        #expect(alex.name == "Alex" && p.noticeMessage?.contains("Voice remembered locally as Alex") == true)
+        #expect(alex.name == "Alex" && p.noticeMessage?.contains("Learning the voice of Alex") == true)
+        #expect(try await profiles.learningTasks().last?.state == .learned)
         // Saved voices are suggested first and a typed same name selects the profile.
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
         #expect(p.profiles == [alex])
         p.draftName = "al"; #expect(p.suggestions == [alex] && p.effectiveProfileID == nil)
         p.draftName = "bo"; #expect(p.suggestions.isEmpty)
         p.draftName = " alex "; #expect(p.effectiveProfileID == alex.id)
-        await p.saveRename()
+        await p.saveRename(); await p.waitForLearning()
         let after = try await profiles.profiles()
         #expect(after.count == 1 && after[0].id == alex.id && after[0].revisionID != alex.revisionID)
         try await f.store.close()
@@ -140,7 +141,7 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
 
     /// Samples are chosen over all of the speaker's speech (user request,
     /// 2026-10-14): eight short clips at the start do not fill the voice, and
-    /// only the kept clips are embedded.
+    /// at most 16 clips are embedded.
     @Test func eightEarlyShortSamplesDoNotHideLaterAdequateSpeech() async throws {
         let root = try TemporaryFolder(); defer { root.remove() }
         let f = try await enrollmentFixture(root.url), profiles = VoiceProfileStore(home: root.url), model = EnrollmentInference(.fragmentedFirstWindow)
@@ -151,8 +152,9 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
         #expect(revision.samples.reduce(0) { $0 + $1.interval.duration.seconds } >= 10)
         #expect(revision.samples.contains { $0.interval.duration.seconds > 8 })
         #expect(revision.samples.contains { $0.interval.start.seconds < 10 } && revision.samples.contains { $0.interval.start.seconds >= 16 })
+        // Spares are embedded too (at most 16) so selection can compare them.
         let frames = await model.embeddingFrames
-        #expect(frames.count == revision.samples.count)
+        #expect(frames.count >= revision.samples.count && frames.count <= VoiceProfileEvidenceReader.maximumEmbedded)
         try await f.store.close()
     }
 
@@ -165,13 +167,13 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
         let p = MeetingTranscriptPresentation(store: f.store, meetingID: f.meeting.id, enrollment: service)
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
         #expect(p.profiles == [first] && p.rememberVoice)
-        p.draftName = "Алексей"; p.rememberVoice = true; p.selectedProfileID = first.id; await p.saveRename()
+        p.draftName = "Алексей"; p.rememberVoice = true; p.selectedProfileID = first.id; await p.saveRename(); await p.waitForLearning()
         let second = try #require(try await profiles.profiles().first)
         #expect(second.id == first.id && second.name == "Alex" && second.revisionID != first.revisionID)
         #expect(try await profiles.revision(second.revisionID)?.previousRevisionID == first.revisionID)
         #expect(try await profiles.revision(first.revisionID) == old)
         #expect(p.snapshot?.assignments[0].name == "Алексей")
-        #expect(p.noticeMessage?.contains("Voice remembered locally as Alex") == true)
+        #expect(try await profiles.learningTasks().last?.created?.name == "Alex")
         try await f.store.close()
     }
 
@@ -181,12 +183,14 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
         let p = MeetingTranscriptPresentation(store: f.store, meetingID: f.meeting.id,
             enrollment: VoiceProfileEnrollment(store: f.store, profiles: profiles, inference: EnrollmentInference()))
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
-        p.draftName = "Alex"; p.rememberVoice = true; await p.saveRename()
+        p.draftName = "Alex"; p.rememberVoice = true; await p.saveRename(); await p.waitForLearning()
         #expect(p.renameTarget == nil && p.renameError == nil && p.errorMessage == nil)
         #expect(p.snapshot?.assignments[0].name == "Alex")
-        #expect(p.noticeMessage?.contains("Name saved") == true && p.noticeMessage?.contains("10 seconds") == true)
+        #expect(p.noticeMessage?.contains("Name saved") == true)
+        // The outcome is reported on the learning task (meeting notice, Settings).
+        let task = try #require(try await profiles.learningTasks().last)
+        #expect(task.state == .insufficientSpeech && task.message?.contains("10 seconds") == true)
         #expect(try await profiles.profiles().isEmpty)
-        #expect(!FileManager.default.fileExists(atPath: profiles.databaseURL.path))
         try await f.store.close()
     }
 
@@ -295,21 +299,26 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
         try await f.store.close()
     }
 
-    @Test @MainActor func cancellingRememberingKeepsLocalNameAndNoProfile() async throws {
+    /// background-voice-learning 3.1: Save closes the sheet while the voice is
+    /// still being learned; Undo then stops the learning and keeps no voice.
+    @Test @MainActor func saveClosesAtOnceAndUndoWhileLearningStopsIt() async throws {
         let root = try TemporaryFolder(); defer { root.remove() }
         let f = try await enrollmentFixture(root.url), profiles = VoiceProfileStore(home: root.url), model = EnrollmentInference()
         await model.setDelay(true)
-        let p = MeetingTranscriptPresentation(store: f.store, meetingID: f.meeting.id,
-            enrollment: VoiceProfileEnrollment(store: f.store, profiles: profiles, inference: model))
+        let service = VoiceProfileEnrollment(store: f.store, profiles: profiles, inference: model)
+        let p = MeetingTranscriptPresentation(store: f.store, meetingID: f.meeting.id, enrollment: service)
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
         p.draftName = "Alex"; p.rememberVoice = true
-        let task = Task { await p.saveRename() }
+        await p.saveRename()
+        #expect(p.renameTarget == nil && !p.isBusy && p.snapshot?.assignments[0].name == "Alex")
+        #expect(p.noticeMessage?.contains("Learning the voice of Alex in the background") == true)
         while await model.activityCalls == 0 { await Task.yield() }
-        #expect(p.isRemembering && p.isBusy)
-        p.cancelRemembering(); await task.value
-        #expect(p.noticeMessage?.contains("cancelled") == true && p.snapshot?.assignments[0].name == "Alex")
-        #expect(!p.isBusy && !p.isRemembering && p.renameTarget == nil)
+        #expect(p.canUndo)
+        await p.undoLastNaming()
+        #expect(p.noticeMessage?.contains("Learning the voice was stopped") == true)
+        await service.waitUntilIdle()
         #expect(try await profiles.profiles().isEmpty)
+        #expect(try await profiles.learningTasks().map(\.state) == [.cancelled])
         try await f.store.close()
     }
 
@@ -336,9 +345,10 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
         try db.execute("CREATE TRIGGER fail_profile BEFORE UPDATE ON profiles BEGIN SELECT RAISE(ABORT, 'injected profile write'); END")
         let p = MeetingTranscriptPresentation(store: f.store, meetingID: f.meeting.id, enrollment: service)
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
-        p.draftName = "Local survives"; p.rememberVoice = true; p.selectedProfileID = first.id; await p.saveRename()
+        p.draftName = "Local survives"; p.rememberVoice = true; p.selectedProfileID = first.id; await p.saveRename(); await p.waitForLearning()
         #expect(p.snapshot?.assignments[0].name == "Local survives")
-        #expect(p.noticeMessage?.contains("injected profile write") == true)
+        let failed = try #require(try await profiles.learningTasks().last)
+        #expect(failed.state == .failed && failed.message?.contains("injected profile write") == true)
         #expect(try await profiles.profiles() == [first])
         #expect(try db.integer("SELECT count(*) FROM revisions") == 1)
         try db.execute("DROP TRIGGER fail_profile")

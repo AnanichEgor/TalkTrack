@@ -10,12 +10,12 @@ existing **Voice profile** to add explicitly confirmed evidence to that person.
 Selecting an existing profile does not rename that profile or rewrite historical
 meeting names. A day name can differ from the saved profile's display name.
 
-Save commits the day name first. The application then checks saved system audio
-and stores a representation only if enough suitable speech is available. An
-error, insufficient speech, or **Cancel Remembering** leaves the committed day
-name and transcript intact. The result message says whether remembering finished;
-a saved name alone never means a profile was saved. To retry, select the speaker,
-turn remembering on again and save a fresh confirmation.
+Save commits the day name and closes the sheet at once; the voice is learned in
+the background (background-voice-learning, 2026-11-06). The notice says
+`Learning the voice of <name> in the background.` and keeps **Undo**. An error,
+too little speech or a changed name leaves the committed day name and transcript
+intact; a saved name alone never means a voice was saved. See **Background
+learning** below.
 
 ## Evidence and storage
 
@@ -30,9 +30,8 @@ excluded. Basic energy/clipping checks are not a calibrated noise-quality score.
 The initial enrollment policy requires at least ten seconds across two or more
 non-overlapping samples, retaining at most eight normalized 256-dimensional
 vectors per revision. Samples come from the whole of the speaker's speech
-(2026-10-14): its speech time is divided into eight equal stretches and each keeps
-its longest clean clip (a second one fills a stretch without clean speech); only
-kept clips are embedded. Remembering from a named fragment uses only that person's
+(2026-10-14): its speech time is divided into eight equal stretches. How clips are
+read and chosen within them is described under **Background learning**. Remembering from a named fragment uses only that person's
 named fragments of the meeting day, and the revision's speaker key is that person
 and day, so a later confirmation supersedes it in calibration. Adjacent different voice slots keep separate
 transition guards. Short or mixed speech produces an explanation instead of
@@ -48,7 +47,7 @@ Production profiles live at:
 The profile database is independent of the selected session root and Models.
 An absent registry is not created by listing profiles or ordinary renaming.
 Only successful evidence preparation proceeds to profile persistence. SQLite
-schema 3 uses a separate application ID; unsupported future schemas and unsafe
+schema 5 uses a separate application ID; unsupported future schemas and unsafe
 paths are refused. Profile revision, current head and confirmation replay guard
 commit in one transaction. A failed update preserves the previous head and
 immutable evidence. Session schema remains version 2.
@@ -200,6 +199,9 @@ reads the meeting's naming heads (`SessionStore.namingHeads`); the token
 the Save created or extended. Undo runs two separate steps, because the session
 library and `Speakers.sqlite3` share no transaction:
 
+0. A learning task the Save queued that has not finished is cancelled
+   (`VoiceProfileEnrollment.undoLearning`); nothing is added afterwards and the
+   notice says `Learning the voice was stopped.` A learned task continues below.
 1. `VoiceProfileStore.undoEnrollment(created:previous:)` moves the voice back to
    its previous revision, or deletes a voice the Save created, and deletes the
    created revision under `secure_delete`. The enrollment receipt stays, so that
@@ -230,6 +232,68 @@ nothing. If recording it fails, the name is still removed and the error row says
 saved voices still use the speech; Retry records it.
 
 Tests: `./scripts/test.sh --filter 'NamingUndoTests|SpeakerRenameTests|SavedSpeakersTests'`.
+
+## Background learning
+
+Every Save with Remember voice, Remember Voices… from a draft, a reply correction
+and the incompatible-voice replacement store a learning task in `Speakers.sqlite3`
+(schema 5, table `learning_tasks(id, library_id, meeting_id, state, created_at,
+payload)`; schema 4 upgrades with a temporary backup, older builds refuse it). The
+payload is the confirmation's identity (library, meeting, speaker, manual
+assignment, recordings, final revisions, named fragments) and the voice choice; it
+is rebuilt and validated against the library before reading audio and again in
+the commit (`SessionStore.voiceConfirmation(for:)`), so a renamed speaker ends
+`superseded` and adds nothing.
+
+`VoiceProfileEnrollment` runs tasks one at a time at utility priority, only for
+the open library. Record cancels the running task, which is queued again and
+restarts after Stop; Quit and a library move stop it and leave it queued
+(`shutDown`); launch turns tasks left `running` back to `queued` (`start`). The
+commit checks the task is still running or awaiting review in the same transaction,
+so a task cancelled during the commit adds nothing and replay cannot add twice.
+States: `queued`, `running`, `awaitingReview`, `learned`, `insufficientSpeech`,
+`failed`, `cancelled`, `superseded`. Finished tasks the user dismissed are
+removed after seven days.
+
+**Reading.** Candidates come from the transcript without a model: the person's
+speech minus 0.5 s around other speakers, cut into pieces of at most 8 s, ranked
+by length within each of the eight stretches. The first pass segments only the
+windows of the best two candidates per stretch; only when that gives less than the
+policy minimum, or leaves a stretch with candidates but no clean clip, are the
+remaining windows read in time order until it is enough. Each stretch keeps its
+three longest clean clips; at most 16 clips are embedded (the best of each
+stretch, then the longest spares).
+
+**Selection.** Clips much less similar to the rest than the set is to itself
+(median similarity more than 0.15 below the set's median) are dropped as someone
+else. A new voice keeps one clip per stretch, then the longest spares. For an
+existing voice, farthest-point selection runs against its current bank: each step
+takes the clip least like the bank and the clips already chosen, and stops once
+the closest remaining clip is within 0.08 of what is kept and the minimum is met.
+A well-covered voice therefore gains two samples; a voice heard in new conditions
+gains up to eight. Revisions record `selectionVersion` (`ranked-bank-aware-v1`);
+the enrollment policy version is unchanged, so older revisions still match.
+
+**Review.** Before adding to an existing voice with two or more samples, the
+selected speech is scored with the recognition matcher against the bank. It is
+held when the score is below the bank's own weakest leave-one-out score minus
+0.05, capped at 0.5, or below an active calibration's threshold when that is lower.
+The cap exists because a bank from one meeting is tighter than the same voice
+across meetings (measured on real meetings: 2 of 6 repeat confirmations were held
+without it, while wrong names scored at most 0.33). A held task
+is `awaitingReview` with its clips (vectors and time ranges, no audio). The meeting
+shows a tinted banner: **Play** (each held clip in the meeting's playback),
+**Add to <name>** (an explicit confirmation), **Different Person…** (a new saved
+voice under another name; the meeting's names stay) and **Don't Remember**.
+Settings ▸ Speakers lists learning above the saved voices with Cancel, Retry,
+Review… (opens the meeting) and Don't Remember. Held tasks are counted on the
+sidebar's Settings row ("N voices to review") and in the menu bar's Settings… item,
+both opening Settings ▸ Speakers (Settings toolbar tabs do not draw badges). A remembered line fades after five seconds; short speech and failures
+stay until dismissed or retried.
+
+Tests: `./scripts/test.sh --filter 'VoiceLearningTaskTests|VoiceLearningPresentationTests|VoiceLearningSettingsTests'`.
+Measurements on copies of real meetings: `scripts/inference-fixture.sh voice-learning <library copy> <out.json> [<meeting id>…]`
+(renames voices to their own names to obtain confirmations; copies only).
 
 ## Reviewing and removing samples
 
