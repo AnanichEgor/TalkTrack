@@ -427,6 +427,50 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(try await f.store.jobs(meetingID: source.id).isEmpty)
     }
 
+    @Test func splittingARecordingCancelsItsWorkAndQueuesBothParts() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        let policy = FinalJobPolicy(models: { speechModels }, missing: { _ in [] },
+                                    settings: { ProcessingSettings(meetingLanguage: $0.language) })
+        // The first transcription runs until cancelled; later ones finish.
+        let runs = Box(0)
+        f.behavior.value = { id, store in
+            runs.value += 1
+            guard runs.value == 1 else { return try await store.updateJob(id, stage: .validating) }
+            try await store.updateJob(id, stage: .transcribing)
+            do { try await Task.sleep(for: .seconds(60)) } catch {
+                try? await store.updateJob(id, stage: .interrupted, error: "Cancelled")
+                throw error
+            }
+        }
+        let stopped = Box<[UUID]>([])
+        w.stopPlayback = { stopped.value.append($0) }
+        await w.start()
+        let meeting = try await w.createMeeting(title: "Daily", description: "")
+        await w.record()
+        #expect(await until { w.phase == .recording })
+        let take = try #require(w.recordings.first)
+        let middle = try MediaTime(seconds: 12)
+        #expect(w.splitRefusal(recordingID: take.id, at: middle) == "Stop recording before splitting this recording.")
+        await f.deliver(seconds: 25)
+        await w.stop()
+        #expect(await until { w.phase == .idle && w.queueStates[meeting.id] == .running })
+        #expect(w.splitRefusal(recordingID: take.id, at: middle) == nil)
+        #expect(w.splitRefusal(recordingID: take.id, at: try MediaTime(seconds: 0.5)) == "Each part must be at least one second long.")
+
+        await w.splitRecording(take.id, at: middle, policy: policy)
+
+        #expect(w.issue == nil && w.selectedID == meeting.id && stopped.value == [meeting.id])
+        #expect(w.recordings.count == 2 && w.recordings[0].id == take.id)
+        #expect(w.recordings[0].activeDuration == middle)
+        // The running transcription stopped; both parts are transcribed again.
+        #expect(await until { runs.value == 3 })
+        let jobs = try await f.store.jobs(meetingID: meeting.id).filter { $0.snapshot.kind == .finalTranscription }
+        #expect(jobs.filter { $0.stage == .cancelled || $0.stage == .interrupted }.count == 1)
+        #expect(Set(jobs.compactMap(\.snapshot.recordingID)) == Set(w.recordings.map(\.id)))
+    }
+
     @Test func aMeetingWaitingBehindAnotherShowsItsPlaceInTheQueue() async throws {
         let f = try await WorkspaceFixture()
         defer { f.remove() }

@@ -15,6 +15,28 @@ struct RecordingMoveActions {
     let toNewMeeting: (UUID) -> Void
 }
 
+/// Splitting a recording in two at a time of its active timeline.
+struct RecordingSplitActions {
+    /// Why the recording cannot be split at that time, or nil.
+    let refusal: (UUID, MediaTime) -> String?
+    let split: (UUID, MediaTime) async -> Void
+}
+
+/// A split waiting for confirmation.
+struct PendingSplit: Identifiable {
+    let id = UUID()
+    let recordingID: UUID
+    let time: MediaTime
+    /// `HH:mm:ss` where the new recording will start.
+    let label: String
+
+    var title: String { label.isEmpty ? "Split Recording?" : "Split Recording at \(label)?" }
+    var message: String {
+        "The part from \(label.isEmpty ? "this point" : label) becomes a separate recording in this meeting, with its own separator. "
+            + "Its text and speaker names stay; the recording's summary becomes outdated. Use the separator's move menu to send it to another meeting. Splitting cannot be undone."
+    }
+}
+
 struct MeetingTranscriptView: View {
     @Bindable var presentation: MeetingTranscriptPresentation
     /// The workspace player. With it, timestamps play from their speech and the
@@ -26,6 +48,8 @@ struct MeetingTranscriptView: View {
     var deleteRefusal: (UUID) -> String? = { _ in nil }
     /// Moves one recording to another or a new meeting; nil hides the move buttons.
     var move: RecordingMoveActions?
+    /// Splits a recording at a speech block; nil hides the action.
+    var split: RecordingSplitActions?
     /// Shown at the left of the action row.
     var export: ExportButton?
     /// The capturing recording's live session, shown as draft rows after its separator.
@@ -38,6 +62,7 @@ struct MeetingTranscriptView: View {
     @State private var followsLive = true
     @State private var confirmClearNames = false
     @State private var deleting: Recording?
+    @State private var splitting: PendingSplit?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -130,7 +155,8 @@ struct MeetingTranscriptView: View {
                                                         namedFragment: block.isNamedFragment, unidentified: block.isUnidentified,
                                     rename: { Task { await presentation.beginRename(recordingID: block.recordingID, segmentID: block.segments[0].id) } },
                                     nameFragment: { Task { await presentation.beginNameFragment(recordingID: block.recordingID, segmentIDs: block.segments.map(\.id)) } },
-                                    removeFragment: { Task { await presentation.removeFragmentName(recordingID: block.recordingID, segmentIDs: block.segments.map(\.id)) } }))
+                                    removeFragment: { Task { await presentation.removeFragmentName(recordingID: block.recordingID, segmentIDs: block.segments.map(\.id)) } },
+                                    split: splitAction(block, in: snapshot)))
                                 .id(item.id)
                             }
                         }
@@ -176,6 +202,14 @@ struct MeetingTranscriptView: View {
         } message: { recording in
             Text(deletionMessage(recording))
         }
+        .alert(splitting?.title ?? "", isPresented: Binding(get: { splitting != nil }, set: { if !$0 { splitting = nil } }),
+               presenting: splitting) { pending in
+            Button("Split") { Task { await split?.split(pending.recordingID, pending.time) } }
+            Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: { pending in
+            Text(pending.message)
+        }
         .confirmationDialog("Clear all speaker names in this meeting?", isPresented: $confirmClearNames) {
             Button("Clear Names", role: .destructive) { Task { await presentation.clearSpeakerNames() } }
         } message: {
@@ -194,6 +228,16 @@ struct MeetingTranscriptView: View {
         .task { await presentation.refresh() }
         .onChange(of: IndexKey(items: presentation.snapshot?.items, meetingID: player?.meetingID, duration: player?.duration),
                   initial: true) { rebuildIndex() }
+    }
+
+    /// `Split Recording Here`: the new part starts at the block's first speech.
+    private func splitAction(_ block: TranscriptBlock, in snapshot: MeetingTranscriptSnapshot) -> SplitMenuItem? {
+        guard let split, let recording = snapshot.recordings.first(where: { $0.id == block.recordingID }),
+              let time = block.segments.map(\.interval.start).min() else { return nil }
+        let refusal = presentation.isBusy ? "Wait until the transcript finishes updating." : split.refusal(recording.id, time)
+        return SplitMenuItem(refusal: refusal) {
+            splitting = PendingSplit(recordingID: recording.id, time: time, label: recording.clockLabel(at: time))
+        }
     }
 
     /// A recording's separator carries its delete action; a plain date separator
@@ -638,8 +682,14 @@ private struct VoiceList<Rows: View>: View {
     }
 }
 
-/// Rename Speaker and fragment names from the block's context menu and as
-/// VoiceOver actions.
+/// `Split Recording Here` in a block's menu; disabled with its reason.
+struct SplitMenuItem {
+    let refusal: String?
+    let action: () -> Void
+}
+
+/// Rename Speaker, fragment names and Split Recording Here from the block's
+/// context menu and as VoiceOver actions.
 private struct RenameActions: ViewModifier {
     let enabled: Bool
     let namedFragment: Bool
@@ -648,18 +698,28 @@ private struct RenameActions: ViewModifier {
     let rename: () -> Void
     let nameFragment: () -> Void
     let removeFragment: () -> Void
+    var split: SplitMenuItem?
 
     func body(content: Content) -> some View {
-        if enabled {
+        if enabled || split != nil {
             content
                 .contextMenu {
-                    if !unidentified { Button("Rename Speaker…", action: rename) }
-                    Button(unidentified ? "Who Said This…" : "Name This Reply…", action: nameFragment)
-                    if namedFragment { Button("Remove Reply Name", action: removeFragment) }
+                    if enabled {
+                        if !unidentified { Button("Rename Speaker…", action: rename) }
+                        Button(unidentified ? "Who Said This…" : "Name This Reply…", action: nameFragment)
+                        if namedFragment { Button("Remove Reply Name", action: removeFragment) }
+                    }
+                    if let split {
+                        if enabled { Divider() }
+                        Button("Split Recording Here…", systemImage: "scissors", action: split.action)
+                            .disabled(split.refusal != nil)
+                            .help(split.refusal ?? "Make a separate recording that starts at this reply")
+                    }
                 }
-                .modifier(OptionalAction(name: "Rename Speaker", enabled: !unidentified, action: rename))
-                .accessibilityAction(named: unidentified ? "Who Said This" : "Name This Reply", nameFragment)
-                .modifier(OptionalAction(name: "Remove Reply Name", enabled: namedFragment, action: removeFragment))
+                .modifier(OptionalAction(name: "Rename Speaker", enabled: enabled && !unidentified, action: rename))
+                .modifier(OptionalAction(name: unidentified ? "Who Said This" : "Name This Reply", enabled: enabled, action: nameFragment))
+                .modifier(OptionalAction(name: "Remove Reply Name", enabled: enabled && namedFragment, action: removeFragment))
+                .modifier(OptionalAction(name: "Split Recording Here", enabled: split != nil && split?.refusal == nil, action: { split?.action() }))
         } else {
             content
         }

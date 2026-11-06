@@ -50,7 +50,9 @@ struct MeetingDetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             Divider()
             PlayerBar(player: services.player, meetingID: meeting.id, recordings: workspace.recordings,
-                      recordingElsewhere: workspace.activeMeeting.map { $0.id != meeting.id } ?? false)
+                      recordingElsewhere: workspace.activeMeeting.map { $0.id != meeting.id } ?? false,
+                      split: RecordingSplitActions(refusal: { workspace.splitRefusal(recordingID: $0, at: $1) },
+                          split: { [policy = services.jobPolicy] in await workspace.splitRecording($0, at: $1, policy: policy) }))
         }
         .navigationTitle("TalkTrack")
         // Auto playback adds the microphone during the final transcript's own replies.
@@ -464,6 +466,8 @@ struct TranscriptTab: View {
                                   refusal: { workspace.moveRefusal(recordingID: $0) },
                                   toMeeting: { [policy] in await workspace.moveRecording($0, to: $1, policy: policy) },
                                   toNewMeeting: moveToNewMeeting),
+                              split: RecordingSplitActions(refusal: { workspace.splitRefusal(recordingID: $0, at: $1) },
+                                  split: { [policy] in await workspace.splitRecording($0, at: $1, policy: policy) }),
                               export: export,
                               live: workspace.liveMeetingID == presentation.meetingID ? workspace.liveDraft : nil,
                               liveRecordingID: workspace.liveRecordingID,
@@ -533,8 +537,11 @@ struct PlayerBar: View {
     let meetingID: UUID
     let recordings: [Recording]
     let recordingElsewhere: Bool
+    /// `Split at Playhead`; nil hides it.
+    var split: RecordingSplitActions?
     /// The slider value while the user drags; the player seeks on release.
     @State private var scrub: Double?
+    @State private var splitting: PendingSplit?
     @AppStorage(PlaybackTracks.preferenceKey) private var tracks = PlaybackTracks.auto.rawValue
 
     private struct Marker: Identifiable { let id: UUID; let fraction: Double; let label: String? }
@@ -614,11 +621,32 @@ struct PlayerBar: View {
             .disabled(total == 0)
             .help(total == 0 ? "Playback speed is available once the meeting has recorded audio" : "Playback speed")
             .accessibilityLabel("Playback speed \(player.speed.label)")
+            if let split {
+                let target = playheadTarget
+                let refusal = target.map { split.refusal($0.0.id, $0.1) } ?? "Play or move to the point where the new recording should start"
+                Button { if let (recording, time) = target {
+                    splitting = PendingSplit(recordingID: recording.id, time: time, label: recording.clockLabel(at: time))
+                } } label: {
+                    Image(systemName: "scissors").frame(width: 18, height: 18)
+                }
+                .buttonStyle(.bordered).controlSize(.large)
+                .disabled(refusal != nil || total == 0)
+                .help(refusal ?? "Split at Playhead: make a separate recording that starts here")
+                .accessibilityLabel("Split recording at playhead")
+            }
         }
             PlaybackNotice(player: player, capturing: player.captureActive).padding(.top, 30)
         }
         .padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 12)
         .background(.bar)
+        .alert(splitting?.title ?? "", isPresented: Binding(get: { splitting != nil }, set: { if !$0 { splitting = nil } }),
+               presenting: splitting) { pending in
+            Button("Split") { Task { await split?.split(pending.recordingID, pending.time) } }
+            Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: { pending in
+            Text(pending.message)
+        }
         .onChange(of: tracks, initial: true) { player.tracks = PlaybackTracks(rawValue: tracks) ?? .auto }
         .onChange(of: recordings, initial: true) { player.load(meetingID: meetingID, recordings: recordings) }
         .onChange(of: meetingID) { player.load(meetingID: meetingID, recordings: recordings) }
@@ -633,6 +661,16 @@ struct PlayerBar: View {
         case .both: "waveform.and.mic"
         case .microphone: "mic"
         }
+    }
+
+    /// The recording under the playhead and the playhead's time in it.
+    private var playheadTarget: (Recording, MediaTime)? {
+        guard let timeline = player.timeline else { return nil }
+        let position = player.position.microseconds
+        guard let item = timeline.recordings.first(where: { $0.global.start.microseconds <= position && position < $0.global.end.microseconds }),
+              let recording = recordings.first(where: { $0.id == item.recordingID }),
+              let local = try? MediaTime(microseconds: position - item.global.start.microseconds) else { return nil }
+        return (recording, local)
     }
 
     private var isRecordingHere: Bool {

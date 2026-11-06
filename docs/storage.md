@@ -155,12 +155,53 @@ recording over as it is, in one transaction and without a model:
    transcripts are formatted inside the transaction, so any inconsistency rolls back.
 
 Afterwards `Recordings/<recording>` is renamed into the destination meeting folder
-(`RENAME_EXCL`) and its `manifest.json` gets the destination id. Opening the store
-moves any recording folder found under another meeting than its record says, and
+(`RENAME_EXCL`); its `manifest.json` and every chunk receipt get the destination id
+(receipts name the meeting, and playback refuses a receipt of another meeting as
+damaged). Opening the store moves any recording folder found under another meeting
+than its record says, rewrites receipts of folders moved before receipts were
+rewritten (checked by the first receipt of each folder), and
 orphan recovery skips folders whose recording is recorded elsewhere. Saved voices keep
 the meeting they were confirmed in; sample context and preview look the recording up
 by id (`recordingMeetingID`). The destination translation becomes Outdated; a moved
 summary is Outdated when the meeting title or description differs.
+
+### Splitting one recording in two
+
+`SessionStore.splitRecording(_:meetingID:at:)` (`RecordingSplit.swift`) cuts a
+stopped recording at an active time T into two recordings of the same meeting,
+without a model. `RecordingCut` is the pure part:
+
+- The part before T keeps the recording's id (its generation increases); the part
+  from T is a new recording that starts at the wall clock at T, generation 1.
+- Capture intervals are clipped and shifted (host time converted with the timebase);
+  each part keeps the days its intervals use, with the same day ids, so both share
+  the day's voices like two recordings of one day.
+- Chunks before T stay, chunks after T move (active shifted). The chunk under T gets
+  a trailing trim in the first part and a leading trim in the second (at most one
+  frame lost); no audio is re-encoded. Gaps and echo stretches are clipped. Each part
+  must form a valid `MeetingTimeline`, every chunk interval must cover its whole valid
+  chunk, and both parts must be at least one second long.
+- Text: segments starting before T stay (an end past T is clipped), the rest move
+  shifted by −T with their ids. Both parts get a new head revision of the same kind; when the transcript was a current
+  final one, the new part also gets a completed final-transcription job (status reads jobs).
+  Fragment anchors follow their segment, assignment evidence of every revision and the
+  saved draft (reply names follow their row, voice names are copied) are divided the
+  same way. The translation source is rewritten so it is exactly as current as before;
+  the first part's summary is Outdated by its generation.
+- Final publications and checkpoints are not divided, so Apply Names, reply clusters
+  and draft-naming summaries are unavailable for both parts until Reprocess.
+
+Files: before the transaction `Recordings/.split-<part>/` receives clones
+(`clonefileat`, a data copy where cloning is unsupported) of the part's chunks, new
+receipts and its manifest; orphan recovery ignores non-UUID names. The transaction
+also writes a `recordingSplit` record (id = part: source, T, finished). Afterwards the
+staging folder becomes `Recordings/<part>`, the first part's cut receipts are
+rewritten, its chunk files now in the part are removed and its manifest rewritten,
+and the record is marked finished. Opening the store finishes unfinished splits and
+removes staging folders without a record. The record is kept: saved-voice samples
+confirmed before a split resolve to the part that holds them
+(`resolveRecordingTime`, later cuts first). Withdrawals or exclusions made after a
+split name the part and do not match samples saved before it.
 
 Notes have immutable revisions and a separately stored visible head. Edits first
 write a recovery file, then stage a database entry. A failed database write

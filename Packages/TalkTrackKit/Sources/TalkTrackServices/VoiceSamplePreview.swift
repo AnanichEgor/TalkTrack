@@ -34,13 +34,14 @@ import TalkTrackDomain
     /// The sample's system audio, 48 kHz mono. Explicit gaps are silence.
     public static func audio(of sample: SavedVoiceSample, library: OpenedLibrary, store: SessionStore) async throws -> [Float] {
         guard sample.libraryID == library.manifest.libraryID else { throw VoiceSamplePreviewError.unavailable }
-        // A moved recording is read from the meeting it is in now.
-        let meetingID = try await store.recordingMeetingID(sample.recordingID) ?? sample.meetingID
-        guard let recording = try await store.recordings(meetingID: meetingID).first(where: { $0.id == sample.recordingID }),
+        // A moved recording is read from the meeting it is in now, a split one from its part.
+        let (recordingID, interval) = await store.resolveRecordingTime(sample.recordingID, sample.interval)
+        let meetingID = try await store.recordingMeetingID(recordingID) ?? sample.meetingID
+        guard let recording = try await store.recordings(meetingID: meetingID).first(where: { $0.id == recordingID }),
               try await !store.isDeletedRecording(recording.id) else { throw VoiceSamplePreviewError.unavailable }
         let source = try MeetingAudioSource(library: library, meetingID: meetingID, recordings: [recording])
-        let end = min(sample.interval.end.microseconds, sample.interval.start.microseconds + maximumDuration)
-        let first = try PlaybackFrames.frame(sample.interval.start)
+        let end = min(interval.end.microseconds, interval.start.microseconds + maximumDuration)
+        let first = try PlaybackFrames.frame(interval.start)
         let last = min(try PlaybackFrames.frame(MediaTime(microseconds: end)), source.totalFrames)
         guard last > first else { return [] }
         await source.seek(toFrame: first)

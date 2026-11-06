@@ -182,6 +182,33 @@ extension SessionStore {
             let manifest = String(decoding: try folder.read("manifest.json", maximum: 16_777_216), as: UTF8.self)
             try folder.replace("manifest.json", data: Data(manifest.replacingOccurrences(of: sourceID.uuidString, with: destinationID.uuidString).utf8))
         }
+        try rewriteReceipts(folder, from: sourceID, to: destinationID)
+    }
+
+    /// Chunk receipts name the meeting and the chunk's path; playback refuses a
+    /// receipt of another meeting as damaged (move-recording, fixed by D5 of
+    /// split-recording). Idempotent.
+    func rewriteReceipts(_ folder: DirectoryHandle, from sourceID: UUID, to destinationID: UUID) throws {
+        for track in AudioTrack.allCases where folder.exists(track.rawValue) {
+            let directory = try folder.directory(track.rawValue)
+            for name in try directory.names() where name.hasSuffix(".json") {
+                let text = String(decoding: try directory.read(name, maximum: 65_536), as: UTF8.self)
+                guard text.contains(sourceID.uuidString) else { continue }
+                try directory.replace(name, data: Data(text.replacingOccurrences(of: sourceID.uuidString, with: destinationID.uuidString).utf8))
+            }
+        }
+    }
+
+    /// The meeting the first receipt of a recording folder names, when it is
+    /// not `meetingID`: a folder moved before receipts were rewritten.
+    private func staleReceiptMeeting(_ folder: DirectoryHandle, meetingID: UUID) -> UUID? {
+        for track in AudioTrack.allCases where folder.exists(track.rawValue) {
+            guard let directory = try? folder.directory(track.rawValue),
+                  let name = (try? directory.names())?.first(where: { $0.hasSuffix(".json") }),
+                  let receipt = try? DomainCodec.decode(StoredAudioChunk.self, from: directory.read(name, maximum: 65_536)) else { continue }
+            return receipt.meetingID == meetingID ? nil : receipt.meetingID
+        }
+        return nil
     }
 
     /// Launch: a recording whose folder is missing under its meeting but present
@@ -200,7 +227,15 @@ extension SessionStore {
                       let recordings = try? handle.directory("Recordings") else { return false }
                 return recordings.exists(id)
             }
-            guard !has(meeting), let holder = folders.first(where: { $0 != meeting && has($0) }),
+            if has(meeting) {
+                // Moved before receipts were rewritten with the folder.
+                if let folder = try? meetings.directory(meeting).directory("Recordings").directory(id),
+                   let stale = staleReceiptMeeting(folder, meetingID: meetingID) {
+                    try? rewriteReceipts(folder, from: stale, to: meetingID)
+                }
+                continue
+            }
+            guard let holder = folders.first(where: { $0 != meeting && has($0) }),
                   let holderID = UUID(uuidString: holder) else { continue }
             try relocateRecordingFolder(recordingID, from: holderID, to: meetingID)
         }

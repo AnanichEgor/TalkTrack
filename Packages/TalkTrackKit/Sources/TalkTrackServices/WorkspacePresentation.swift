@@ -414,6 +414,53 @@ public struct RecordControls: Equatable, Sendable {
         return nil
     }
 
+    /// Why `recordingID` cannot be split at `time` (its active time), or nil.
+    public func splitRefusal(recordingID: UUID, at time: MediaTime) -> String? {
+        if let refusal = moveRefusal(recordingID: recordingID) {
+            return refusal.replacingOccurrences(of: "moving", with: "splitting")
+        }
+        guard let recording = recordings.first(where: { $0.id == recordingID }) else { return "This recording is unavailable." }
+        guard time.microseconds >= RecordingCut.minimumPart,
+              recording.activeDuration.microseconds - time.microseconds >= RecordingCut.minimumPart else {
+            return "Each part must be at least one second long."
+        }
+        return nil
+    }
+
+    /// Splits a recording of the selected meeting at `time` into two
+    /// recordings (split-recording D6). Playback stops, the recording's
+    /// unfinished work and the meeting translation are cancelled first, and
+    /// parts without a current final transcript are queued for transcription.
+    public func splitRecording(_ recordingID: UUID, at time: MediaTime, policy: FinalJobPolicy?) async {
+        guard let meeting = selected else { return }
+        if let refusal = splitRefusal(recordingID: recordingID, at: time) {
+            issue = WorkspaceIssue(message: "This recording cannot be split here.", recovery: refusal)
+            return
+        }
+        stopPlayback?(meeting.id)
+        let active: (ProcessingJob) -> Bool = { ![.completed, .failed, .interrupted, .cancelled].contains($0.stage) }
+        for job in (try? await store.jobs(meetingID: meeting.id)) ?? []
+            where active(job) && (job.snapshot.recordingID == recordingID || job.snapshot.kind == .translation) {
+            try? await runner.cancel(jobID: job.id)
+        }
+        do {
+            let result = try await store.splitRecording(recordingID, meetingID: meeting.id, at: time)
+            if result.needsTranscription, let policy, let current = try? await store.meeting(meeting.id) {
+                do { try await enqueue(current, recordingIDs: [result.first.id, result.second.id], policy: policy) }
+                catch { issue = WorkspaceIssue(message: "The recording was split but could not be queued for transcription.",
+                                               recovery: error.localizedDescription) }
+            }
+        } catch {
+            issue = WorkspaceIssue(error)
+            return
+        }
+        recordingDeletions += 1
+        transcriptGeneration += 1
+        await refreshQueue()
+        await reloadMeetings()
+        await loadSelection()
+    }
+
     /// Meetings a recording of the selected meeting can move to, newest first.
     public var moveDestinations: [Meeting] {
         allMeetings.filter { $0.id != selected?.id }

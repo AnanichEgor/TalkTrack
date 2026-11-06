@@ -69,6 +69,8 @@ public actor SessionStore {
         for (meetingID, recordingID) in try deletedRecordings() { try? removeRecordingFolder(meetingID: meetingID, recordingID: recordingID) }
         // Folders of recordings moved just before a crash (move-recording D2).
         try? reconcileMovedRecordingFolders()
+        // Files of splits committed just before a crash (split-recording D3).
+        try? recoverSplits()
     }
 
     private func validateDatabase(_ db: SQLiteConnection) throws {
@@ -866,33 +868,36 @@ public actor SessionStore {
         let own = samples.filter { $0.libraryID == library.manifest.libraryID }
         for sample in samples where sample.libraryID != library.manifest.libraryID { result[sample.id] = .otherLibrary }
         // A moved recording's samples are shown with the meeting it is in now.
+        // A split recording's samples are found in the part that holds them now.
+        let place = Dictionary(uniqueKeysWithValues: own.map { ($0.id, resolveRecordingTime($0.recordingID, $0.interval)) })
         var current: [UUID: UUID] = [:]
-        for sample in own where current[sample.recordingID] == nil {
-            current[sample.recordingID] = (try? recordingMeetingID(sample.recordingID)).flatMap { $0 } ?? sample.meetingID
+        for sample in own where current[place[sample.id]!.0] == nil {
+            current[place[sample.id]!.0] = (try? recordingMeetingID(place[sample.id]!.0)).flatMap { $0 } ?? sample.meetingID
         }
-        for (meetingID, group) in Dictionary(grouping: own, by: { current[$0.recordingID] ?? $0.meetingID }) {
+        for (meetingID, group) in Dictionary(grouping: own, by: { current[place[$0.id]!.0] ?? $0.meetingID }) {
             guard let snapshot = try? meetingTranscript(meetingID: meetingID) else {
                 for sample in group { result[sample.id] = .recordingDeleted }
                 continue
             }
             let blocks = snapshot.items.compactMap { item -> TranscriptBlock? in if case .speech(let block) = item { block } else { nil } }
             for sample in group {
-                guard let recording = snapshot.recordings.first(where: { $0.id == sample.recordingID }),
+                let (recordingID, interval) = place[sample.id]!
+                guard let recording = snapshot.recordings.first(where: { $0.id == recordingID }),
                       (try? isDeletedRecording(recording.id)) == false else { result[sample.id] = .recordingDeleted; continue }
                 let dayID = snapshot.speakers.first { $0.id == sample.daySpeakerID }?.dayID
                 let day = recording.days.first { $0.id == dayID } ?? recording.days[0]
                 func overlaps(_ segment: TranscriptSegment) -> Bool {
-                    segment.recordingID == sample.recordingID && segment.track == .system &&
-                        max(segment.interval.start, sample.interval.start) < min(segment.interval.end, sample.interval.end)
+                    segment.recordingID == recordingID && segment.track == .system &&
+                        max(segment.interval.start, interval.start) < min(segment.interval.end, interval.end)
                 }
-                let covering = blocks.filter { $0.recordingID == sample.recordingID && $0.segments.contains(where: overlaps) }
+                let covering = blocks.filter { $0.recordingID == recordingID && $0.segments.contains(where: overlaps) }
                 let overlapping = covering.flatMap(\.segments).filter(overlaps)
                 let words = overlapping.map { $0.correctedText ?? $0.originalText }
                     .joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
                 // The wall-clock time where the sample starts, from the first
                 // overlapping segment (pauses inside a recording are respected).
                 let time = overlapping.first.flatMap { segment -> String? in
-                    let offset = max(0, sample.interval.start.seconds - segment.interval.start.seconds)
+                    let offset = max(0, interval.start.seconds - segment.interval.start.seconds)
                     return try? TranscriptFormatter.timestamp(segment.wallClockStart.addingTimeInterval(offset), day: day)
                 } ?? covering.first?.timestamp
                 result[sample.id] = .available(VoiceSampleContext.Details(meetingTitle: snapshot.meeting.title,
@@ -1590,10 +1595,10 @@ public actor SessionStore {
             [.text(meetingID.uuidString), .text(kind.rawValue), .text(scope), .text(id.uuidString)])
     }
 
-    enum RecordKind: String { case recording, notes, transcript, assignment, job, summary, translation, finalCheckpoint, daySpeaker, finalPublication, automaticVoiceMatch, summarySource, translationSource, fragmentAnchor, liveDraft, liveName }
+    enum RecordKind: String { case recording, notes, transcript, assignment, job, summary, translation, finalCheckpoint, daySpeaker, finalPublication, automaticVoiceMatch, summarySource, translationSource, fragmentAnchor, liveDraft, liveName, recordingSplit }
 
     func put<T: Codable>(_ kind: RecordKind, id: UUID, meetingID: UUID, scope: String = "", value: T) throws {
-        let mutable = kind == .recording || kind == .job || kind == .finalCheckpoint || kind == .liveDraft
+        let mutable = kind == .recording || kind == .job || kind == .finalCheckpoint || kind == .liveDraft || kind == .recordingSplit
         let conflict = mutable ? " ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload WHERE records.meeting_id=excluded.meeting_id AND records.scope=excluded.scope" : ""
         try db.execute("INSERT INTO records(kind,id,meeting_id,scope,payload) VALUES (?,?,?,?,?)" + conflict,
             [.text(kind.rawValue), .text(id.uuidString), .text(meetingID.uuidString), .text(scope), .blob(DomainCodec.encode(value))])
