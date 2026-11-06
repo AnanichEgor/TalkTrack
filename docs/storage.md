@@ -134,6 +134,34 @@ other recordings and saved global voices (`Speakers.sqlite3`) are not touched.
 Deleting the meeting removes its tombstones with it. The workspace pauses the
 player and cancels the recording's running work first.
 
+### Moving one recording to another meeting
+
+`SessionStore.moveRecording(_:from:to:)` (`RecordingMove.swift`) carries a stopped
+recording over as it is, in one transaction and without a model:
+
+1. The recording's unfinished jobs become `cancelled` (late writers find them so).
+2. Its rows are collected: everything scoped by the recording id (recording,
+   transcripts, publications, checkpoints, summary, draft, draft names), its jobs and
+   summary sources, its fragment anchors, and every day speaker those payloads name,
+   with the speaker's assignments and automatic matches; plus the heads pointing at them.
+3. A UUID remap is applied to the payload JSON: source meeting → destination; each
+   day speaker, assignment and match → a fresh id (a voice shared with another source
+   recording stays there unchanged); a speaker's canonical day of another recording →
+   this recording's day of the same date; the old recording fingerprint → the new one.
+   Unnamed moved voices are renumbered after the destination's voices of the same
+   date; assignment evidence keeps only this recording's speech.
+4. The source loses the recording through the same cascade as deletion (without a
+   tombstone), the copies are inserted under the destination, and both meetings'
+   transcripts are formatted inside the transaction, so any inconsistency rolls back.
+
+Afterwards `Recordings/<recording>` is renamed into the destination meeting folder
+(`RENAME_EXCL`) and its `manifest.json` gets the destination id. Opening the store
+moves any recording folder found under another meeting than its record says, and
+orphan recovery skips folders whose recording is recorded elsewhere. Saved voices keep
+the meeting they were confirmed in; sample context and preview look the recording up
+by id (`recordingMeetingID`). The destination translation becomes Outdated; a moved
+summary is Outdated when the meeting title or description differs.
+
 Notes have immutable revisions and a separately stored visible head. Edits first
 write a recovery file, then stage a database entry. A failed database write
 retains the file; a failed filesystem write retains the editor's in-memory text

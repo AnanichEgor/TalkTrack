@@ -152,6 +152,8 @@ public struct RecordControls: Equatable, Sendable {
 /// background transcription. Storage, capture and inference stay in services.
 @MainActor @Observable public final class WorkspacePresentation {
     public private(set) var meetings: [Meeting] = []
+    /// Every meeting, newest first, whatever the search (move destinations).
+    public private(set) var allMeetings: [Meeting] = []
     public private(set) var hasMeetings = false
     public private(set) var isLoaded = false
     public var search = "" { didSet { if search != oldValue { Task { await reloadMeetings() } } } }
@@ -295,7 +297,8 @@ public struct RecordControls: Equatable, Sendable {
             let values = try await store.meetings(search: query)
             guard query == search else { return }
             meetings = values
-            hasMeetings = query.isEmpty ? !values.isEmpty : !(try await store.meetings().isEmpty)
+            allMeetings = query.isEmpty ? values : try await store.meetings()
+            hasMeetings = !allMeetings.isEmpty
             if let id = activeMeeting?.id { activeMeeting = try? await store.meeting(id) }
         } catch { issue = WorkspaceIssue(error) }
     }
@@ -397,6 +400,78 @@ public struct RecordControls: Equatable, Sendable {
         await refreshQueue()
         await reloadMeetings()
         await loadSelection()
+    }
+
+    // MARK: Moving a recording
+
+    /// Why a recording of the selected meeting cannot be moved now, or nil.
+    public func moveRefusal(recordingID: UUID) -> String? {
+        if isQuitting { return "TalkTrack is quitting." }
+        guard let recording = recordings.first(where: { $0.id == recordingID }) else { return "This recording is unavailable." }
+        if [.preparing, .recording, .paused, .stopping].contains(recording.state) {
+            return "Stop recording before moving this recording."
+        }
+        return nil
+    }
+
+    /// Meetings a recording of the selected meeting can move to, newest first.
+    public var moveDestinations: [Meeting] {
+        allMeetings.filter { $0.id != selected?.id }
+    }
+
+    /// Moves a recording of the selected meeting, as it is, to `destinationID`
+    /// and selects that meeting. Playback of both meetings and the recording's
+    /// work (and the source translation) stop first; a recording without a final
+    /// transcript is queued for transcription in the destination.
+    public func moveRecording(_ recordingID: UUID, to destinationID: UUID, policy: FinalJobPolicy?) async {
+        guard let sourceID = selected?.id else { return }
+        if let refusal = moveRefusal(recordingID: recordingID) {
+            issue = WorkspaceIssue(message: "This recording cannot be moved now.", recovery: refusal)
+            return
+        }
+        stopPlayback?(sourceID); stopPlayback?(destinationID)
+        let active: (ProcessingJob) -> Bool = { ![.completed, .failed, .interrupted, .cancelled].contains($0.stage) }
+        for job in (try? await store.jobs(meetingID: sourceID)) ?? []
+            where active(job) && (job.snapshot.recordingID == recordingID || job.snapshot.kind == .translation) {
+            try? await runner.cancel(jobID: job.id)
+        }
+        do {
+            let result = try await store.moveRecording(recordingID, from: sourceID, to: destinationID)
+            if result.needsTranscription, let policy, let destination = try? await store.meeting(destinationID) {
+                do { try await enqueue(destination, recordingIDs: [recordingID], policy: policy) }
+                catch { issue = WorkspaceIssue(message: "The recording was moved but could not be queued for transcription.",
+                                               recovery: error.localizedDescription) }
+            }
+        } catch {
+            issue = WorkspaceIssue(error)
+            return
+        }
+        recordingDeletions += 1
+        transcriptGeneration += 1
+        search = ""
+        await refreshQueue()
+        await reloadMeetings()
+        selectedID = destinationID
+        await loadSelection()
+    }
+
+    /// Creates a meeting from the New Meeting fields and moves the recording
+    /// into it. Field errors are for the sheet; when the move itself fails the
+    /// new, empty meeting is removed again.
+    public func moveRecordingToNewMeeting(_ recordingID: UUID, title: String, description: String,
+                                          policy: FinalJobPolicy?) async throws {
+        guard let sourceID = selected?.id else { return }
+        if let refusal = moveRefusal(recordingID: recordingID) {
+            throw ServiceError(message: "This recording cannot be moved now.", recovery: refusal)
+        }
+        let meeting = try await store.createMeeting(ProcessingPreferences.meetingDraft(title: title, description: description, in: defaults))
+        await moveRecording(recordingID, to: meeting.id, policy: policy)
+        if (try? await store.recordingMeetingID(recordingID)) != meeting.id {
+            try? await store.deleteMeeting(meeting.id)
+            await reloadMeetings()
+            selectedID = sourceID
+            await loadSelection()
+        }
     }
 
     // MARK: Recording

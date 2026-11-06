@@ -82,10 +82,13 @@ struct LibraryMoveProgress: View {
 enum MeetingSheet: Identifiable {
     case create
     case edit(Meeting)
+    /// A new meeting for a recording of the selected meeting, which moves into it.
+    case moveRecording(UUID)
     var id: String {
         switch self {
         case .create: "create"
         case .edit(let meeting): "edit:\(meeting.id)"
+        case .moveRecording(let recording): "move:\(recording)"
         }
     }
 }
@@ -115,7 +118,7 @@ struct WorkspaceSplitView: View {
         .onChange(of: newMeetingRequests) { if sheet == nil { sheet = .create } }
         .onChange(of: workspace.selectedID) { if workspace.selectedID == nil { services.player.load(meetingID: nil, recordings: []) } }
         .sheet(item: $sheet) { sheet in
-            MeetingFormView(workspace: workspace, sheet: sheet)
+            MeetingFormView(workspace: workspace, sheet: sheet, policy: services.jobPolicy)
         }
         .confirmationDialog(deleting.map { "Delete “\($0.title)”?" } ?? "",
                             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
@@ -305,6 +308,8 @@ struct SearchField: NSViewRepresentable {
 struct MeetingFormView: View {
     let workspace: WorkspacePresentation
     let sheet: MeetingSheet
+    /// Queues transcription of a moved recording that has none yet.
+    var policy: FinalJobPolicy?
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
     @State private var description = ""
@@ -312,12 +317,26 @@ struct MeetingFormView: View {
     @State private var saving = false
     @FocusState private var titleFocused: Bool
 
-    private var isNew: Bool { if case .create = sheet { true } else { false } }
+    private var isNew: Bool { if case .edit = sheet { false } else { true } }
+    private var heading: String {
+        switch sheet {
+        case .create: "New Meeting"
+        case .edit: "Rename Meeting"
+        case .moveRecording: "Move to New Meeting"
+        }
+    }
+    private var action: String {
+        switch sheet {
+        case .create: "Create"
+        case .edit: "Save"
+        case .moveRecording: "Create and Move"
+        }
+    }
     private var canSave: Bool { !saving && !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(isNew ? "New Meeting" : "Rename Meeting").font(.title2.bold())
+            Text(heading).font(.title2.bold())
             Form {
                 TextField("Title", text: $title, prompt: Text("Required"))
                     .focused($titleFocused)
@@ -332,7 +351,7 @@ struct MeetingFormView: View {
                 if saving { ProgressView().controlSize(.small) }
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(isNew ? "Create" : "Save") { Task { await save() } }
+                Button(action) { Task { await save() } }
                     .keyboardShortcut(.defaultAction).disabled(!canSave)
             }
         }
@@ -350,6 +369,8 @@ struct MeetingFormView: View {
             switch sheet {
             case .create: try await workspace.createMeeting(title: title, description: description)
             case .edit(let meeting): try await workspace.renameMeeting(meeting.id, title: title, description: description)
+            case .moveRecording(let recording):
+                try await workspace.moveRecordingToNewMeeting(recording, title: title, description: description, policy: policy)
             }
             dismiss()
         } catch {

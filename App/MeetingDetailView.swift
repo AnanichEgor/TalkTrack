@@ -147,7 +147,8 @@ struct MeetingDetailView: View {
                     description: Text("Press Record to capture system audio and your microphone as separate tracks."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TranscriptTab(services: services, workspace: workspace, meetingID: meeting.id, export: exportButton(.transcript))
+                TranscriptTab(services: services, workspace: workspace, meetingID: meeting.id, export: exportButton(.transcript),
+                              moveToNewMeeting: { sheet = .moveRecording($0) })
                     .id("\(meeting.id)-\(workspace.transcriptGeneration)")
             }
         case .notes:
@@ -441,8 +442,14 @@ struct TranscriptTab: View {
     let workspace: WorkspacePresentation
     let export: ExportButton
 
-    init(services: WorkspaceServices, workspace: WorkspacePresentation, meetingID: UUID, export: ExportButton) {
+    let policy: FinalJobPolicy
+    let moveToNewMeeting: (UUID) -> Void
+
+    init(services: WorkspaceServices, workspace: WorkspacePresentation, meetingID: UUID, export: ExportButton,
+         moveToNewMeeting: @escaping (UUID) -> Void) {
         player = services.player
+        policy = services.jobPolicy
+        self.moveToNewMeeting = moveToNewMeeting
         self.workspace = workspace
         self.export = export
         _presentation = State(initialValue: MeetingTranscriptPresentation(store: services.store, meetingID: meetingID,
@@ -452,7 +459,12 @@ struct TranscriptTab: View {
     var body: some View {
         MeetingTranscriptView(presentation: presentation, player: player,
                               deleteRecording: { await workspace.deleteRecording($0) },
-                              deleteRefusal: { workspace.deleteRefusal(recordingID: $0) }, export: export,
+                              deleteRefusal: { workspace.deleteRefusal(recordingID: $0) },
+                              move: RecordingMoveActions(destinations: workspace.moveDestinations,
+                                  refusal: { workspace.moveRefusal(recordingID: $0) },
+                                  toMeeting: { [policy] in await workspace.moveRecording($0, to: $1, policy: policy) },
+                                  toNewMeeting: moveToNewMeeting),
+                              export: export,
                               live: workspace.liveMeetingID == presentation.meetingID ? workspace.liveDraft : nil,
                               liveRecordingID: workspace.liveRecordingID,
                               openModels: { app.showSettings(openSettings, tab: .models) })

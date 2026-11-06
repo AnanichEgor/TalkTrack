@@ -422,6 +422,8 @@ public actor MeetingRecorder {
             for id in folders where !known.contains(id) {
                 // A deleted recording whose folder could not be removed yet stays deleted.
                 if (try? await store.isDeletedRecording(id)) != false { continue }
+                // A moved recording whose folder was not moved yet belongs to its new meeting.
+                if (try? await store.recordingMeetingID(id)) != nil { continue }
                 results.append(await recover(meetingID: meeting.id, recordingID: id, previous: nil))
             }
         }

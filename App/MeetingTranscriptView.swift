@@ -5,6 +5,16 @@ import TalkTrackServices
 
 /// Committed transcript content, reusable by the meeting workspace. Live rows
 /// remain provisional and use their separate capture presentation.
+/// What a recording separator's move menu offers.
+struct RecordingMoveActions {
+    let destinations: [Meeting]
+    /// Why a recording cannot move now (it is capturing), or nil.
+    let refusal: (UUID) -> String?
+    let toMeeting: (UUID, UUID) async -> Void
+    /// Opens the New Meeting sheet for the recording.
+    let toNewMeeting: (UUID) -> Void
+}
+
 struct MeetingTranscriptView: View {
     @Bindable var presentation: MeetingTranscriptPresentation
     /// The workspace player. With it, timestamps play from their speech and the
@@ -14,6 +24,8 @@ struct MeetingTranscriptView: View {
     var deleteRecording: ((UUID) async -> Void)?
     /// Why a recording cannot be deleted now (it is capturing), or nil.
     var deleteRefusal: (UUID) -> String? = { _ in nil }
+    /// Moves one recording to another or a new meeting; nil hides the move buttons.
+    var move: RecordingMoveActions?
     /// Shown at the left of the action row.
     var export: ExportButton?
     /// The capturing recording's live session, shown as draft rows after its separator.
@@ -192,6 +204,7 @@ struct MeetingTranscriptView: View {
                 Text(day.text).font(.callout).foregroundStyle(.secondary)
                 if day.isRecordingStart, deleteRecording != nil,
                    let recording = snapshot.recordings.first(where: { $0.id == day.recordingID }) {
+                    if let move { moveMenu(move, recording: recording, day: day) }
                     let refusal = deleteRefusal(recording.id)
                     let enabled = refusal == nil && !presentation.isBusy
                     Button { deleting = recording } label: {
@@ -210,6 +223,30 @@ struct MeetingTranscriptView: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.vertical, 8)
+    }
+
+    /// `New Meeting…` and the other meetings, newest first.
+    @ViewBuilder private func moveMenu(_ move: RecordingMoveActions, recording: Recording, day: TranscriptDateSeparator) -> some View {
+        let refusal = move.refusal(recording.id)
+        let enabled = refusal == nil && !presentation.isBusy
+        Menu {
+            Button("New Meeting…", systemImage: "plus") { move.toNewMeeting(recording.id) }
+            if !move.destinations.isEmpty {
+                Section("Move to") {
+                    ForEach(move.destinations) { meeting in
+                        Button(meeting.title) { Task { await move.toMeeting(recording.id, meeting.id) } }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrowshape.turn.up.right").font(.callout).frame(width: 20, height: 20).contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .foregroundStyle(enabled ? .secondary : .tertiary)
+        .pointerStyle(enabled ? .link : nil)
+        .disabled(!enabled)
+        .help(refusal ?? "Move Recording to Another Meeting")
+        .accessibilityLabel("Move recording of \(TranscriptDateSeparator.display(day.date)) at \(day.time ?? "") to another meeting")
     }
 
     /// Names the recording by position, date, start time and length, and says what goes and what stays.

@@ -381,6 +381,52 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
             .appendingPathComponent(".talktrack-library/Meetings/\(meeting.id)/Recordings/\(first.id)").path))
     }
 
+    @Test func movingARecordingBeingTranscribedRequeuesItInANewMeeting() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        let policy = FinalJobPolicy(models: { speechModels }, missing: { _ in [] },
+                                    settings: { ProcessingSettings(meetingLanguage: $0.language) })
+        // The first transcription runs until cancelled; later ones finish.
+        let runs = Box(0)
+        f.behavior.value = { id, store in
+            runs.value += 1
+            guard runs.value == 1 else { return try await store.updateJob(id, stage: .validating) }
+            try await store.updateJob(id, stage: .transcribing)
+            do { try await Task.sleep(for: .seconds(60)) } catch {
+                try? await store.updateJob(id, stage: .interrupted, error: "Cancelled")
+                throw error
+            }
+        }
+        let stopped = Box<[UUID]>([])
+        w.stopPlayback = { stopped.value.append($0) }
+        await w.start()
+        let source = try await w.createMeeting(title: "Weekly", description: "")
+        await w.record()
+        #expect(await until { w.phase == .recording })
+        let take = try #require(w.recordings.first)
+        // While it captures it cannot move.
+        #expect(w.moveRefusal(recordingID: take.id) == "Stop recording before moving this recording.")
+        await f.deliver(seconds: 1)
+        await w.stop()
+        #expect(await until { w.phase == .idle && w.queueStates[source.id] == .running })
+        #expect(w.moveRefusal(recordingID: take.id) == nil)
+
+        try await w.moveRecordingToNewMeeting(take.id, title: "Interview", description: "Wrong meeting", policy: policy)
+
+        let target = try #require(w.selected)
+        #expect(target.title == "Interview" && target.id != source.id && w.issue == nil)
+        #expect(w.recordings.map(\.id) == [take.id])
+        #expect(Set(stopped.value) == [source.id, target.id])
+        #expect(try await f.store.recordings(meetingID: source.id).isEmpty)
+        #expect(w.moveDestinations.map(\.id) == [source.id])
+        // Its transcription stopped in the source and runs again in the new meeting.
+        #expect(await until { runs.value == 2 })
+        let jobs = try await f.store.jobs(meetingID: target.id)
+        #expect(jobs.count == 2 && jobs[0].stage == .cancelled && jobs[1].snapshot.source.meetingID == target.id)
+        #expect(try await f.store.jobs(meetingID: source.id).isEmpty)
+    }
+
     @Test func aMeetingWaitingBehindAnotherShowsItsPlaceInTheQueue() async throws {
         let f = try await WorkspaceFixture()
         defer { f.remove() }

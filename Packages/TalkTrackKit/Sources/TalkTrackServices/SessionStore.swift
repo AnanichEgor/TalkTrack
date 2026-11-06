@@ -10,8 +10,8 @@ public actor SessionStore {
     private var finalJobOwners: [UUID: UUID] = [:]
     /// Standard voices per final checkpoint (by job ID); checkpoints of
     /// completed jobs do not change, so one computation serves the session.
-    private var voiceGroups: [UUID: SpeakerVoiceGroups] = [:]
-    private var replyClusters: [UUID: ReplyClusters] = [:]
+    var voiceGroups: [UUID: SpeakerVoiceGroups] = [:]
+    var replyClusters: [UUID: ReplyClusters] = [:]
     var db: SQLiteConnection {
         get throws {
             guard let connection else { throw StoreError.database("Library is closed") }
@@ -67,6 +67,8 @@ public actor SessionStore {
         _ = try recoverInterruptedJobs()
         // Files of recordings deleted just before a crash; a failure is retried next launch.
         for (meetingID, recordingID) in try deletedRecordings() { try? removeRecordingFolder(meetingID: meetingID, recordingID: recordingID) }
+        // Folders of recordings moved just before a crash (move-recording D2).
+        try? reconcileMovedRecordingFolders()
     }
 
     private func validateDatabase(_ db: SQLiteConnection) throws {
@@ -205,13 +207,28 @@ public actor SessionStore {
     /// Notes, other recordings and saved global voices stay.
     public func deleteRecording(meetingID: UUID, recordingID: UUID, at date: Date = Date()) throws {
         try db.transaction {
-            var owner = try meeting(meetingID)
             guard let recording = try recordings(meetingID: meetingID).first(where: { $0.id == recordingID }) else {
                 throw RecordingDeletionError.missing
             }
             guard [.complete, .interrupted].contains(recording.state) else { throw RecordingDeletionError.capturing }
+            try db.execute("INSERT INTO recording_tombstones VALUES (?,?,?)",
+                           [.text(recordingID.uuidString), .text(meetingID.uuidString), .real(date.timeIntervalSince1970)])
+            try removeRecordingRows(meetingID: meetingID, recording: recording, reason: "A recording of this meeting was deleted.")
+        }
+        voiceGroups = [:]; replyClusters = [:]
+        // The deletion is committed; files left by a failure are removed at the next launch.
+        try? removeRecordingFolder(meetingID: meetingID, recordingID: recordingID)
+    }
+
+    /// Everything of one recording in its meeting's rows, as deletion removes it:
+    /// the translation is trimmed, its rows, jobs, fragments and draft names go,
+    /// day speakers of capture days no other recording has go, an unfinished
+    /// translation is cancelled and the meeting's generation and latest start
+    /// change. Runs inside the caller's transaction; files are the caller's.
+    func removeRecordingRows(meetingID: UUID, recording: Recording, reason: String) throws {
+        let recordingID = recording.id
+        do {
             let m = SQLValue.text(meetingID.uuidString), r = SQLValue.text(recordingID.uuidString)
-            try db.execute("INSERT INTO recording_tombstones VALUES (?,?,?)", [r, m, .real(date.timeIntervalSince1970)])
             // Translation first: it reads the transcript and speakers that go next.
             try trimTranslation(meetingID: meetingID, removing: recording)
             // Jobs of this recording with their sources and publication heads.
@@ -245,16 +262,14 @@ public actor SessionStore {
             // A translation still running covers this recording; it cannot publish.
             for var job in try self.jobs(meetingID: meetingID) where job.snapshot.kind == .translation
                 && ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains(job.stage) {
-                job.stage = .cancelled; job.lastError = "A recording of this meeting was deleted."
+                job.stage = .cancelled; job.lastError = reason
                 try saveJob(job)
             }
+            var owner = try meeting(meetingID)
             owner.generation += 1
             owner.latestRecordingStartedAt = try recordings(meetingID: meetingID).map(\.startedAt).max()
             try update(owner)
         }
-        voiceGroups = [:]; replyClusters = [:]
-        // The deletion is committed; files left by a failure are removed at the next launch.
-        try? removeRecordingFolder(meetingID: meetingID, recordingID: recordingID)
     }
 
     /// Recordings deleted in this library, for recovery to skip.
@@ -850,7 +865,12 @@ public actor SessionStore {
         var result: [String: VoiceSampleContext] = [:]
         let own = samples.filter { $0.libraryID == library.manifest.libraryID }
         for sample in samples where sample.libraryID != library.manifest.libraryID { result[sample.id] = .otherLibrary }
-        for (meetingID, group) in Dictionary(grouping: own, by: \.meetingID) {
+        // A moved recording's samples are shown with the meeting it is in now.
+        var current: [UUID: UUID] = [:]
+        for sample in own where current[sample.recordingID] == nil {
+            current[sample.recordingID] = (try? recordingMeetingID(sample.recordingID)).flatMap { $0 } ?? sample.meetingID
+        }
+        for (meetingID, group) in Dictionary(grouping: own, by: { current[$0.recordingID] ?? $0.meetingID }) {
             guard let snapshot = try? meetingTranscript(meetingID: meetingID) else {
                 for sample in group { result[sample.id] = .recordingDeleted }
                 continue
@@ -1554,7 +1574,7 @@ public actor SessionStore {
         return value
     }
 
-    private func saveJob(_ job: ProcessingJob) throws {
+    func saveJob(_ job: ProcessingJob) throws {
         try put(.job, id: job.id, meetingID: job.snapshot.source.meetingID, value: job)
     }
 
