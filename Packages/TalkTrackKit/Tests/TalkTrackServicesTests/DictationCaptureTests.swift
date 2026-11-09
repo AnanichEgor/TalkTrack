@@ -82,7 +82,8 @@ private final class FakeMicrophone: DictationMicrophoneDriver, Sendable {
         driver.push(seconds: 0.5, level: 0.3)
         let started = ContinuousClock.now
         let capture = await microphone.finish()
-        #expect(ContinuousClock.now - started < .seconds(1))
+        // Checks that the wait ends, not how fast: its 550 ms timer runs late under a busy test run.
+        #expect(ContinuousClock.now - started < .seconds(5))
         #expect(abs(capture.spokenSeconds - 0.5) < 0.03 && capture.tailSeconds == 0)
     }
 

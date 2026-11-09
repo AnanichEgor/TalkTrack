@@ -404,7 +404,8 @@ private func eventually(_ condition: @escaping @Sendable () async -> Bool) async
         #expect(await mic.starts == 1); #expect(await mic.stops == 0)
         // Late callbacks from the stopped session cannot restart again.
         sessions.change(0)
-        sessions.change(1); try await eventually { sessions.count == 3 }
+        try await eventually { sessions.listening(1) }
+        sessions.change(1); try await eventually { sessions.listening(2) }
         sessions.change(2)
         try await eventually { await coordinator.phase == .failed }
         #expect(await coordinator.lastError?.operation == "The default output device changed")
@@ -430,6 +431,11 @@ private final class RouteSessions: @unchecked Sendable {
     func make() -> any SystemTapSession { let next = Session(); lock.withLock { sessions.append(next) }; return next }
     var count: Int { lock.withLock { sessions.count } }
     func stopped(_ index: Int) -> Bool { let session = lock.withLock { sessions[index] }; return session.lock.withLock { session.stops > 0 } }
+    /// A session exists before it is started; a change sent in between reaches nobody.
+    func listening(_ index: Int) -> Bool {
+        guard let session = lock.withLock({ index < sessions.count ? sessions[index] : nil }) else { return false }
+        return session.lock.withLock { session.changed != nil }
+    }
     func change(_ index: Int) {
         let session = lock.withLock { sessions[index] }
         session.lock.withLock { session.changed }?("The default output device changed")
