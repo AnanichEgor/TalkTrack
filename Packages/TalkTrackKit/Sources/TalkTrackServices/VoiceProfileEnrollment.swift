@@ -13,9 +13,9 @@ private final class VoiceEnrollmentExecutor: SerialExecutor {
 /// Uses the application's shared inference runtime. Reads at most ten seconds
 /// of committed system AAC at a time; no PCM is saved in the global registry.
 ///
-/// Remembering runs as durable background tasks (background-voice-learning
-/// D1/D2): `learn` stores a task and returns; one task runs at a time, capture
-/// pauses it and it starts again afterwards; quitting leaves it queued.
+/// Remembering is stored as durable tasks. A Save in the naming sheet waits for
+/// its task (`learnNow`); imports queue theirs (`learn`). One task runs at a
+/// time, capture pauses it and it starts again afterwards; quitting leaves it queued.
 public actor VoiceProfileEnrollment {
     private nonisolated let executor = VoiceEnrollmentExecutor()
     public nonisolated var unownedExecutor: UnownedSerialExecutor { executor.asUnownedSerialExecutor() }
@@ -26,6 +26,8 @@ public actor VoiceProfileEnrollment {
     private var runner: Task<Void, Never>?
     private var runningID: UUID?
     private var needsDrain = false
+    private var direct: Task<Void, Never>?
+    private var directRunning = false
     private var captureActive = false
     private var stopped = false
     private var observers: [UUID: AsyncStream<VoiceLearningTask>.Continuation] = [:]
@@ -49,7 +51,6 @@ public actor VoiceProfileEnrollment {
     public init(store: SessionStore, profiles: VoiceProfileStore, inference: any SystemSpeakerInference) {
         self.store = store; self.profiles = profiles; evidenceReader = VoiceProfileEvidenceReader(inference: inference)
     }
-    public func availableProfiles() async throws -> [VoiceProfile] { try await profiles.profiles() }
     /// Undo of one Save's remembering (see VoiceProfileStore.undoEnrollment).
     public func undoEnrollment(created: VoiceProfile, previous: VoiceProfile?) async throws {
         try await profiles.undoEnrollment(created: created, previous: previous)
@@ -117,6 +118,10 @@ public actor VoiceProfileEnrollment {
             score: bank.count >= 2 ? VoiceProfileMatcher.score(evidence.samples, bank: bank) : nil,
             bankThreshold: Self.bankReviewThreshold(bank))
     }
+    /// What the last read analysed, also when it ended without enough speech.
+    @_spi(Validation) public var lastRead: (windows: Int, clipSeconds: Double) {
+        get async { (await evidenceReader.lastWindowsAnalyzed, await evidenceReader.lastClipSeconds) }
+    }
     /// Selection from embedded clips with other constants (validation sweeps).
     @_spi(Validation) public nonisolated static func select(_ embedded: [VoiceProfileSample], bank: [VoiceProfileSample],
                                                             outlierMargin: Double, noveltyFloor: Double) -> [VoiceProfileSample] {
@@ -150,7 +155,29 @@ public actor VoiceProfileEnrollment {
 
     // MARK: Background learning (D1, D2)
 
-    /// Stores a learning task for an explicit Save and starts it when possible.
+    /// Save in the naming sheet: learns now, ahead of queued imports, and returns
+    /// the outcome. During capture, which owns the inference lane, the task waits
+    /// for Stop and comes back still pending. Cancelling the caller cancels it.
+    public func learnNow(_ confirmation: VoiceEnrollmentConfirmation, choice: VoiceProfileChoice) async throws -> VoiceLearningTask {
+        guard !captureActive, !stopped else { return try await learn(confirmation, choice: choice) }
+        guard !directRunning else { throw VoiceEnrollmentError.busy }
+        directRunning = true
+        defer { directRunning = false; direct = nil; kick() }
+        // A running import task goes back to the queue and restarts afterwards.
+        if let current = runner { current.cancel(); await current.value }
+        let stored = try await profiles.addLearningTask(VoiceLearningRequest(confirmation, choice: choice))
+        publish(stored)
+        guard !captureActive, !stopped else { return stored }
+        let work = Task { await self.run(stored) }
+        direct = work
+        await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        if Task.isCancelled, let current = try? await profiles.learningTask(stored.id), current.state == .queued {
+            return try await cancel(stored.id)
+        }
+        return try await profiles.learningTask(stored.id) ?? stored
+    }
+
+    /// Stores a learning task to run in turn (imports, and Save during capture).
     public func learn(_ confirmation: VoiceEnrollmentConfirmation, choice: VoiceProfileChoice) async throws -> VoiceLearningTask {
         let task = try await profiles.addLearningTask(VoiceLearningRequest(confirmation, choice: choice))
         publish(task)
@@ -183,15 +210,15 @@ public actor VoiceProfileEnrollment {
     /// interrupted task starts again after Stop.
     public func setCaptureActive(_ active: Bool) {
         captureActive = active
-        if active { runner?.cancel() } else { kick() }
+        if active { runner?.cancel(); direct?.cancel() } else { kick() }
     }
 
     /// Quit: the running task stops and stays queued for the next launch.
     public func shutDown() async {
         stopped = true
-        let current = runner
-        current?.cancel()
-        await current?.value
+        let current = runner, saving = direct
+        current?.cancel(); saving?.cancel()
+        await current?.value; await saving?.value
     }
 
     /// Until no task can run now (tests and validation).
@@ -216,7 +243,7 @@ public actor VoiceProfileEnrollment {
     @discardableResult
     public func cancel(_ id: UUID) async throws -> VoiceLearningTask {
         let task = try await profiles.updateLearningTask(id, from: [.queued, .running, .awaitingReview]) { $0.state = .cancelled }
-        if runningID == id { needsDrain = true; runner?.cancel() }
+        if runningID == id { needsDrain = true; runner?.cancel(); direct?.cancel() }
         publish(task)
         return task
     }
@@ -284,7 +311,7 @@ public actor VoiceProfileEnrollment {
 
     private func kick() {
         needsDrain = true
-        guard runner == nil, !captureActive, !stopped else { return }
+        guard runner == nil, !directRunning, !captureActive, !stopped else { return }
         runner = Task { await self.drain() }
     }
 
@@ -301,7 +328,7 @@ public actor VoiceProfileEnrollment {
     }
 
     private func nextQueued() async -> VoiceLearningTask? {
-        let library = await store.library.manifest.libraryID
+        let library = store.library.manifest.libraryID
         return (try? await profiles.learningTasks())?.first { $0.state == .queued && $0.request.libraryID == library }
     }
 

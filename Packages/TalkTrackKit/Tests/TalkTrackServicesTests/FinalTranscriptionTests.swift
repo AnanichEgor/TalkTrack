@@ -21,6 +21,10 @@ actor FinalProbe: FinalTranscriptionInference {
     var maximumFrames = 0
     /// Windows per `finalTexts` call, in order.
     var batches: [Int] = []
+    /// What the Parakeet model says (nil repeats `text`; "" models a missed quiet window).
+    var parakeetText: String?
+    var recoveryCalls = 0, parakeetCalls = 0
+    func parakeet(says value: String?) { parakeetText = value }
     func finalTexts(_ model: ModelSnapshot, windows: [[Float]], language: MeetingLanguage) -> [FinalASRText] {
         batches.append(windows.count)
         return windows.map { finalText(model, samples: $0, language: language) }
@@ -36,6 +40,17 @@ actor FinalProbe: FinalTranscriptionInference {
     }
     func finalText(_ model: ModelSnapshot, samples: [Float], language: MeetingLanguage) -> FinalASRText {
         textCalls += 1; maximumFrames = max(maximumFrames, samples.count)
+        if model.role == .recoveryASR { recoveryCalls += 1 }
+        if model.isParakeet {
+            // Parakeet times its own words, evenly spread over the window here.
+            parakeetCalls += 1
+            let said = parakeetText ?? text
+            let words = said.split(separator: " ").map(String.init)
+            let step = Double(samples.count) / 16_000 / Double(words.count + 1)
+            let timed = words.enumerated().map { FinalASRWord(text: $1.filter { $0.isLetter || $0.isNumber || $0 == "'" },
+                start: Double($0) * step, end: Double($0 + 1) * step) }
+            return FinalASRText(text: said, language: language == .russian ? .russian : .english, words: said.isEmpty ? nil : timed)
+        }
         if language == .auto, textCalls >= undetectedFrom || textCalls < undetectedUntil { return FinalASRText(text: "Olha eu sou lento", language: .auto) }
         let microphone = (samples.map(abs).max() ?? 0) > 0.15
         return FinalASRText(text: microphone ? microphoneText ?? text : text, language: language == .russian ? .russian : .english)
@@ -94,7 +109,7 @@ struct FinalFixture {
 func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: MeetingLanguage = .english,
                           microphoneOnly: Bool = false, resumed: Bool = false, meetingID: UUID? = nil,
                           spelling: Bool = true, quietMicrophone: Bool = false,
-                          playbackEcho: PlaybackEchoState? = nil) async throws -> FinalFixture {
+                          playbackEcho: PlaybackEchoState? = nil, parakeet: Bool = false) async throws -> FinalFixture {
     let library = try await OwnedLibrary().open(root: folder.url)
     let store = try await SessionStore.open(library)
     let owner: Meeting
@@ -137,8 +152,9 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
             state: playbackEcho, peak: playbackEcho == .loudspeaker ? 0.27 : 0.01, lagMilliseconds: playbackEcho == .loudspeaker ? 90 : nil)]
     }
     try await store.saveRecording(saved)
-    let catalog = try ModelCatalog.bundled()
-    let models = try FinalTranscriptionPipeline.requiredRoles.map { try catalog.model(for: $0).snapshot(for: $0) }
+    // Existing fixtures model a Qwen job (aligner times the words); `parakeet` models the default job.
+    let catalog = try ModelCatalog.bundled().selecting(finalASRModel: parakeet ? nil : "final-asr")
+    let models = try FinalTranscriptionPipeline.jobModels(catalog)
     let previousJob = try await store.enqueue(kind: .finalTranscription, meetingID: owner.id, recordingID: saved.id,
         settings: ProcessingSettings(meetingLanguage: language), models: models)
     let segment = TranscriptSegment(recordingID: saved.id, dayID: saved.days[0].id, track: .microphone,
@@ -150,6 +166,94 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
     let job = try await store.enqueue(kind: .finalTranscription, meetingID: owner.id, recordingID: saved.id,
         settings: ProcessingSettings(meetingLanguage: language, spellingCorrection: spelling), models: models)
     return FinalFixture(library: library, store: store, recording: saved, job: job, previous: previous)
+}
+
+@Suite struct ParakeetFinalTranscriptionTests {
+    private func run(_ folder: TemporaryFolder, language: MeetingLanguage = .english, probe: FinalProbe,
+                     configure: (FinalProbe) async -> Void = { _ in }) async throws -> FinalTranscriptionCheckpoint {
+        let fixture = try await finalFixture(folder, language: language, quietMicrophone: true, parakeet: true)
+        await configure(probe)
+        let result = try await FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe)
+            .run(jobID: fixture.job.id)
+        try await fixture.store.close()
+        return result
+    }
+
+    @Test func parakeetWordsAreTimedWithoutTheAligner() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let probe = FinalProbe()
+        let result = try await run(folder, probe: probe)
+        #expect(result.readyForPublication && result.blocks.count == 1)
+        #expect(result.blocks[0].originalText == "Alex will not pay 42 rubles tomorow")
+        let calls = (aligner: await probe.alignmentCalls, parakeet: await probe.parakeetCalls, recovery: await probe.recoveryCalls)
+        #expect(calls.aligner == 0 && calls.parakeet == 1 && calls.recovery == 0)
+        #expect(result.windows.compactMap(\.asr).allSatisfy { $0.recovered == nil })
+    }
+
+    @Test func anAudibleWindowParakeetMissedIsRecognizedByQwen() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let probe = FinalProbe()
+        let result = try await run(folder, probe: probe) { await $0.parakeet(says: "") }
+        #expect(result.blocks.count == 1 && result.blocks[0].originalText == "Alex will not pay 42 rubles tomorow")
+        let calls = (aligner: await probe.alignmentCalls, recovery: await probe.recoveryCalls)
+        #expect(calls.recovery == 1 && calls.aligner == 1)
+        #expect(result.windows.compactMap(\.asr).contains { $0.recovered == true && $0.words == nil })
+        #expect(result.unrecoveredWindows == nil)
+    }
+
+    @Test func textInTheWrongScriptForAFixedLanguageIsRecovered() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let probe = FinalProbe()
+        let result = try await run(folder, language: .russian, probe: probe) { await $0.parakeet(says: "Olha eu sou lento") }
+        let recovered = await probe.recoveryCalls
+        #expect(recovered == 1)
+        #expect(result.blocks.map(\.originalText) == ["Alex will not pay 42 rubles tomorow"])
+    }
+
+    @Test func missingRecoveryModelsNeitherBlockNorHideTheLoss() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let probe = FinalProbe()
+        await probe.configure(missing: [.recoveryASR, .alignment])
+        let result = try await run(folder, probe: probe) { await $0.parakeet(says: "") }
+        #expect(result.readyForPublication && result.blocks.isEmpty)
+        #expect(result.unrecoveredWindows == 1)
+        let calls = (aligner: await probe.alignmentCalls, recovery: await probe.recoveryCalls)
+        #expect(calls.recovery == 0 && calls.aligner == 0)
+    }
+
+    /// Task 2.3: the model chosen at creation is the model of the job, however
+    /// the preference changes while it waits, and a retry keeps it.
+    @Test func aJobKeepsItsModelWhenThePreferenceChangesAndOnRetry() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let fixture = try await finalFixture(folder, quietMicrophone: true, parakeet: true)
+        #expect(fixture.job.snapshot.models.contains { $0.isParakeet })
+        let probe = FinalProbe()
+        await probe.configure(missing: [.finalASR], fail: true)
+        let pipeline = FinalTranscriptionPipeline(store: fixture.store, library: fixture.library, inference: probe)
+        await #expect(throws: FinalTranscriptionError.missingModels([.finalASR])) { try await pipeline.run(jobID: fixture.job.id) }
+        // The user now picks Qwen: only jobs created afterwards use it.
+        let qwen = try FinalTranscriptionPipeline.jobModels(ModelCatalog.bundled().selecting(finalASRModel: "final-asr"))
+        #expect(qwen.allSatisfy { !$0.isParakeet })
+        await probe.configure()
+        let retried = try await fixture.store.retryJob(fixture.job.id)
+        #expect(retried.snapshot.models == fixture.job.snapshot.models)
+        let result = try await pipeline.run(jobID: fixture.job.id)
+        #expect(result.readyForPublication)
+        #expect(try await fixture.store.job(fixture.job.id).snapshot.models == fixture.job.snapshot.models)
+        let calls = (parakeet: await probe.parakeetCalls, aligner: await probe.alignmentCalls)
+        #expect(calls.parakeet == 1 && calls.aligner == 0)
+        try await fixture.store.close()
+    }
+
+    @Test func silenceIsNeverRecovered() async throws {
+        #expect(!FinalTranscriptionPipeline.needsRecovery(FinalASRText(text: "", language: .english), meeting: .auto,
+                                                          samples: [Float](repeating: 0.0005, count: 16_000)))
+        #expect(FinalTranscriptionPipeline.needsRecovery(FinalASRText(text: "", language: .english), meeting: .auto,
+                                                         samples: [Float](repeating: 0.05, count: 16_000)))
+        #expect(!FinalTranscriptionPipeline.needsRecovery(FinalASRText(text: "Привет", language: .russian), meeting: .russian,
+                                                          samples: [Float](repeating: 0.05, count: 16_000)))
+        #expect(FinalASRScript.contradicts("Hello there", meeting: .russian) && !FinalASRScript.contradicts("Hello", meeting: .auto))
+    }
 }
 
 @Suite struct FinalTranscriptionTests {

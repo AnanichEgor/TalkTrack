@@ -66,7 +66,7 @@ actor VoiceProfileEvidenceReader {
         func selected(_ revision: TranscriptRevision) throws -> (mine: [MediaInterval], other: [MediaInterval]) {
             let system = revision.segments.filter { $0.track == .system }
             if let chosen = selection?[revision.recordingID] {
-                let mine = try Self.union(chosen)
+                let mine = SpeakerIntervals.union(chosen)
                 return (mine, SpeakerIntervals.subtract(system.map(\.interval), removing: mine))
             }
             return (system.filter { $0.speaker == .system(daySpeakerID: speakerID) }.map(\.interval),
@@ -78,7 +78,7 @@ actor VoiceProfileEvidenceReader {
         // beginning no longer fills the saved voice.
         let stretches = VoiceEnrollmentPolicy.maximumSamples
         var total: Int64 = 0
-        for revision in revisions { total += try Self.union(try selected(revision).mine).reduce(0) { $0 + $1.duration.microseconds } }
+        for revision in revisions { total += try SpeakerIntervals.union(selected(revision).mine).reduce(0) { $0 + $1.duration.microseconds } }
         guard total > 0 else { throw VoiceEnrollmentError.insufficientSpeech }
 
         // D3: candidates come free from the transcript. Only the windows of the
@@ -88,12 +88,12 @@ actor VoiceProfileEvidenceReader {
         for recording in recordings {
             let revision = revisions.first { $0.recordingID == recording.id }!
             let (mine, other) = try selected(revision)
-            let speech = try Self.union(mine)
+            let speech = SpeakerIntervals.union(mine)
             sources.append(Source(recording: recording, revision: revision, mine: mine, other: other, before: before))
             before += speech.reduce(0) { $0 + $1.duration.microseconds }
         }
         func stretch(of source: Source, at time: MediaTime) -> Int {
-            let speech = (try? Self.union(source.mine)) ?? []
+            let speech = SpeakerIntervals.union(source.mine)
             let position = source.before + speech.reduce(0) { $0 + max(0, min($1.end.microseconds, time.microseconds) - $1.start.microseconds) }
             return min(stretches - 1, Int(position * Int64(stretches) / total))
         }
@@ -125,7 +125,10 @@ actor VoiceProfileEvidenceReader {
                 guard !targets.isEmpty else { continue }
                 let reader = try await RecordingAudioWindowReader.open(library: library, recording: source.recording, track: .system)
                 do {
-                    while let event = try await reader.next() {
+                    let recordingID = source.recording.id
+                    while let event = try await reader.next(wanted: { [seen = analyzed[recordingID] ?? []] owned in
+                        !seen.contains(owned.start.microseconds) && !SpeakerIntervals.intersection(targets, [owned]).isEmpty
+                    }) {
                         try Task.checkCancellation()
                         guard case .audio(let window) = event else { continue }
                         guard !SpeakerIntervals.intersection(targets, [window.owned]).isEmpty,
@@ -238,7 +241,7 @@ actor VoiceProfileEvidenceReader {
         // A long monologue becomes several candidates, so its stretches compete
         // on their own and one candidate never covers the whole speech.
         var pieces: [MediaInterval] = []
-        for interval in try union(SpeakerIntervals.subtract(try union(mine), removing: padded)) {
+        for interval in SpeakerIntervals.union(SpeakerIntervals.subtract(SpeakerIntervals.union(mine), removing: padded)) {
             var start = interval.start.microseconds
             while interval.end.microseconds - start >= 1_100_000 {
                 let end = min(interval.end.microseconds, start + candidateLength)
@@ -317,22 +320,10 @@ actor VoiceProfileEvidenceReader {
             let competing = slots.filter { $0.key != slot }.flatMap(\.value) + other
             let selectedSpeech = SpeakerIntervals.intersection(SpeakerIntervals.subtract(speech, removing: competing),
                 SpeakerIntervals.intersection(selected, [window.owned]))
-            clean += try union(selectedSpeech)
+            clean += SpeakerIntervals.union(selectedSpeech)
         }
         // Keep slot transitions separate, even when adjacent: combining them
         // would bypass transition guards and could embed two different voices.
         return clean.sorted { $0.start < $1.start }
-    }
-
-    static func union(_ intervals: [MediaInterval]) throws -> [MediaInterval] {
-        // Union duplicates within one slot before counting durations;
-        // overlapping transcript segments cannot manufacture extra evidence.
-        var result: [MediaInterval] = []
-        for interval in intervals.sorted(by: { $0.start < $1.start }) {
-            if let last = result.last, interval.start <= last.end {
-                result[result.count - 1] = try MediaInterval(start: last.start, end: max(last.end, interval.end))
-            } else { result.append(interval) }
-        }
-        return result
     }
 }

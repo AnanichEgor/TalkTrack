@@ -277,34 +277,6 @@ enum FinalSpeakerReconciler {
             kind: .final, segments: segments, modelRevisions: checkpoint.job.models, createdAt: date)
         return ReconciledTranscript(revision: revision, publication: publication, linked: linked, recognized: recognizedBlocks)
     }
-
-    private static func score(_ a: TranscriptVoiceEvidence, _ b: TranscriptVoiceEvidence) -> Double {
-        guard [a, b].allSatisfy({ bank in
-            (1...8).contains(bank.vectors.count) && bank.vectors.allSatisfy { vector in
-                vector.count == 256 && vector.allSatisfy(\.isFinite) &&
-                abs(sqrt(vector.reduce(0.0) { $0 + Double($1) * Double($1) }) - 1) < 0.001
-            }
-        }) else { return -1 }
-        return a.vectors.flatMap { left in b.vectors.map { right in
-            let dot = zip(left, right).reduce(0.0) { $0 + Double($1.0) * Double($1.1) }
-            let norms = sqrt(left.reduce(0.0) { $0 + Double($1) * Double($1) }) *
-                sqrt(right.reduce(0.0) { $0 + Double($1) * Double($1) })
-            return min(1, max(-1, dot / norms))
-        } }.min() ?? -1
-    }
-    private static func union(_ ranges: [MediaInterval]) -> [MediaInterval] {
-        var result: [MediaInterval] = []
-        for range in ranges.sorted(by: { $0.start < $1.start }) {
-            if let last = result.last, range.start <= last.end {
-                result[result.count - 1] = try! MediaInterval(start: last.start, end: max(last.end, range.end))
-            } else { result.append(range) }
-        }
-        return result
-    }
-    private static func intersection(_ a: [MediaInterval], _ b: [MediaInterval]) -> [MediaInterval] {
-        SpeakerIntervals.intersection(a, b)
-    }
-    private static func duration(_ ranges: [MediaInterval]) -> Double { ranges.reduce(0) { $0 + $1.duration.seconds } }
 }
 
 /// Without headphones the microphone also records the loudspeakers, so other

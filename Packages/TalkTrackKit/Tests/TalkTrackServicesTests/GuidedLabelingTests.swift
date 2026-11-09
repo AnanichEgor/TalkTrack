@@ -157,6 +157,33 @@ private func pair(_ similarity: Double, same: Bool) -> NamedVoicePair {
         try await reopened.close()
     }
 
+    /// A final job left interrupted (or waiting for models) by a relaunch is not running work:
+    /// it waits for its own Retry and must not make Apply Names answer `busy` for good.
+    @Test func anInterruptedOrWaitingJobDoesNotBlockApplyNames() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let fixture = try await finalFixture(folder, seconds: 6)
+        let text = "Alex will not pay 42 rubles tomorrow and Maria will check 17 items today"
+        try await fixture.store.saveFinalCheckpoint(try resegment(try await stageFinal(fixture, text: text), split: true), stage: .validating)
+        let first = try await fixture.store.publishFinalTranscript(jobID: fixture.job.id)
+        let meetingID = fixture.recording.meetingID
+        for speaker in first.speakers { try await fixture.store.confirmSpeakerName(meetingID: meetingID, speakerID: speaker.id, name: "Alex") }
+        let source = try await fixture.store.sourceSnapshot(meetingID: meetingID)
+        for stage in [JobStage.validating, .interrupted, .waitingForModels] {
+            var waiting = ProcessingJob(snapshot: ProcessingJobSnapshot(kind: .finalTranscription, recordingID: fixture.recording.id,
+                source: source, settings: fixture.job.snapshot.settings, models: fixture.job.snapshot.models))
+            waiting.stage = stage
+            try await fixture.store.saveJob(waiting)
+            if stage == .validating {
+                // Genuinely running work still blocks.
+                await #expect(throws: FinalTranscriptionError.busy) { try await fixture.store.applyNames(meetingID: meetingID) }
+                try await fixture.store.updateJob(waiting.id, stage: .failed, error: "test")
+            } else {
+                #expect(try await fixture.store.applyNames(meetingID: meetingID).count == 1)
+            }
+        }
+        try await fixture.store.close()
+    }
+
     @Test func libraryPairsComeFromStandardVoicesNotThePublishedOnes() async throws {
         let folder = try TemporaryFolder(); defer { folder.remove() }
         let fixture = try await finalFixture(folder, seconds: 6)
@@ -259,7 +286,7 @@ private func pair(_ similarity: Double, same: Bool) -> NamedVoicePair {
         p.draftName = "Yuri"
         #expect(p.effectiveProfileID == yuri.id)
         await p.saveRename(); await p.waitForLearning()
-        #expect(p.noticeMessage?.hasPrefix("Name saved for this reply. Learning the voice of Yuri") == true)
+        #expect(p.noticeMessage?.hasPrefix("Name saved for this reply.") == true)
         let labels = p.snapshot!.items.compactMap { item -> String? in if case .speech(let block) = item { block.speakerLabel } else { nil } }
         #expect(labels.first == "Dima" && labels.contains("Yuri") && labels.filter { $0 == "Yuri" }.count == 1)
         #expect(p.snapshot!.assignments.map(\.name) == ["Dima"])

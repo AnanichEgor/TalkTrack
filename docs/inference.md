@@ -128,3 +128,23 @@ then 8K, with token counts estimated as one per three UTF-8 bytes (more than Eng
 Russian text uses with common tokenizers). A reply with `finish_reason: "length"` counts
 as reaching the output limit, and the part is split. The API key is kept in the Keychain together with the address it was
 entered for and is never sent to any other address. Memory admission does not apply.
+
+## Final recognition model (parakeet-default-asr)
+
+Parakeet TDT 0.6B v3 is vendored from mlx-audio-swift `01dec7c9` (`MLXAudioSTT/Parakeet`, provenance in
+`ThirdParty/source-provenance.json`); loading takes only a confined `ModelLocalDirectory` and accepts only the
+TDT architecture. The catalog installs `animaslabs/parakeet-tdt-0.6b-v3-mlx-8bit` (8-bit, group 64, 0.9 GB;
+a community conversion of the same NVIDIA model, CC-BY-4.0), chosen over the 2.5 GB float32
+`mlx-community/parakeet-tdt-0.6b-v3` because it gave the same word error rates on the three reference sets
+(YouTube 13.3 %, English 18.3 %, Russian meeting 39.2 % in Swift, against 13.3 / 18.8 / 39.6 % in bfloat16),
+1.32 GiB peak MLX instead of 1.93 GiB (bfloat16) and 3.54 GiB (float32), and 0.024–0.028 s per
+ten-second window in Release. Texts differ from the Python 8-bit run in 27 of 100 windows (5 % of words),
+as the bfloat16 Swift port did.
+
+Offline comparison with Qwen3-ASR 1.7B (WER against automatic Teams/YouTube references, so agreement with a
+third recognizer rather than accuracy): English Teams meeting Qwen 11.3 % / Parakeet 18.8 %; YouTube (Russian)
+Qwen 15.4 % / Parakeet 13.3 %; Russian meeting Qwen 47.0 % / Parakeet 39.6 %. Parakeet leaves about a quarter
+of quiet windows empty on the 123123 sample, which recovery re-recognizes with Qwen.
+Commands: `ASR_MODEL=parakeet ASR_WAV_IN=<dir> scripts/inference-fixture.sh asr-batch ...`,
+`scripts/inference-fixture.sh install-model <catalog id>` (installs under the real Models folder),
+`REPROCESS_MODELS=current scripts/inference-fixture.sh reprocess-meeting <copy> <meeting> [recording]`.

@@ -92,16 +92,7 @@ struct TranslationTab: View {
 
     private struct IndexKey: Equatable { let items: [TranscriptDisplayItem]; let meetingID: UUID?; let duration: MediaTime? }
 
-    /// The block under the playhead, as in Transcript.
-    private var highlighted: String? {
-        guard let index, player.meetingID == presentation.meetingID else { return nil }
-        switch player.state {
-        case .playing: break
-        case .paused, .failed: guard player.position > .zero else { return nil }
-        case .unavailable, .ended: return nil
-        }
-        return index.activeItem(at: player.position)
-    }
+    private var highlighted: String? { index?.highlightedItem(player: player, meetingID: presentation.meetingID) }
 
     /// Laid out like Transcript: `[time]:` plays the original audio, the name in
     /// its speaker color, the block under the playhead highlighted and followed.
@@ -120,13 +111,7 @@ struct TranslationTab: View {
                                 timestamp(block, id: item.id, current: item.id == current)
                                 speech(block)
                             }
-                            .font(.title3)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(item.id == current ? Color.accentColor.opacity(0.14) : .clear,
-                                        in: RoundedRectangle(cornerRadius: 6))
-                            .accessibilityElement(children: .contain)
-                            .accessibilityAddTraits(item.id == current ? .isSelected : [])
+                            .speechBlock(current: item.id == current)
                             .id(item.id)
                         }
                     }
@@ -141,19 +126,9 @@ struct TranslationTab: View {
         .id(presentation.output?.id)
     }
 
-    @ViewBuilder private func timestamp(_ block: TranscriptBlock, id: String, current: Bool) -> some View {
-        let label = Text("[\(block.timestamp)]:").foregroundStyle(.secondary).monospacedDigit()
-        if let start = index?.start(of: id) {
-            Button { player.play(from: start, meetingID: presentation.meetingID) } label: { label }
-                .buttonStyle(.plain)
-                .pointerStyle(player.canPlay ? .link : nil)
-                .disabled(!player.canPlay)
-                .help(player.captureActive ? "Playback is unavailable while TalkTrack is recording" : "Play the original audio from \(block.timestamp)")
-                .accessibilityLabel("Play from \(block.timestamp)")
-                .accessibilityValue(current ? "Now playing" : "")
-        } else {
-            label
-        }
+    private func timestamp(_ block: TranscriptBlock, id: String, current: Bool) -> some View {
+        PlaybackTimestamp(timestamp: block.timestamp, start: index?.start(of: id), player: player, meetingID: presentation.meetingID,
+                          current: current, help: "Play the original audio from \(block.timestamp)")
     }
 
     private func speech(_ block: TranscriptBlock) -> some View {

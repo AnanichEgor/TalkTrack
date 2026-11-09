@@ -49,7 +49,8 @@ public enum DictationNotice: Equatable, Sendable {
 
 public enum DictationHUDState: Equatable, Sendable {
     case hidden
-    case recording(waveform: Bool)
+    /// `maximumSeconds` is the recording limit; the HUD counts down to it from the moment it is shown.
+    case recording(waveform: Bool, maximumSeconds: Int)
     case recognizing
     case notice(DictationNotice)
 }
@@ -231,7 +232,7 @@ public actor DictationController {
             return
         }
         phase = .recording(Session(id: id, settings: settings, lease: lease, preparation: preparation))
-        await host.show(.recording(waveform: settings.showWaveform))
+        await host.show(.recording(waveform: settings.showWaveform, maximumSeconds: settings.maximumSeconds))
         publish()
         if settings.playSounds { await host.playStartSound() }
         // A dictation that already ended (a very short press, Escape) must not leave output muted.

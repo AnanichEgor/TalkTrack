@@ -17,8 +17,6 @@ struct TalkTrackApp: App {
                     SavedSpeakersCheckView()
                 } else if ProcessInfo.processInfo.arguments.contains("--speaker-rename-check") {
                     SpeakerRenameCheckView()
-                } else if ProcessInfo.processInfo.arguments.contains("--live-transcription-check") {
-                    LiveTranscriptionCheckView()
                 } else if ProcessInfo.processInfo.arguments.contains("--audio-capture-check") {
                     AudioCaptureCheckView()
                 } else {

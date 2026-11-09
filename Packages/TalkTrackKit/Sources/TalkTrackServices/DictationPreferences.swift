@@ -112,23 +112,27 @@ public enum DictationPreferences {
 
     /// Catalog ids of the selectable recognition models.
     public static let defaultModelID = "live-asr"
-    public static let modelIDs = ["live-asr", "final-asr"]
+    public static let modelIDs = ["live-asr", "final-asr-parakeet", "final-asr"]
     public static let idleMinuteOptions = [1, 5, 15, 60]
     public static let maximumSecondsRange = 30...600
     public static let historyOptions = [0, 3, 5, 10]
     public static let contextCharacterLimit = 1_000
 
     public static func modelTitle(_ id: String) -> String {
-        id == "final-asr" ? "Qwen3-ASR 1.7B" : "Qwen3-ASR 0.6B"
+        switch id {
+        case "final-asr": "Qwen3-ASR 1.7B"
+        case "final-asr-parakeet": "Parakeet v3"
+        default: "Qwen3-ASR 0.6B"
+        }
     }
 
     public static func modelRole(_ id: String) -> ModelRole {
-        id == "final-asr" ? .finalASR : .liveASR
+        id.hasPrefix("final-asr") ? .finalASR : .liveASR
     }
 
     /// The model's row in Settings ▸ Models.
     public static func modelSettingsRow(_ id: String) -> String {
-        id == "final-asr" ? "Final transcription" : "Live transcription"
+        id.hasPrefix("final-asr") ? "Final transcription" : "Live transcription"
     }
 
     public static func settings(in defaults: UserDefaults = .standard) -> DictationSettings {

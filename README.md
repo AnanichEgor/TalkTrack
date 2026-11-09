@@ -123,8 +123,9 @@ supported.
 | Purpose | Model | Download |
 |---|---|---|
 | Live transcription | Qwen3-ASR 0.6B (4-bit) | 0.7 GB |
-| Final transcription | Qwen3-ASR 1.7B (8-bit) | 2.3 GB |
-| Word alignment | Qwen3-ForcedAligner 0.6B (8-bit) | 1.2 GB |
+| Final transcription (default, fast) | Parakeet TDT 0.6B v3 (8-bit) | 0.9 GB |
+| Final transcription (optional, slower, better quality; also recovers speech Parakeet misses) | Qwen3-ASR 1.7B (8-bit) | 2.3 GB |
+| Word alignment (Qwen final transcription only; Parakeet times its own words) | Qwen3-ForcedAligner 0.6B (8-bit) | 1.2 GB |
 | Speaker segmentation | pyannote segmentation 3.0 (MLX) | 10 MB |
 | Speaker embeddings | WeSpeaker ResNet34-LM (MLX) | 20 MB |
 | Summaries, translation, correction | Qwen3.5 9B OptiQ (4-bit) **or** Qwen3.5 4B OptiQ (4-bit) | 6.6 GB / 3.1 GB |
@@ -143,7 +144,7 @@ Source and model licenses and attribution are in [ThirdParty/](ThirdParty/README
   error. 16 GB is the practical minimum for summaries and translation; requests that
   do not fit in RAM at all (for example 9B on 8 GB) are refused. Recording and
   transcription are not affected.
-- **Disk.** About 4.2 GB for the speech models plus 3.1 GB (4B) or 6.6 GB (9B) for the
+- **Disk.** About 2.8 GB for the speech models (4.2 GB with Qwen3-ASR 1.7B and its aligner) plus 3.1 GB (4B) or 6.6 GB (9B) for the
   text model, stored in `~/Library/Application Support/TalkTrack/Models`.
 - **Internet** is needed only to download models and to check for updates;
   everything else works offline (unless you use a text server).

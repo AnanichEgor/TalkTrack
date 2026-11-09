@@ -195,5 +195,104 @@
       "Wrap pinned Qwen model prefill with cancellation checks and evaluated 512-token chunks; no custom checkpoint loader."
     ],
     "version": "3.31.4"
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Parakeet/ParakeetConfig.swift",
+    "sourceSHA256": "2a415373278e99656df1469d95eb55ddde9356ea95ed501a4960f262f21f9f70",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/ParakeetConfig.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Parakeet/ParakeetConformer.swift",
+    "sourceSHA256": "aaf94c57de0dc24a4096edb46f295d9a265814beedaeea4c4f1f14dd56745f49",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/ParakeetConformer.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Parakeet/ParakeetCTCLayers.swift",
+    "sourceSHA256": "f579919cb533ec4a8e19c48ff2aa9191cfb094f0b5e05a03e69ebcb68e0ad37e",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/ParakeetCTCLayers.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Parakeet/ParakeetAudio.swift",
+    "sourceSHA256": "fac83e929659f6d680d9b42cda4ab2b587f41d3f4547b2408b28a20c88b1d99e",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/ParakeetAudio.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Parakeet/ParakeetNemoAliases.swift",
+    "sourceSHA256": "038be3f788668a646d6062fad0e54d522467d64e508d3fc9e0aff5d02f6efdb5",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/ParakeetNemoAliases.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Parakeet/ParakeetTokenizer.swift",
+    "sourceSHA256": "51cf1cf9e7590a3447763627d16846c877e1ab9bf216f0ba102610c7d354abac",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/ParakeetTokenizer.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Parakeet/ParakeetModel.swift",
+    "sourceSHA256": "0c9311e8d4b27f1a701a080d106528b62fbfdd0fc4269ef688094dc5a8f2bfa8",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/ParakeetModel.swift",
+    "changes": [
+      "Removed fromPretrained download/cache entry point and HuggingFace import.",
+      "Require a confined ModelLocalDirectory capability; fromDirectory is private and refuses configs over 4 MB and non-TDT variants."
+    ]
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Nemo/NemoAlignment.swift",
+    "sourceSHA256": "c391497e8f52f7b452234671a1d80e79ff1a5af9126cfef183ba2f479cee9793",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/NemoAlignment.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Nemo/NemoAttention.swift",
+    "sourceSHA256": "46e18564dfd2b159715b751d46fff82ea70f77bda5d605a9899343082a8165f3",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/NemoAttention.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Nemo/NemoDecodingLogic.swift",
+    "sourceSHA256": "d5015b80645752a0751263ce52735020cb703eb98dd97374774792dba8adc635",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/NemoDecodingLogic.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Nemo/NemoRNNTConfig.swift",
+    "sourceSHA256": "74f61b3e6769ece8334cd5e1da8ed8f5d469b0769ca6b9fd3ecc4a5e2b9c2a4b",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/NemoRNNTConfig.swift",
+    "changes": []
+  },
+  {
+    "repository": "https://github.com/Blaizzy/mlx-audio-swift",
+    "revision": "01dec7c9bdce3088a6b6b7ab9f2e403458195efb",
+    "source": "Sources/MLXAudioSTT/Models/Nemo/NemoRNNTLayers.swift",
+    "sourceSHA256": "1b965f50d71265eb4f8d5a1436c95edc79053bf98fb8019b9339849d3e9b323d",
+    "destination": "Packages/TalkTrackInference/Sources/MLXAudioSTT/Parakeet/NemoRNNTLayers.swift",
+    "changes": []
   }
 ]

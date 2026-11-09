@@ -655,5 +655,71 @@
     "runtimeWeightShards": [
       "model.safetensors"
     ]
+  },
+  {
+    "repository": "animaslabs/parakeet-tdt-0.6b-v3-mlx-8bit",
+    "revision": "18498133db8b4c8753bf98b3c5b6639b2a791be3",
+    "sourceURL": "https://huggingface.co/api/models/animaslabs/parakeet-tdt-0.6b-v3-mlx-8bit/revision/18498133db8b4c8753bf98b3c5b6639b2a791be3?blobs=true",
+    "metadataFile": "animaslabs--parakeet-tdt-0.6b-v3-mlx-8bit--18498133db8b4c8753bf98b3c5b6639b2a791be3.json",
+    "metadataSHA256": "0dc0a8376636080f9aa8ee047a6e93e9a2c78bde0eed51a6f7e80d136b23b04f",
+    "fileCount": 8,
+    "declaredBytes": 909384528,
+    "files": [
+      {
+        "rfilename": ".gitattributes",
+        "blobId": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "size": 1519
+      },
+      {
+        "rfilename": "README.md",
+        "blobId": "98377ead9033222002da44fbe17e7c185712df97",
+        "size": 1733
+      },
+      {
+        "rfilename": "config.json",
+        "blobId": "93275a15c5f5d13c3389b2e8b0e0d32f272bcac3",
+        "size": 318494
+      },
+      {
+        "rfilename": "model.safetensors",
+        "blobId": "fbd6f48ac1b485dba7f4535c69f0e8754d5b0444",
+        "size": 908392684,
+        "lfs": {
+          "sha256": "3b11b8e228a2c865721f17ce7d7800cc5232872a53c3ed8f5140c1e3bd1b3ab2",
+          "size": 908392684,
+          "pointerSize": 134
+        }
+      },
+      {
+        "rfilename": "model_config.yaml",
+        "blobId": "e1267257ae4f4d5c73c5a0939a7509c21459edea",
+        "size": 161386
+      },
+      {
+        "rfilename": "tokenizer.model",
+        "blobId": "60c11e1e1ac25a6514cb2d27cf8c1a7590ed2833",
+        "size": 360916,
+        "lfs": {
+          "sha256": "eacec2b0a77f336d4a2ca4a25a7047575d3c2b74de47e997f4c205126ed3135e",
+          "size": 360916,
+          "pointerSize": 131
+        }
+      },
+      {
+        "rfilename": "tokenizer.vocab",
+        "blobId": "3fa4c819f33b03e876ce33c0aa34866ed2b5e17a",
+        "size": 101024
+      },
+      {
+        "rfilename": "vocab.txt",
+        "blobId": "d2fc51742d86127c241018b728e72b3a336225a1",
+        "size": 46772
+      }
+    ],
+    "declaredQuantizationBits": 8,
+    "tensorDTypes": [
+      "U32",
+      "BF16"
+    ]
   }
 ]

@@ -70,13 +70,22 @@ private actor ModelEvents {
     }
 
     @Test func longAudioSplitsAtTheQuietestMoment() {
-        var samples = [Float](repeating: 0.2, count: 16_000 * 150)
-        // Quiet stretches at 55 s and 112 s.
-        for second in [55, 112] { for index in (second * 16_000)..<(second * 16_000 + 3_200) { samples[index] = 0 } }
+        var samples = [Float](repeating: 0.2, count: 16_000 * 80)
+        // Quiet stretches at 25 s and 52 s.
+        for second in [25, 52] { for index in (second * 16_000)..<(second * 16_000 + 3_200) { samples[index] = 0 } }
         let pieces = DictationAudio.pieces(samples)
         #expect(pieces.count == 3)
         #expect(pieces.reduce(0) { $0 + $1.count } == samples.count)
-        #expect(abs(Double(pieces[0].count) / 16_000 - 55.05) < 0.1)
-        #expect(pieces.allSatisfy { $0.count <= 60 * 16_000 })
+        #expect(abs(Double(pieces[0].count) / 16_000 - 25.05) < 0.1)
+        #expect(pieces.allSatisfy { $0.count <= 30 * 16_000 })
+    }
+
+    @Test func everyPieceFitsTheSpeechAdapterLimit() {
+        var samples = [Float](repeating: 0.2, count: 16_000 * 120)
+        for second in [26, 52, 80] { for index in (second * 16_000)..<(second * 16_000 + 3_200) { samples[index] = 0 } }
+        let pieces = DictationAudio.pieces(samples)
+        #expect(pieces.reduce(0) { $0 + $1.count } == samples.count)
+        #expect(pieces.allSatisfy { $0.count <= 30 * 16_000 })
+        #expect(pieces.count >= 4)
     }
 }

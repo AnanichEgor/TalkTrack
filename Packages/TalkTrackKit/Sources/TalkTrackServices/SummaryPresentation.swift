@@ -20,9 +20,9 @@ import TalkTrackDomain
 
         public var running: Bool {
             guard let job else { return false }
-            return ![.completed, .interrupted, .failed, .cancelled, .waitingForModels].contains(job.stage)
+            return job.stage.isActive
         }
-        public var canRetry: Bool { job.map { [.failed, .interrupted, .waitingForModels].contains($0.stage) } == true }
+        public var canRetry: Bool { job?.stage.isRetryable == true }
         public var status: String? {
             guard let job else { return nil }
             switch job.stage {
@@ -65,7 +65,6 @@ import TalkTrackDomain
         self.runner = runner; self.pipeline = pipeline; self.model = model; self.settings = settings
     }
 
-    public var running: Bool { entries.contains(where: \.running) }
     /// Recordings `Generate Summaries` would queue now.
     public var pending: [Entry] {
         entries.filter { $0.requirement == nil && !$0.running && ($0.output == nil || $0.outdated) }
@@ -95,7 +94,7 @@ import TalkTrackDomain
             for (index, recording) in recordings.enumerated() {
                 let own = jobs.filter { $0.snapshot.recordingID == recording.id }
                 // Show an older retried request while active, otherwise the latest attempt.
-                let job = own.last(where: { ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains($0.stage) }) ?? own.last
+                let job = own.last(where: { $0.stage.isActive }) ?? own.last
                 let output = outputs[recording.id]
                 var requirement: String?
                 do { try await store.requireSummarySource(meetingID: meetingID, recordingID: recording.id) }

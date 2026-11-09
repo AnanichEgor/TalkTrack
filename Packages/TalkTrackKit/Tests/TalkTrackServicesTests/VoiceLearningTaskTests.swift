@@ -84,6 +84,22 @@ actor LearningInference: SystemSpeakerInference {
         try await f.store.close()
     }
 
+    /// Save waits for the outcome; during capture its task waits for Stop instead.
+    @Test func learnNowReturnsTheOutcomeAndDefersDuringCapture() async throws {
+        let root = try TemporaryFolder(); defer { root.remove() }
+        let f = try await enrollmentFixture(root.url), profiles = VoiceProfileStore(home: root.url)
+        let service = VoiceProfileEnrollment(store: f.store, profiles: profiles, inference: LearningInference())
+        let done = try await service.learnNow(f.confirm("Alex").confirmation, choice: .newProfile)
+        #expect(done.state == .learned)
+        #expect(try await profiles.profiles().map(\.name) == ["Alex"])
+        await service.setCaptureActive(true)
+        let waiting = try await service.learnNow(f.confirm("Boris").confirmation, choice: .newProfile)
+        #expect(waiting.state == .queued)
+        await service.setCaptureActive(false); await service.waitUntilIdle()
+        #expect(try await profiles.learningTask(waiting.id)?.state == .learned)
+        try await f.store.close()
+    }
+
     /// 1.3: capture interrupts the running task; it runs again after Stop, once.
     @Test func captureInterruptsAndRestartsTheTask() async throws {
         let root = try TemporaryFolder(); defer { root.remove() }
@@ -377,7 +393,7 @@ actor LearningInference: SystemSpeakerInference {
         p.draftName = "Mark"; p.rememberVoice = true; p.selectedProfileID = mark.id
         await p.saveRename()
         // While pending, the Save's own notice names it; the list leaves it out.
-        #expect(p.noticeMessage?.contains("Learning the voice of Mark") == true)
+        #expect(p.noticeMessage?.hasPrefix("Name saved for") == true)
         await service.waitUntilIdle()
         while p.learningTasks.first?.state != .awaitingReview { await Task.yield() }
         let held = try #require(p.learningNotices.first)

@@ -102,5 +102,18 @@
     "baseGated": false,
     "observedOn": "2026-10-15",
     "weightsBundled": false
+  },
+  {
+    "repository": "animaslabs/parakeet-tdt-0.6b-v3-mlx-8bit",
+    "revision": "18498133db8b4c8753bf98b3c5b6639b2a791be3",
+    "licenseMetadata": "cc-by-4.0",
+    "metadataURL": "https://huggingface.co/api/models/animaslabs/parakeet-tdt-0.6b-v3-mlx-8bit/revision/18498133db8b4c8753bf98b3c5b6639b2a791be3",
+    "modelCardURL": "https://huggingface.co/animaslabs/parakeet-tdt-0.6b-v3-mlx-8bit/blob/18498133db8b4c8753bf98b3c5b6639b2a791be3/README.md",
+    "baseModel": "nvidia/parakeet-tdt-0.6b-v3",
+    "baseRevisionObserved": "541d1f99c6b0c3cd0b11a95167540bb8edefd82b",
+    "baseLicenseMetadata": "cc-by-4.0",
+    "baseGated": false,
+    "observedOn": "2026-11-09",
+    "weightsBundled": false
   }
 ]

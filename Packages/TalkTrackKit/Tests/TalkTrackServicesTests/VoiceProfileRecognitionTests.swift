@@ -265,7 +265,7 @@ private func coactiveRecognitionFixture(_ root: URL) async throws -> (Enrollment
         // speaker under a new name supersedes the earlier confirmation.
         let g = try await enrollmentFixture(root.url)
         if different { _ = try await remember(g, profiles: profiles, vector: clusterVector(1), name: "Blake") }
-        let (q, other) = try await coactiveRecognitionFixture(root.url), model = RecognitionInference()
+        let (q, _) = try await coactiveRecognitionFixture(root.url), model = RecognitionInference()
         if different {
             let failing = RecognitionInference()
             // Each coactive speaker yields exactly two clean embeddings, so the

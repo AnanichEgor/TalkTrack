@@ -345,7 +345,7 @@ private struct ModelSettings: View {
     var body: some View {
         Form {
             Section {
-                ForEach(models.items.filter { !$0.isTextModel }) { item in
+                ForEach(models.items.filter { !$0.isTextModel && !$0.isFinalASRModel }) { item in
                     ModelRow(item: item, requested: models.requested.contains(item.id), models: models,
                              remove: { removing = item })
                 }
@@ -353,6 +353,22 @@ private struct ModelSettings: View {
                 Text("Speech and Speakers")
             } footer: {
                 Text("Models are downloaded only when you choose Download, and run entirely on this Mac. Recordings never leave it.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section {
+                Picker("Use for new transcriptions", selection: Binding(
+                    get: { models.selectedFinalASRModel }, set: { models.chooseFinalASRModel($0) })) {
+                    ForEach(models.items.filter(\.isFinalASRModel)) { Text(finalName($0)).tag($0.id) }
+                }
+                ForEach(models.items.filter(\.isFinalASRModel)) { item in
+                    ModelRow(item: item, requested: models.requested.contains(item.id), models: models,
+                             remove: { removing = item }, inUse: item.id == models.selectedFinalASRModel,
+                             missingHint: "Download it to transcribe new recordings.")
+                }
+            } header: {
+                Text("Final Transcription")
+            } footer: {
+                Text("Parakeet is the default: it transcribes several times faster. Qwen3-ASR 1.7B is slower but has better quality, and also recovers quiet speech Parakeet misses (that needs the Qwen3-ASR and Word timing models). Transcriptions already queued keep the model they were started with.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Section {
@@ -398,6 +414,11 @@ extension ModelSettings {
         return title.replacingOccurrences(of: "Text processing: ", with: "")
     }
 
+    private func finalName(_ item: ModelSettingsPresentation.Item) -> String {
+        let name = item.title.replacingOccurrences(of: "Final transcription: ", with: "")
+        return item.speedLabel.map { "\(name) — \($0)" } ?? name
+    }
+
     static func memory(_ bytes: UInt64) -> String { "\(bytes >> 30) GB" }
 }
 
@@ -406,8 +427,9 @@ private struct ModelRow: View {
     let requested: Bool
     let models: ModelSettingsPresentation
     let remove: () -> Void
-    /// The text model new jobs use.
+    /// The text or final-transcription model new jobs use.
     var inUse = false
+    var missingHint = "Download it to generate summaries and translations."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -423,7 +445,7 @@ private struct ModelRow: View {
                     }
                     Text(item.purpose).font(.callout).foregroundStyle(.secondary)
                     if inUse && !item.state.isInstalled && !item.state.isDownloading {
-                        Text("Download it to generate summaries and translations.")
+                        Text(missingHint)
                             .font(.callout).foregroundStyle(Color.accentColor)
                     }
                 }

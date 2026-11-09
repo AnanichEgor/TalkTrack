@@ -460,6 +460,17 @@ public struct SystemSpeakerClustering: Sendable {
 
 /// Small interval sets from a native segmentation window, not PCM buffers.
 enum SpeakerIntervals {
+    /// Sorted, with overlapping intervals merged, so overlapping transcript
+    /// segments cannot count the same speech twice.
+    static func union(_ intervals: [MediaInterval]) -> [MediaInterval] {
+        var result: [MediaInterval] = []
+        for interval in intervals.sorted(by: { $0.start < $1.start }) {
+            if let last = result.last, interval.start <= last.end {
+                result[result.count - 1] = try! MediaInterval(start: last.start, end: max(last.end, interval.end))
+            } else { result.append(interval) }
+        }
+        return result
+    }
     static func intersection(_ left: [MediaInterval], _ right: [MediaInterval]) -> [MediaInterval] {
         left.flatMap { a in right.compactMap { b in
             let start = max(a.start, b.start), end = min(a.end, b.end)

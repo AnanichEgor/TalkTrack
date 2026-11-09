@@ -320,3 +320,22 @@ Same-speaker speech merges at exactly 2.000 seconds; 2.000001 seconds starts
 another block. Different speakers, recordings and capture days remain separate;
 wall-clock pauses also split blocks. Corrected display text never erases original
 ASR or invents new word timestamps.
+
+## Final recognition model (parakeet-default-asr)
+
+New final jobs use **Parakeet TDT v3** (`final-asr-parakeet`, MLX, 8-bit, about 0.9 GB). Settings ▸ Models ▸
+Final Transcription also offers **Qwen3-ASR 1.7B** (`final-asr`, "Slower, better quality"); the choice
+is the `finalASRModel` preference, unset meaning Parakeet. A job keeps the model it was created with,
+including on retry; `FinalTranscriptionPipeline.jobModels` freezes the snapshots.
+
+- **Word timing.** Parakeet times its own words (`FinalASRText.words`), so the Qwen forced aligner is not
+  run for its windows. If those words do not match the text, the aligner is used when installed.
+- **Recovery.** Parakeet can leave quiet speech empty or write a fixed-language meeting in the wrong
+  script. An audible window (above −50 dBFS) that is empty, or whose letters contradict a fixed
+  English/Russian meeting, is recognized again by Qwen3-ASR 1.7B (`recoveryASR`, the same installation as
+  the Qwen final model) and aligned by the Qwen aligner. Such windows are marked `recovered`.
+  Without those two models the job still finishes and `unrecoveredWindows` counts the loss; neither
+  `recoveryASR` nor, for Parakeet jobs, `alignment` ever blocks a job.
+- **Compatibility.** `recoveryASR` is an optional role in a job's model list. The Qwen manifests were not
+  changed, so installed models stay ready.
+- Measurements and the comparison with Qwen: see "Final recognition model" in `docs/inference.md`.

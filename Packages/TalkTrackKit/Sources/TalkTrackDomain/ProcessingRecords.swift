@@ -2,6 +2,8 @@ import Foundation
 
 public enum ModelRole: String, Codable, CaseIterable, Sendable {
     case liveASR, finalASR, alignment, segmentation, embedding, summary, translation, spelling
+    /// Qwen3-ASR 1.7B re-recognizes windows the fast final model missed. Optional in a job.
+    case recoveryASR
 }
 
 public struct ModelSnapshot: Codable, Equatable, Sendable {
@@ -131,6 +133,13 @@ public enum JobKind: String, Codable, Sendable { case finalTranscription, summar
 public enum JobStage: String, Codable, Sendable {
     case queued, waitingForModels, decoding, transcribing, aligning, diarizing, correcting
     case generating, validating, publishing, completed, interrupted, failed, cancelled
+
+    /// Nothing runs the job any more unless it is retried.
+    public var isEnded: Bool { [.completed, .failed, .interrupted, .cancelled].contains(self) }
+    /// Queued for a worker or on one; a job waiting for models is neither.
+    public var isActive: Bool { !isEnded && self != .waitingForModels }
+    /// The user can run the job again.
+    public var isRetryable: Bool { [.failed, .interrupted, .waitingForModels].contains(self) }
 }
 
 public struct ProcessingJobSnapshot: Codable, Equatable, Identifiable, Sendable {

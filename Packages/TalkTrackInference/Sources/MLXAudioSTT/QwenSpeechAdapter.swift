@@ -14,15 +14,23 @@ public struct QwenTranscription: Sendable {
 public actor QwenSpeechAdapter {
     private var asr: Qwen3ASRModel?
     private var aligner: Qwen3ForcedAlignerModel?
+    private var parakeet: ParakeetModel?
     private var access: ModelLocalDirectory?
     private var loading = false
 
     public init() {}
 
     public func prepare(_ manifest: ModelManifest, context: ModelPreparationContext) async throws {
-        guard !loading, asr == nil, aligner == nil else { throw QwenAdapterError.busy }
+        guard !loading, asr == nil, aligner == nil, parakeet == nil else { throw QwenAdapterError.busy }
         loading = true
         defer { loading = false }
+        if manifest.adapter == .parakeetTDT {
+            let directory = try await context.localDirectory()
+            _ = try await ParakeetModel.fromModelDirectory(directory)
+            try Task.checkCancellation()
+            Memory.clearCache()
+            return
+        }
         let alignment = try isAlignment(manifest)
         try QwenModelValidation.validate(try await context.read(RelativePath("config.json")), alignment: alignment)
         try await QwenTokenizerPreparation.prepare(in: context)
@@ -38,8 +46,22 @@ public actor QwenSpeechAdapter {
         guard !loading else { throw QwenAdapterError.busy }
         loading = true
         defer { loading = false }
-        let alignment = try isAlignment(manifest)
         await clear()
+        if manifest.adapter == .parakeetTDT {
+            let directory = try await files.acquireLocalModel(manifest)
+            do {
+                parakeet = try await ParakeetModel.fromModelDirectory(directory)
+                try Task.checkCancellation()
+                access = directory
+            } catch {
+                parakeet = nil
+                await directory.release()
+                Memory.clearCache()
+                throw error
+            }
+            return
+        }
+        let alignment = try isAlignment(manifest)
         let directory = try await files.acquireLocalModel(manifest)
         do {
             if alignment { aligner = try await Qwen3ForcedAlignerModel.fromModelDirectory(directory) }
@@ -47,7 +69,7 @@ public actor QwenSpeechAdapter {
             try Task.checkCancellation()
             access = directory
         } catch {
-            asr = nil; aligner = nil
+            asr = nil; aligner = nil; parakeet = nil
             await directory.release()
             Memory.clearCache()
             throw error
@@ -59,6 +81,12 @@ public actor QwenSpeechAdapter {
     public func transcribe(samples: [Float], language: String? = nil, maxTokens: Int = 512, allowEmpty: Bool = false,
                            context: String = "") throws -> QwenTranscription {
         try validate(samples)
+        if parakeet != nil {
+            // Parakeet takes no prompt: the dictionary context and language are ignored.
+            let result = try recognizeWords([samples])[0]
+            guard allowEmpty || !result.text.isEmpty else { throw QwenAdapterError.invalidOutput }
+            return QwenTranscription(text: result.text, language: nil, generatedTokens: result.words.count)
+        }
         guard !loading, let asr else { throw QwenAdapterError.notLoaded }
         guard language == nil || asr.config.supportLanguages.contains(language!),
               (1...2048).contains(maxTokens) else { throw QwenAdapterError.invalidOutput }
@@ -88,6 +116,25 @@ public actor QwenSpeechAdapter {
         return try outputs.map { output in
             guard allowEmpty || !output.text.isEmpty, output.generationTokens < maxTokens else { throw QwenAdapterError.invalidOutput }
             return QwenTranscription(text: output.text, language: output.language, generatedTokens: output.generationTokens)
+        }
+    }
+
+    /// Windows recognized together with the model's own word timings. Windows are
+    /// at most 30 s; empty text is a valid answer (quiet or non-speech audio).
+    public func recognizeWords(_ windows: [[Float]]) throws -> [ParakeetRecognition] {
+        for samples in windows {
+            try validate(samples)
+            guard samples.count <= 30 * 16000 else { throw QwenAdapterError.invalidOutput }
+        }
+        guard !loading, let parakeet else { throw QwenAdapterError.notLoaded }
+        guard !windows.isEmpty else { throw QwenAdapterError.invalidOutput }
+        let results = try parakeet.recognize(audios: windows.map { MLXArray($0) })
+        try Task.checkCancellation()
+        let limits = windows.map { Double($0.count) / 16000 }
+        return zip(results, limits).map { result, duration in
+            // A word cut by the window end may be timed slightly past it; keep it inside.
+            ParakeetRecognition(text: result.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                words: result.words.map { ParakeetWord(text: $0.text, start: min($0.start, duration), end: min($0.end, duration)) })
         }
     }
 
@@ -125,7 +172,7 @@ public actor QwenSpeechAdapter {
     }
 
     private func clear() async {
-        asr = nil; aligner = nil
+        asr = nil; aligner = nil; parakeet = nil
         let previous = access
         access = nil
         if let previous { await previous.release() }

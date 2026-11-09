@@ -23,8 +23,20 @@ public actor FinalTranscriptionPipeline {
 
     /// Missing roles that block this job; without spelling correction the
     /// text model is snapshotted but never loaded.
-    public static func blocking(_ missing: [ModelRole], settings: ProcessingSettings) -> [ModelRole] {
-        settings.spellingCorrection ? missing : missing.filter { $0 != .spelling }
+    public static func blocking(_ missing: [ModelRole], settings: ProcessingSettings, models: [ModelSnapshot] = []) -> [ModelRole] {
+        var blocking = settings.spellingCorrection ? missing : missing.filter { $0 != .spelling }
+        // Recovery is best effort. A Parakeet job times its own words, so the Qwen
+        // aligner is needed only for windows the recovery model re-recognizes.
+        blocking.removeAll { $0 == .recoveryASR }
+        if models.contains(where: \.isParakeet) { blocking.removeAll { $0 == .alignment } }
+        return blocking
+    }
+
+    /// A job names every required role once, plus optionally the recovery model.
+    public static func hasValidRoles(_ models: [ModelSnapshot]) -> Bool {
+        let roles = models.map(\.role)
+        guard Set(roles).count == roles.count else { return false }
+        return Set(roles).subtracting([.recoveryASR]) == Set(requiredRoles)
     }
 
     private let checkpointInterval: Duration
@@ -84,7 +96,7 @@ public actor FinalTranscriptionPipeline {
     private func removedModels(jobID: UUID) async -> [ModelRole]? {
         guard let job = try? await store.job(jobID),
               let missing = try? await inference.unavailableFinalModels(job.snapshot.models) else { return nil }
-        let blocking = Self.blocking(missing, settings: job.snapshot.settings)
+        let blocking = Self.blocking(missing, settings: job.snapshot.settings, models: job.snapshot.models)
         return blocking.isEmpty ? nil : blocking
     }
 
@@ -120,8 +132,7 @@ public actor FinalTranscriptionPipeline {
         let job = try await store.job(jobID)
         guard job.snapshot.kind == .finalTranscription, let id = job.snapshot.recordingID,
               [.queued, .decoding, .transcribing, .aligning, .diarizing, .correcting, .validating].contains(job.stage),
-              job.snapshot.models.count == Self.requiredRoles.count,
-              Set(job.snapshot.models.map(\.role)) == Set(Self.requiredRoles),
+              Self.hasValidRoles(job.snapshot.models),
               let recording = try await store.recordings(meetingID: job.snapshot.source.meetingID).first(where: { $0.id == id }),
               [RecordingState.complete, .interrupted].contains(recording.state),
               job.snapshot.source.recordingGenerations[id] == recording.generation else {
@@ -160,8 +171,12 @@ public actor FinalTranscriptionPipeline {
         checkpoint.readyForPublication = false
         // Recheck deletion/generation/cancellation even for a ready artifact.
         try await store.saveFinalCheckpoint(checkpoint, stage: .decoding)
-        let missing = Self.blocking(try await inference.unavailableFinalModels(job.snapshot.models), settings: job.snapshot.settings)
+        let unavailable = try await inference.unavailableFinalModels(job.snapshot.models)
+        let missing = Self.blocking(unavailable, settings: job.snapshot.settings, models: job.snapshot.models)
         guard missing.isEmpty else { throw FinalTranscriptionError.missingModels(missing) }
+        // Windows the fast model misses are recovered by Qwen only when both Qwen models are installed.
+        let recoveryAvailable = models[.finalASR]!.isParakeet && models[.recoveryASR] != nil
+            && !unavailable.contains(.recoveryASR) && !unavailable.contains(.alignment)
         let diarization = try SystemDiarizationSession(meetingID: recording.meetingID,
             segmentation: models[.segmentation]!, embedding: models[.embedding]!,
             inference: inference, checkpoint: checkpoint.speakerCheckpoint)
@@ -273,6 +288,16 @@ public actor FinalTranscriptionPipeline {
                                 guard let fallback else { throw FinalTranscriptionError.undetectedLanguage }
                                 text = try await inference.finalText(models[.finalASR]!, samples: window.samples, language: fallback)
                             }
+                            if models[.finalASR]!.isParakeet,
+                               Self.needsRecovery(text, meeting: job.snapshot.settings.meetingLanguage, samples: window.samples) {
+                                if recoveryAvailable {
+                                    let fixed = job.snapshot.settings.meetingLanguage
+                                    let again = try await inference.finalText(models[.recoveryASR]!, samples: window.samples, language: fixed)
+                                    if !again.text.isEmpty, [.english, .russian].contains(again.language) {
+                                        text = FinalASRText(text: again.text, language: again.language, words: nil, recovered: true)
+                                    }
+                                } else { checkpoint.unrecoveredWindows = (checkpoint.unrecoveredWindows ?? 0) + 1 }
+                            }
                             guard text.text.utf8.count <= 8192,
                                   text.text.isEmpty || [.english, .russian].contains(text.language) else {
                                 throw FinalTranscriptionError.invalidAlignment
@@ -282,9 +307,23 @@ public actor FinalTranscriptionPipeline {
                         }
                         let asr = checkpoint.windows[index].asr!
                         if checkpoint.windows[index].words == nil {
-                            let raw = asr.text.isEmpty ? [] : try await inference.finalAlignment(models[.alignment]!,
-                                samples: window.samples, text: asr.text, language: asr.language)
-                            checkpoint.windows[index].words = try alignedWords(raw, asr: asr, window: window)
+                            func aligned() async throws -> [FinalAlignedWord] {
+                                let raw = try await inference.finalAlignment(models[.alignment]!,
+                                    samples: window.samples, text: asr.text, language: asr.language)
+                                return try alignedWords(raw, asr: asr, window: window)
+                            }
+                            if asr.text.isEmpty { checkpoint.windows[index].words = [] }
+                            else if let own = asr.words {
+                                // Parakeet timed its own words. A mismatch with the text falls back to the aligner
+                                // when it is installed instead of failing the job.
+                                do {
+                                    let raw = try own.map { FinalAlignmentItem(text: $0.text, relative: try MediaInterval(
+                                        start: MediaTime(seconds: $0.start), end: MediaTime(seconds: $0.end))) }
+                                    checkpoint.windows[index].words = try alignedWords(raw, asr: asr, window: window)
+                                } catch FinalTranscriptionError.invalidAlignment where !unavailable.contains(.alignment) {
+                                    checkpoint.windows[index].words = try await aligned()
+                                }
+                            } else { checkpoint.windows[index].words = try await aligned() }
                             try await persist(checkpoint, since: &saved, stage: .diarizing)
                         }
                         if checkpoint.windows[index].speakers == nil {
@@ -348,6 +387,14 @@ public actor FinalTranscriptionPipeline {
         checkpoint.readyForPublication = true
         try await store.saveFinalCheckpoint(checkpoint, stage: .validating)
         return checkpoint
+    }
+
+    /// An audible window (above -50 dBFS) the fast model left empty, or wrote in a script that
+    /// contradicts a fixed meeting language.
+    static func needsRecovery(_ text: FinalASRText, meeting: MeetingLanguage, samples: [Float]) -> Bool {
+        let rms = (samples.reduce(0) { $0 + $1 * $1 } / Float(max(samples.count, 1))).squareRoot()
+        guard rms > 0.003_16 else { return false }
+        return text.text.isEmpty || FinalASRScript.contradicts(text.text, meeting: meeting)
     }
 
     /// Windows recognized in one ASR decoder batch. On 60 Daily 5 windows the

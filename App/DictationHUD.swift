@@ -28,8 +28,10 @@ import TalkTrackServices
         case .hidden:
             panel?.orderOut(nil)
             return
-        case .recording(let waveform):
+        case .recording(let waveform, let maximumSeconds):
             model.content = .recording(waveform: waveform)
+            model.recordingStart = Date()
+            model.maximumSeconds = maximumSeconds
             model.levels = Array(repeating: 0, count: HUDModel.bars)
             if waveform {
                 levelTask = Task { [weak self] in
@@ -93,6 +95,8 @@ import TalkTrackServices
     }
     var content = Content.recognizing
     var levels = [Float](repeating: 0, count: bars)
+    var recordingStart = Date()
+    var maximumSeconds = 120
 }
 
 private struct HUDView: View {
@@ -100,34 +104,40 @@ private struct HUDView: View {
     let openModels: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            switch model.content {
-            case .recording(let waveform):
-                Image(systemName: "mic.fill").foregroundStyle(.red)
-                if waveform {
-                    HStack(alignment: .center, spacing: 2) {
-                        ForEach(Array(model.levels.enumerated()), id: \.offset) { _, level in
-                            Capsule().fill(.primary.opacity(0.8))
-                                .frame(width: 3, height: max(3, CGFloat(level) * 26))
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                switch model.content {
+                case .recording(let waveform):
+                    Image(systemName: "mic.fill").foregroundStyle(.red)
+                    if waveform {
+                        HStack(alignment: .center, spacing: 2) {
+                            ForEach(Array(model.levels.enumerated()), id: \.offset) { _, level in
+                                Capsule().fill(.primary.opacity(0.8))
+                                    .frame(width: 3, height: max(3, CGFloat(level) * 26))
+                            }
                         }
+                        .frame(height: 28)
+                        .animation(.linear(duration: 0.05), value: model.levels)
+                    } else {
+                        Text("Listening…")
                     }
-                    .frame(height: 28)
-                    .animation(.linear(duration: 0.05), value: model.levels)
-                } else {
-                    Text("Listening…")
+                    RemainingTime(start: model.recordingStart, maximum: Double(model.maximumSeconds), showsBar: false)
+                case .recognizing:
+                    ProgressView().controlSize(.small)
+                    Text("Recognizing…")
+                case .notice(let notice):
+                    Image(systemName: notice == .cancelled ? "xmark.circle" : "exclamationmark.circle")
+                        .foregroundStyle(.secondary)
+                    Text(notice.message)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 360, alignment: .leading)
+                    if notice.opensModelSettings {
+                        Button("Open Settings", action: openModels)
+                    }
                 }
-            case .recognizing:
-                ProgressView().controlSize(.small)
-                Text("Recognizing…")
-            case .notice(let notice):
-                Image(systemName: notice == .cancelled ? "xmark.circle" : "exclamationmark.circle")
-                    .foregroundStyle(.secondary)
-                Text(notice.message)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 360, alignment: .leading)
-                if notice.opensModelSettings {
-                    Button("Open Settings", action: openModels)
-                }
+            }
+            if case .recording = model.content {
+                RemainingTime(start: model.recordingStart, maximum: Double(model.maximumSeconds), showsBar: true)
             }
         }
         .font(.callout)
@@ -136,5 +146,31 @@ private struct HUDView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .fixedSize()
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Time left before dictation stops by itself: a bar that empties and the
+/// remaining minutes and seconds, turning orange for the last ten seconds.
+private struct RemainingTime: View {
+    let start: Date
+    let maximum: Double
+    let showsBar: Bool
+
+    var body: some View {
+        TimelineView(.periodic(from: start, by: 0.25)) { context in
+            let left = max(0, maximum - context.date.timeIntervalSince(start))
+            let low = left <= 10
+            if showsBar {
+                ProgressView(value: left, total: maximum)
+                    .progressViewStyle(.linear)
+                    .tint(low ? .orange : .accentColor)
+                    .frame(height: 4)
+            } else {
+                Text(String(format: "%d:%02d", Int(left.rounded(.up)) / 60, Int(left.rounded(.up)) % 60))
+                    .monospacedDigit()
+                    .foregroundStyle(low ? .orange : .secondary)
+                    .accessibilityLabel("Time left \(Int(left.rounded(.up))) seconds")
+            }
+        }
     }
 }

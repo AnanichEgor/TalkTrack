@@ -52,7 +52,7 @@ struct DictationSettingsView: View {
                 }
                 Picker("Model", selection: $modelID) {
                     ForEach(DictationPreferences.modelIDs, id: \.self) { id in
-                        Text(DictationPreferences.modelTitle(id) + (id == DictationPreferences.defaultModelID ? " (faster)" : " (more accurate)")).tag(id)
+                        Text(DictationPreferences.modelTitle(id) + Self.suffix(id)).tag(id)
                     }
                 }
                 if !isInstalled(modelID) {
@@ -277,5 +277,15 @@ private struct DictionarySection: View {
         dropsTerms
             ? "The list is longer than \(DictationPreferences.contextCharacterLimit) characters; terms at the end are not used."
             : "Names, products and jargon the model should spell as written here."
+    }
+}
+
+private extension DictationSettingsView {
+    static func suffix(_ id: String) -> String {
+        switch id {
+        case DictationPreferences.defaultModelID: " (faster)"
+        case "final-asr-parakeet": " (fast, ignores your terms)"
+        default: " (more accurate)"
+        }
     }
 }

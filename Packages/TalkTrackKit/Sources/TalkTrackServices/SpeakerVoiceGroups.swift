@@ -25,12 +25,12 @@ enum SpeakerLinks {
     static let foreign = 0.2
 
     static func person(of activity: [MediaInterval], recordingID: UUID, named: [NamedSpeech]) -> String? {
-        let own = SpeakerVoiceGroups.union(activity)
+        let own = SpeakerIntervals.union(activity)
         let total = own.reduce(0) { $0 + $1.duration.seconds }
         guard total > 0 else { return nil }
         var shares: [String: Double] = [:]
         for speech in named where speech.recordingID == recordingID {
-            shares[speech.person, default: 0] += SpeakerIntervals.intersection(own, SpeakerVoiceGroups.union(speech.intervals))
+            shares[speech.person, default: 0] += SpeakerIntervals.intersection(own, SpeakerIntervals.union(speech.intervals))
                 .reduce(0) { $0 + $1.duration.seconds }
         }
         guard let best = shares.max(by: { $0.value < $1.value }), best.value >= covered * total,
@@ -62,7 +62,7 @@ enum SpeakerLinks {
     /// segmentation heard it and recognized words exist. Silence inside an
     /// activity span carries no name and must not dilute coverage.
     static func activity(_ windows: [FinalWindowCheckpoint]) -> [UUID: (UUID, [MediaInterval])] {
-        let words = SpeakerVoiceGroups.union(windows.filter { $0.track == .system }.flatMap { $0.blocks ?? [] }.map(\.interval))
+        let words = SpeakerIntervals.union(windows.filter { $0.track == .system }.flatMap { $0.blocks ?? [] }.map(\.interval))
         var result: [UUID: (UUID, [MediaInterval])] = [:]
         for window in windows where window.track == .system {
             for segment in window.speakers ?? [] {
@@ -120,7 +120,7 @@ public struct SpeakerVoiceGroups: Sendable {
         groups = order.map { rep in
             let clusters = members[rep]!
             return Group(id: rep, dayID: clusters[0].dayID, recordingID: recordingID, clusterIDs: clusters.map(\.id),
-                         vectors: clusters.flatMap { vectors[$0.id]! }, activity: Self.union(clusters.flatMap { activity[$0.id] ?? [] }))
+                         vectors: clusters.flatMap { vectors[$0.id]! }, activity: SpeakerIntervals.union(clusters.flatMap { activity[$0.id] ?? [] }))
         }
         var result: [SpeakerVoicePair] = []
         for a in groups.indices { for b in groups.indices where b > a && groups[a].dayID == groups[b].dayID {
@@ -136,16 +136,6 @@ public struct SpeakerVoiceGroups: Sendable {
         Dictionary(uniqueKeysWithValues: groups.compactMap { group in
             SpeakerLinks.person(of: group.activity, recordingID: group.recordingID, named: named).map { (group.id, $0) }
         })
-    }
-
-    static func union(_ ranges: [MediaInterval]) -> [MediaInterval] {
-        var result: [MediaInterval] = []
-        for range in ranges.sorted(by: { $0.start < $1.start }) {
-            if let last = result.last, range.start <= last.end {
-                result[result.count - 1] = try! MediaInterval(start: last.start, end: max(last.end, range.end))
-            } else { result.append(range) }
-        }
-        return result
     }
 
     static func average(_ a: [[Float]], _ b: [[Float]]) -> Double {

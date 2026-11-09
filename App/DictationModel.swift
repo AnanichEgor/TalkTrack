@@ -15,7 +15,6 @@ import TalkTrackServices
     private(set) var permissions: [DictationPermission: Bool] = [:]
     /// Permissions are granted but macOS still refuses the tap: a restart is needed.
     private(set) var needsRestart = false
-    var isAvailable: Bool { permissions.values.allSatisfy { $0 } && !needsRestart }
     /// Settings is recording a new shortcut; the global shortcut is paused.
     var recordingShortcut = false { didSet { tap.paused = recordingShortcut } }
 
@@ -70,11 +69,6 @@ import TalkTrackServices
         }
         if enabled, !settings.enabled { Task { [controller] in await controller.disabled() } }
         enabled = settings.enabled
-    }
-
-    func request(_ permission: DictationPermission) async {
-        await DictationPermissions.request(permission)
-        refresh()
     }
 
     func copy(_ item: DictationHistoryItem) {

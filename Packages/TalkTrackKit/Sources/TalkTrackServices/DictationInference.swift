@@ -32,13 +32,14 @@ public protocol DictationInference: Sendable {
 /// each boundary, so one model call stays within its token limit.
 public enum DictationAudio {
     public static let sampleRate = 16_000
-    public static let pieceSeconds = 60
+    /// The speech adapters refuse audio longer than 30 s, so a long dictation is recognized in pieces of at most that.
+    public static let pieceSeconds = 30
     /// The boundary is searched in the last part of each piece.
     static let searchSeconds = 10
     static let frame = 1_600
 
-    public static func pieces(_ samples: [Float]) -> [ArraySlice<Float>] {
-        let limit = pieceSeconds * sampleRate
+    public static func pieces(_ samples: [Float], seconds: Int = pieceSeconds) -> [ArraySlice<Float>] {
+        let limit = seconds * sampleRate
         var pieces: [ArraySlice<Float>] = []
         var start = 0
         while samples.count - start > limit {

@@ -1,4 +1,5 @@
 import Foundation
+import MLXAudioSTT
 import TalkTrackDomain
 import TalkTrackServices
 import TalkTrackTextMLX
@@ -20,7 +21,7 @@ extension InferenceRuntime: FinalTranscriptionInference {
     /// Windows are decoded together in one batch; each text is identical to
     /// recognizing the window alone (Daily 5, 60 windows at batch 2/4/8).
     public func finalTexts(_ model: ModelSnapshot, windows: [[Float]], language: MeetingLanguage) async throws -> [FinalASRText] {
-        guard model.role == .finalASR else { throw FinalTranscriptionError.invalidJob }
+        guard model.role == .finalASR || model.role == .recoveryASR else { throw FinalTranscriptionError.invalidJob }
         // Only exact digital silence skips ASR; quiet speech is never classified
         // as a source gap or removed by a volume threshold.
         guard windows.allSatisfy({ samples in
@@ -29,6 +30,17 @@ extension InferenceRuntime: FinalTranscriptionInference {
         let spoken = windows.indices.filter { windows[$0].contains { $0 != 0 } }
         var results = windows.map { _ in FinalASRText(text: "", language: language) }
         guard !spoken.isEmpty else { return results }
+        let manifest = try catalog.model(for: model)
+        if manifest.adapter == .parakeetTDT {
+            // Parakeet chooses the language itself; the recognizer times its own words.
+            let recognized = try await recognizeWords(manifest, windows: spoken.map { windows[$0] })
+            for (index, result) in zip(spoken, recognized) {
+                let detected = FinalASRScript.language(of: result.text) ?? (language == .auto ? .english : language)
+                results[index] = FinalASRText(text: result.text, language: language == .auto ? detected : language,
+                                              words: Self.monotonic(result.words))
+            }
+            return results
+        }
         let forced = language == .auto ? nil : language == .english ? "English" : "Russian"
         let recognized = spoken.count == 1
             ? [try await transcribe(model, samples: windows[spoken[0]], language: forced, maxTokens: 1024, allowEmpty: true)]
@@ -42,6 +54,19 @@ extension InferenceRuntime: FinalTranscriptionInference {
             results[index] = FinalASRText(text: result.text, language: detected)
         }
         return results
+    }
+
+    /// Word timings that never run backwards, with punctuation-only words left out
+    /// (they carry no lexical content for the alignment checks).
+    static func monotonic(_ words: [ParakeetWord]) -> [FinalASRWord] {
+        var result: [FinalASRWord] = [], previousStart = 0.0, previousEnd = 0.0
+        for word in words where word.text.contains(where: \.isLetter) || word.text.contains(where: \.isNumber) {
+            let start = max(word.start, previousStart)
+            let end = max(word.end, start, previousEnd)
+            result.append(FinalASRWord(text: word.text, start: start, end: end))
+            previousStart = start; previousEnd = end
+        }
+        return result
     }
 
     public func finalAlignment(_ model: ModelSnapshot, samples: [Float], text: String,

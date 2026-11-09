@@ -45,7 +45,7 @@ struct EnrollmentFixture {
 }
 
 func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.1, otherSpeech: Bool = false, at: Date? = nil,
-                       models: [ModelSnapshot]? = nil, pieces: Int = 1) async throws -> EnrollmentFixture {
+                       models: [ModelSnapshot]? = nil, pieces: Int = 1, unidentified: Bool = false) async throws -> EnrollmentFixture {
     let library = try await OwnedLibrary().open(root: root), store = try await SessionStore.open(library)
     let meeting = try await store.createMeeting(MeetingDraft(title: seconds >= 10 ? "Voice enrollment fixture" : "Insufficient speech fixture"))
     let date = at ?? ISO8601DateFormatter().date(from: "2026-10-09T09:00:00Z")!
@@ -62,7 +62,7 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
     }
     let recording = try await writer.finish().recording
     try await store.saveRecording(recording)
-    let speaker = DaySpeaker(meetingID: meeting.id, dayID: recording.days[0].id, number: 1)
+    let speaker = DaySpeaker(meetingID: meeting.id, dayID: recording.days[0].id, number: 1, unidentified: unidentified)
     let db = try SQLiteConnection(path: "/" + DirectoryHandle.physicalComponents(library.directory).dropFirst().joined(separator: "/") + "/Library.sqlite3")
     for item in [speaker] + (otherSpeech ? [DaySpeaker(meetingID: meeting.id, dayID: speaker.dayID, number: 2)] : []) {
         try db.execute("INSERT INTO records VALUES ('daySpeaker',?,?,?,?)", [.text(item.id.uuidString), .text(item.meetingID.uuidString), .text(item.dayID.uuidString), .blob(DomainCodec.encode(item))])
@@ -90,6 +90,24 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
 }
 
 @Suite struct VoiceProfileEnrollmentTests {
+    /// Captions without speakers put a whole recording in Unidentified (user
+    /// report, 2026-11-09): naming it creates a saved voice, a short phrase does not.
+    @Test @MainActor func longUnidentifiedBlockCanBecomeASavedVoice() async throws {
+        let root = try TemporaryFolder(); defer { root.remove() }
+        let f = try await enrollmentFixture(root.url, seconds: 24, pieces: 12, unidentified: true), profiles = VoiceProfileStore(home: root.url)
+        let service = VoiceProfileEnrollment(store: f.store, profiles: profiles, inference: EnrollmentInference())
+        let p = MeetingTranscriptPresentation(store: f.store, meetingID: f.meeting.id, enrollment: service)
+        await p.refresh()
+        let ids = f.revision.segments.map(\.id)
+        await p.beginNaming(recordingID: f.recording.id, segmentIDs: [ids[0]])
+        #expect(p.namingUnidentified && !p.namingLongUnidentified && !p.rememberVoice)
+        p.cancelRename()
+        await p.beginNaming(recordingID: f.recording.id, segmentIDs: ids)
+        #expect(p.namingUnidentified && p.namingLongUnidentified && p.rememberVoice && p.scope == .reply)
+        p.draftName = "GGGGG"; await p.saveRename(); await p.waitForLearning()
+        #expect(try await profiles.profiles().map(\.name) == ["GGGGG"])
+    }
+
     /// Task 6.6 (user decision): remembering is the default. Cancel stores
     /// nothing; a new name creates a profile; the same name later reuses it.
     @Test @MainActor func renameRemembersByDefaultAndMatchesSavedNames() async throws {
@@ -103,9 +121,9 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
         #expect(!FileManager.default.fileExists(atPath: profiles.databaseURL.path))
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
         p.draftName = "Alex"; #expect(p.effectiveProfileID == nil)
-        await p.saveRename(); await p.waitForLearning()
+        await p.saveRename()
         let alex = try #require(try await profiles.profiles().first)
-        #expect(alex.name == "Alex" && p.noticeMessage?.contains("Learning the voice of Alex") == true)
+        #expect(alex.name == "Alex" && p.noticeMessage?.hasPrefix("Name saved for") == true)
         #expect(try await profiles.learningTasks().last?.state == .learned)
         // Saved voices are suggested first and a typed same name selects the profile.
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
@@ -299,9 +317,9 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
         try await f.store.close()
     }
 
-    /// background-voice-learning 3.1: Save closes the sheet while the voice is
-    /// still being learned; Undo then stops the learning and keeps no voice.
-    @Test @MainActor func saveClosesAtOnceAndUndoWhileLearningStopsIt() async throws {
+    /// Save waits in the sheet while the voice is learned;
+    /// Cancel Remembering keeps the name and no voice.
+    @Test @MainActor func saveWaitsAndCancelKeepsTheNameOnly() async throws {
         let root = try TemporaryFolder(); defer { root.remove() }
         let f = try await enrollmentFixture(root.url), profiles = VoiceProfileStore(home: root.url), model = EnrollmentInference()
         await model.setDelay(true)
@@ -309,14 +327,13 @@ func enrollmentFixture(_ root: URL, seconds: Double = 24, amplitude: Double = 0.
         let p = MeetingTranscriptPresentation(store: f.store, meetingID: f.meeting.id, enrollment: service)
         await p.beginRename(recordingID: f.recording.id, segmentID: f.revision.segments[0].id)
         p.draftName = "Alex"; p.rememberVoice = true
-        await p.saveRename()
-        #expect(p.renameTarget == nil && !p.isBusy && p.snapshot?.assignments[0].name == "Alex")
-        #expect(p.noticeMessage?.contains("Learning the voice of Alex in the background") == true)
+        let save = Task { await p.saveRename() }
         while await model.activityCalls == 0 { await Task.yield() }
-        #expect(p.canUndo)
-        await p.undoLastNaming()
-        #expect(p.noticeMessage?.contains("Learning the voice was stopped") == true)
-        await service.waitUntilIdle()
+        #expect(p.isRemembering && p.renameTarget != nil && p.snapshot?.assignments[0].name == "Alex")
+        p.cancelRemembering()
+        await save.value
+        #expect(p.renameTarget == nil && !p.isBusy && !p.isRemembering && p.snapshot?.assignments[0].name == "Alex")
+        #expect(p.noticeMessage?.contains("Remembering the voice was cancelled") == true)
         #expect(try await profiles.profiles().isEmpty)
         #expect(try await profiles.learningTasks().map(\.state) == [.cancelled])
         try await f.store.close()

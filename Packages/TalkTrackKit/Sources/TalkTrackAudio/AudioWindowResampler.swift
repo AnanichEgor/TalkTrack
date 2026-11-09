@@ -13,7 +13,6 @@ public enum AudioResamplingError: Error, Equatable, LocalizedError, Sendable {
 }
 
 public struct ResampledAudioWindow: Sendable {
-    public static let sampleRate: UInt32 = 16_000
     public let samples: [Float]
     /// Padding used to satisfy a model's minimum input length is not source
     /// audio. Consumers must map timestamps against sourceFrameCount as well.

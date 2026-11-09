@@ -58,6 +58,10 @@ public protocol ModelInstallationControl: Sendable {
         public var error: String?
         /// One of the alternative text models; `selectedTextModel` says which one new jobs use.
         public var isTextModel: Bool { roles.contains(where: \.isTextRole) }
+        /// One of the alternative final-transcription models; `selectedFinalASRModel` says which one new jobs use.
+        public var isFinalASRModel: Bool { roles.contains(.finalASR) }
+        /// "Fast (default)" or "Slower, better quality" for a final-transcription model.
+        public let speedLabel: String?
     }
 
     public private(set) var items: [Item]
@@ -68,6 +72,9 @@ public protocol ModelInstallationControl: Sendable {
     /// The text model this Mac's memory suggests.
     public let automaticTextModel: String
     public let physicalMemory: UInt64
+    /// The user's final-transcription model, or nil for the default (Parakeet).
+    public private(set) var finalASRModelChoice: String?
+    public let defaultFinalASRModel: String
     private let defaults: UserDefaults
     private let control: any ModelInstallationControl
     private var downloads: [String: Task<Void, Never>] = [:]
@@ -86,12 +93,15 @@ public protocol ModelInstallationControl: Sendable {
         automaticTextModel = ModelCatalog.defaultTextModel(among: text, physicalMemory: physicalMemory)?.id ?? ""
         let saved = ProcessingPreferences.textModel(in: defaults)
         textModelChoice = text.contains { $0.id == saved } ? saved : nil
-        // Speech and speaker models in catalog order, then text models largest first.
-        items = (catalog.models.filter { $0.adapter != .qwen3Text } + text).map { model in
-            let info = model.adapter == .qwen3Text ? Self.describeText(model) : Self.describe(model.roles)
-            return Item(id: model.id, roles: model.roles, title: info.title, purpose: info.purpose,
-                        repository: model.repository, downloadBytes: model.downloadByteCount, state: .checking)
-        }
+        let finals = catalog.finalASRModels
+        defaultFinalASRModel = finals.first { $0.id == ProcessingPreferences.defaultFinalASRModel }?.id ?? finals.first?.id ?? ""
+        let savedFinal = ProcessingPreferences.finalASRModel(in: defaults)
+        finalASRModelChoice = finals.contains { $0.id == savedFinal } ? savedFinal : nil
+        // Live, the final alternatives (fast one first), the other speech and speaker models, then text models largest first.
+        let others = catalog.models.filter { $0.adapter != .qwen3Text && !$0.roles.contains(.finalASR) && !$0.roles.contains(.liveASR) }
+        let live = catalog.models.filter { $0.roles.contains(.liveASR) }
+        let ordered: [ModelManifest] = live + finals + others + text
+        items = ordered.map { Self.makeItem($0) }
     }
 
     /// The text model new summaries, translations and spelling corrections use.
@@ -115,8 +125,23 @@ public protocol ModelInstallationControl: Sendable {
         onChange?()
     }
 
+    /// The final-transcription model new jobs use.
+    public var selectedFinalASRModel: String { finalASRModelChoice ?? defaultFinalASRModel }
+
+    /// Saves the final-transcription model for new jobs; nil returns to the default.
+    /// Running and queued jobs keep the model they were created with.
+    public func chooseFinalASRModel(_ id: String?) {
+        guard id == nil || items.contains(where: { $0.id == id && $0.isFinalASRModel }) else { return }
+        finalASRModelChoice = id == defaultFinalASRModel ? nil : id
+        if let choice = finalASRModelChoice { defaults.set(choice, forKey: ProcessingPreferences.finalASRModelKey) }
+        else { defaults.removeObject(forKey: ProcessingPreferences.finalASRModelKey) }
+        onChange?()
+    }
+
     public func item(for role: ModelRole) -> Item? {
-        role.isTextRole ? items.first { $0.id == selectedTextModel } : items.first { $0.roles.contains(role) }
+        if role.isTextRole { return items.first { $0.id == selectedTextModel } }
+        if role == .finalASR { return items.first { $0.id == selectedFinalASRModel } }
+        return items.first { $0.roles.contains(role) }
     }
 
     /// Highlights the installations serving `roles`, e.g. from "Transcription needs models".
@@ -215,6 +240,32 @@ public protocol ModelInstallationControl: Sendable {
         return ("Text processing: \(name)", large
             ? "Summaries, translation and spelling. Better results; recommended with 32 GB of memory or more."
             : "Summaries, translation and spelling. Faster and needs less memory; recommended below 32 GB.")
+    }
+
+    nonisolated private static func makeItem(_ model: ModelManifest) -> Item {
+        var title = "", purpose = "", label: String?
+        if model.adapter == .qwen3Text {
+            (title, purpose) = describeText(model)
+        } else if model.roles.contains(.finalASR) {
+            let info = describeFinal(model)
+            (title, purpose, label) = (info.title, info.purpose, info.label)
+        } else {
+            (title, purpose) = describe(model.roles)
+        }
+        return Item(id: model.id, roles: model.roles, title: title, purpose: purpose, repository: model.repository,
+                    downloadBytes: model.downloadByteCount, state: .checking, speedLabel: label)
+    }
+
+    /// Parakeet is the fast default; Qwen3-ASR 1.7B is slower with better quality.
+    nonisolated static func describeFinal(_ model: ModelManifest) -> (title: String, purpose: String, label: String) {
+        if model.adapter == .parakeetTDT {
+            return ("Final transcription: Parakeet v3",
+                    "Fast (default). Transcribes saved audio after recording stops; quiet speech it misses is recovered by Qwen3-ASR when that model is installed.",
+                    "Fast (default)")
+        }
+        return ("Final transcription: Qwen3-ASR 1.7B",
+                "Slower, better quality. Transcribes saved audio after recording stops and recovers speech Parakeet misses.",
+                "Slower, better quality")
     }
 
     nonisolated static func describe(_ roles: [ModelRole]) -> (title: String, purpose: String) {

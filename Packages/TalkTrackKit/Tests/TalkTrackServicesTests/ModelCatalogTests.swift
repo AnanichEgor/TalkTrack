@@ -13,8 +13,8 @@ import TalkTrackDomain
 
     @Test func bundledRolesReuseTextWeightsAndRetainProvenance() throws {
         let catalog = try ModelCatalog.bundled().selecting(textModel: nil, physicalMemory: 64 << 30)
-        #expect(catalog.models.count == 7)
-        #expect(catalog.models.flatMap(\.files).count == 57)
+        #expect(catalog.models.count == 8)
+        #expect(catalog.models.flatMap(\.files).count == 64)
         let summary = try catalog.model(for: .summary)
         #expect(try summary == catalog.model(for: .translation))
         #expect(try summary == catalog.model(for: .spelling))
@@ -35,7 +35,7 @@ import TalkTrackDomain
         #expect(small.license.checkpointLicense == "apache-2.0")
         #expect(try small.snapshot(for: .summary) != summary.snapshot(for: .summary))
         #expect(try catalog.model(for: small.snapshot(for: .translation)) == small)
-        for role in [ModelRole.liveASR, .finalASR, .alignment] {
+        for role in [ModelRole.liveASR, .recoveryASR, .alignment] {
             let model = try catalog.model(for: role)
             #expect(model.generatedArtifacts.map(\.path.value) == ["tokenizer.json"])
             #expect(!model.files.contains { $0.path.value == "tokenizer.json" })
@@ -44,6 +44,47 @@ import TalkTrackDomain
             #expect(try model.downloadURL(for: config).absoluteString ==
                     "https://huggingface.co/\(model.repository)/resolve/\(model.revision)/config.json")
         }
+    }
+
+    @Test func parakeetIsTheDefaultFinalModelAndQwenStaysSelectable() throws {
+        let catalog = try ModelCatalog.bundled()
+        let parakeet = try catalog.model(for: .finalASR)
+        #expect(parakeet.id == "final-asr-parakeet" && parakeet.adapter == .parakeetTDT)
+        #expect(parakeet.repository == "animaslabs/parakeet-tdt-0.6b-v3-mlx-8bit")
+        #expect(parakeet.generatedArtifacts.isEmpty && parakeet.license.baseLicense == "cc-by-4.0")
+        #expect(try parakeet.snapshot(for: .finalASR).isParakeet)
+        #expect(catalog.finalASRModels.map(\.id) == ["final-asr-parakeet", "final-asr"])
+        let qwen = try catalog.selecting(finalASRModel: "final-asr").model(for: .finalASR)
+        #expect(qwen.adapter == .qwen3ASR && qwen.servesRecovery)
+        #expect(try !qwen.snapshot(for: .finalASR).isParakeet)
+        // Recovery is always the Qwen model, whichever final model is chosen; an unknown choice is the default.
+        #expect(try catalog.model(for: .recoveryASR) == qwen)
+        #expect(try catalog.selecting(finalASRModel: "gone").model(for: .finalASR) == parakeet)
+        // Both selections resolve their own immutable snapshots.
+        #expect(try catalog.model(for: parakeet.snapshot(for: .finalASR)) == parakeet)
+        #expect(try catalog.model(for: qwen.snapshot(for: .finalASR)) == qwen)
+    }
+
+    /// Installed models are ready only while their manifest fingerprint matches the one stored at
+    /// installation. Adding Parakeet must not change the published Qwen manifests, or every
+    /// existing installation would read as missing.
+    @Test func existingInstallationsKeepTheirReadinessFingerprint() throws {
+        let catalog = try ModelCatalog.bundled()
+        #expect(try SessionStore.fingerprint(catalog.model(id: "final-asr")) == "f112d95c571b5a26659e91717d529be954171c4d8cca25636c86c9d0125049a9")
+    }
+
+    @Test func aNewJobNamesTheRecoveryModelOnlyForParakeet() throws {
+        let catalog = try ModelCatalog.bundled()
+        let parakeetJob = try FinalTranscriptionPipeline.jobModels(catalog)
+        #expect(parakeetJob.map(\.role) == [.finalASR, .alignment, .segmentation, .embedding, .spelling, .recoveryASR])
+        #expect(FinalTranscriptionPipeline.hasValidRoles(parakeetJob))
+        let qwenJob = try FinalTranscriptionPipeline.jobModels(catalog.selecting(finalASRModel: "final-asr"))
+        #expect(qwenJob.count == 5 && FinalTranscriptionPipeline.hasValidRoles(qwenJob))
+        #expect(!FinalTranscriptionPipeline.hasValidRoles(Array(parakeetJob.dropFirst())))
+        // A missing recovery model never blocks; a Parakeet job does not need the aligner.
+        let settings = ProcessingSettings(meetingLanguage: .russian, spellingCorrection: false)
+        #expect(FinalTranscriptionPipeline.blocking([.recoveryASR, .alignment], settings: settings, models: parakeetJob) == [])
+        #expect(FinalTranscriptionPipeline.blocking([.alignment], settings: settings, models: qwenJob) == [.alignment])
     }
 
     @Test func legacySnapshotsResolveExactlyAndNewRolesShareTheSmallerModel() throws {

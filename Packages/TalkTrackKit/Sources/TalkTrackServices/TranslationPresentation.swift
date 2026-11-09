@@ -35,11 +35,10 @@ import TalkTrackDomain
         self.pipeline = pipeline; self.model = model; self.settings = settings
     }
     public var running: Bool {
-        job.map { ![.completed, .interrupted, .failed, .cancelled, .waitingForModels].contains($0.stage) } == true
+        job?.stage.isActive == true
     }
     public var canGenerate: Bool { loaded && !isBusy && !running && requirement == nil }
-    public var canRetry: Bool { !isBusy && job.map { [.failed, .interrupted, .waitingForModels].contains($0.stage) } == true }
-    public var target: OutputLanguage { settings().translationLanguage }
+    public var canRetry: Bool { !isBusy && job?.stage.isRetryable == true }
     public var status: String? {
         guard let job else { return nil }
         switch job.stage {
@@ -65,7 +64,7 @@ import TalkTrackDomain
                 output = value
             }
             let jobs = try await store.jobs(meetingID: meetingID).filter { $0.snapshot.kind == .translation }
-            job = jobs.last(where: { ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains($0.stage) }) ?? jobs.last
+            job = jobs.last(where: { $0.stage.isActive }) ?? jobs.last
             if let job { progress = await pipeline.status(jobID: job.id) } else { progress = nil }
             if let output { outdated = try await store.isOutdated(output, settings: selectedSettings) } else { outdated = false }
             do { try await store.requireTranslationSource(meetingID: meetingID); requirement = nil }

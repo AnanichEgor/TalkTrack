@@ -1457,7 +1457,7 @@ public class Qwen3ASRModel: Module {
 
             let feed = (0..<batch).map { Int32(done[$0] ? eosTokenIds[0] : previous[$0]) }
             let nextLogits = callAsFunction(inputIds: MLXArray(feed).reshaped(batch, 1), cache: cache)
-            var nextLast = nextLogits[0..., -1, 0...]
+            let nextLast = nextLogits[0..., -1, 0...]
             if repetitionPenalty != 1.0 {
                 let contextSize = max(1, repetitionContextSize)
                 var rowIndices: [Int32] = [], tokenIndices: [Int32] = []

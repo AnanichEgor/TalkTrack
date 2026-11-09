@@ -28,8 +28,11 @@ private actor StopGate {
 private actor ScriptedCapture: MeetingCaptureControl {
     let callbacks: MeetingCaptureCallbacks
     let stopGate: StopGate?
-    init(_ callbacks: MeetingCaptureCallbacks, stopGate: StopGate?) { self.callbacks = callbacks; self.stopGate = stopGate }
-    func start(timeout: Duration) async throws {}
+    let startError: (any Error)?
+    init(_ callbacks: MeetingCaptureCallbacks, stopGate: StopGate?, startError: (any Error)? = nil) {
+        self.callbacks = callbacks; self.stopGate = stopGate; self.startError = startError
+    }
+    func start(timeout: Duration) async throws { if let startError { throw startError } }
     func pause() async throws {}
     func stop() async -> CaptureStopReport { await stopGate?.wait(); return .stopped }
     var abandonedSources: [CaptureSource] { [] }
@@ -50,6 +53,7 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
     let workspace: WorkspacePresentation
     let captures = Box<[ScriptedCapture]>([])
     let stopGate = Box<StopGate?>(nil)
+    let startError = Box<ServiceError?>(nil)
     let host = Box<UInt64>(ticks(100))
     let wall = Box<Date>(Date().addingTimeInterval(60))
     let processed = Box<[UUID]>([])
@@ -65,9 +69,9 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         folder = try TemporaryFolder()
         let library = try await OwnedLibrary().open(root: folder.url)
         store = try await SessionStore.open(library)
-        let captures = captures, host = host, wall = wall, stopGate = stopGate, missing = missing
+        let captures = captures, host = host, wall = wall, stopGate = stopGate, startError = startError, missing = missing
         recorder = MeetingRecorder(library: library, store: store, capture: { callbacks in
-            let capture = ScriptedCapture(callbacks, stopGate: stopGate.value)
+            let capture = ScriptedCapture(callbacks, stopGate: stopGate.value, startError: startError.value)
             captures.value.append(capture)
             return capture
         }, playback: nil, jobs: FinalJobPolicy(models: { speechModels }, missing: { try await missing.value($0) },
@@ -85,7 +89,7 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
     /// Both sources deliver `seconds` of tone; the clocks then advance.
     /// `paced` waits between packets, so live text keeps up as it would in real time.
     func deliver(seconds: Double, paced: Bool = false) async {
-        let callbacks = await captures.value.last!.callbacks
+        let callbacks = captures.value.last!.callbacks
         let origin = host.value, frames = 1_024
         let packets = Int((seconds * 48_000 / Double(frames)).rounded(.up))
         for index in 0..<packets {
@@ -155,6 +159,39 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         await w.deleteMeeting(first.id)
         #expect(!w.hasMeetings && w.selectedID == nil)
         #expect(w.issue == nil)
+    }
+
+    @Test func quickRecordCreatesADatedMeetingAndRecordsItAtOnce() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        await w.start()
+        #expect(w.canQuickRecord)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        await w.quickRecord(now: now)
+        #expect(await until { w.phase == .recording })
+        #expect(w.activeMeeting?.title == "New Meeting")
+        #expect(w.selected?.description == now.formatted(date: .long, time: .shortened))
+        #expect(w.selectedID == w.activeMeeting?.id && w.meetings.count == 1)
+        #expect(!w.canQuickRecord)
+        await w.quickRecord(now: now)
+        #expect(w.meetings.count == 1 && f.captures.value.count == 1)
+        await f.deliver(seconds: 1)
+        await w.stop()
+        #expect(await until { w.phase == .idle && w.canQuickRecord })
+    }
+
+    @Test func quickRecordRemovesItsMeetingWhenRecordingCannotStart() async throws {
+        let f = try await WorkspaceFixture()
+        defer { f.remove() }
+        let w = f.workspace
+        await w.start()
+        let existing = try await w.createMeeting(title: "Existing", description: "")
+        f.startError.value = ServiceError(message: "Microphone unavailable", recovery: "Connect it.")
+        await w.quickRecord()
+        #expect(w.issue?.message == "Microphone unavailable")
+        #expect(w.meetings.map(\.id) == [existing.id] && w.selectedID == existing.id)
+        #expect(try await f.store.meetings().map(\.id) == [existing.id])
     }
 
     @Test func onlyOneMeetingRecordsAndControlsFollowTheActiveCapture() async throws {
@@ -663,6 +700,14 @@ private let speechModels = FinalTranscriptionPipeline.requiredRoles.map {
         #expect(S.ready.message == "Transcript ready")
     }
 
+    @Test func aReadyTranscriptNamesSpeechTheFastModelCouldNotRecover() {
+        typealias W = WorkspacePresentation
+        #expect(W.lossMessage(status: .ready, unrecoveredWindows: 0) == nil)
+        #expect(W.lossMessage(status: .processing(.transcribing), unrecoveredWindows: 3) == nil)
+        #expect(W.lossMessage(status: .ready, unrecoveredWindows: 1)?.hasPrefix("Transcript ready, but 1 audible stretch was not recognized.") == true)
+        #expect(W.lossMessage(status: .ready, unrecoveredWindows: 4)?.contains("4 audible stretches were") == true)
+    }
+
     @Test func systemAudioHintNeedsLongExactZerosWhileTheMicrophoneHearsSpeech() async throws {
         let f = try await WorkspaceFixture()
         defer { f.remove() }
@@ -921,6 +966,36 @@ extension WorkspacePresentationTests {
         #expect(f.workspace.importRefusal(into: other.id) == nil && f.workspace.importRefusal(into: nil) == nil)
         await f.deliver(seconds: 0.5)
         await f.workspace.stop()
+    }
+
+    @Test func importShowsVoiceLearningProgressUntilEveryVoiceFinished() async throws {
+        let f = try await WorkspaceFixture(); defer { f.remove() }
+        await f.workspace.start()
+        let model = EnrollmentInference()
+        await model.setDelay(true)
+        let enrollment = VoiceProfileEnrollment(store: f.store, profiles: VoiceProfileStore(home: f.folder.url.appending(path: "home")), inference: model)
+        f.workspace.voiceLearning = enrollment
+        let wav = f.folder.url.appending(path: "call.wav")
+        try ImportMedia.audioFile(wav, seconds: 20, rate: 48_000)
+        let transcript = try TeamsTranscriptParser.vtt(Data("""
+            WEBVTT
+
+            00:00:01.000 --> 00:00:08.000
+            <v Mark Davis>Okay, great.</v>
+
+            00:00:09.000 --> 00:00:18.000
+            <v Ana Lee>Yep, everything is working.</v>
+            """.utf8), file: "t.vtt")
+        try f.workspace.importSession(SessionImportRequest(destination: .newMeeting(MeetingDraft(title: "Call", description: "")),
+            media: wav, transcript: transcript, start: Date(), timeZoneIdentifier: "UTC", rememberVoices: true,
+            speakerModels: speechModels), policy: importPolicy())
+        await f.workspace.waitForImport()
+        #expect(f.workspace.importVoiceLearning?.total == 2 && f.workspace.importVoiceLearning?.finished == 0)
+        while f.workspace.importVoiceLearning?.current == nil { await Task.yield() }
+        #expect(["Mark Davis", "Ana Lee"].contains(f.workspace.importVoiceLearning?.current ?? ""))
+        await model.setDelay(false)
+        await enrollment.waitUntilIdle()
+        while f.workspace.importVoiceLearning != nil { await Task.yield() }
     }
 
     @Test func importedNamesQueueVoiceLearningOnlyWhenAsked() async throws {

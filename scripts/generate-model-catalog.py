@@ -13,6 +13,7 @@ DESTINATION = ROOT / "Packages/TalkTrackKit/Sources/TalkTrackServices/Resources/
 SELECTIONS = {
     "mlx-community/Qwen3-ASR-0.6B-4bit": ("live-asr", ["liveASR"], "qwen3ASR", "mlx-audio-01dec7c9-qwen3-tokenizer-v1"),
     "mlx-community/Qwen3-ASR-1.7B-8bit": ("final-asr", ["finalASR"], "qwen3ASR", "mlx-audio-01dec7c9-qwen3-tokenizer-v1"),
+    "animaslabs/parakeet-tdt-0.6b-v3-mlx-8bit": ("final-asr-parakeet", ["finalASR"], "parakeetTDT", "mlx-audio-01dec7c9-parakeet-tdt-v1"),
     "mlx-community/Qwen3-ForcedAligner-0.6B-8bit": ("alignment", ["alignment"], "qwen3Aligner", "mlx-audio-01dec7c9-qwen3-tokenizer-v1"),
     "aufklarer/Pyannote-Segmentation-MLX": ("segmentation", ["segmentation"], "pyannoteSegmentation", "speech-swift-1e6e0e52-segmentation-v1"),
     "aufklarer/WeSpeaker-ResNet34-LM-MLX": ("embedding", ["embedding"], "weSpeaker", "speech-swift-1e6e0e52-mel-v1"),
@@ -27,7 +28,7 @@ LEGACY = {"mlx-community/Qwen3.6-35B-A3B-4bit"}
 def generate():
     inventories = json.loads((ROOT / "ThirdParty/model-file-inventories.json").read_text())
     provenance = {item["repository"]: item for item in json.loads((ROOT / "ThirdParty/model-provenance.json").read_text())}
-    assert len(inventories) == len(SELECTIONS) == len(provenance) == 8
+    assert len(inventories) == len(SELECTIONS) == len(provenance) == 9
     assert {item["repository"] for item in inventories} == set(SELECTIONS) == set(provenance)
     models = []
     for inventory in inventories:
@@ -61,6 +62,8 @@ def generate():
             sources = ["vocab.json", "merges.txt", "tokenizer_config.json"]
             required |= set(sources) | {"model.safetensors", "model.safetensors.index.json", "preprocessor_config.json", "chat_template.json", "generation_config.json"}
             generated = [{"path": "tokenizer.json", "generatorVersion": preprocessing, "sourcePaths": sources}]
+        elif adapter == "parakeetTDT":
+            required |= {"model.safetensors", "tokenizer.model", "vocab.txt"}
         elif adapter == "qwen3Text":
             required |= {"tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "model.safetensors.index.json", "generation_config.json"}
             required |= set(inventory.get("runtimeWeightShards", [f"model-{i:05d}-of-00004.safetensors" for i in range(1, 5)]))

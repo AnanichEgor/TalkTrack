@@ -60,7 +60,7 @@ public struct FinalJobPolicy: Sendable {
                                settings: @escaping @Sendable (Meeting) -> ProcessingSettings) -> FinalJobPolicy {
         FinalJobPolicy(models: {
             let catalog = catalog()
-            return try FinalTranscriptionPipeline.requiredRoles.map { try catalog.model(for: $0).snapshot(for: $0) }
+            return try FinalTranscriptionPipeline.jobModels(catalog)
         }, missing: missing, settings: settings)
     }
 }
@@ -115,7 +115,6 @@ public enum MeetingRecorderEvent: Sendable {
 public actor MeetingRecorder {
     public nonisolated let events: AsyncStream<MeetingRecorderEvent>
     public private(set) var phase: MeetingRecorderPhase = .idle
-    public var activeMeetingID: UUID? { active?.recording.meetingID }
     public var activeRecordingID: UUID? { active?.recording.id }
     public var pipelineStatus: CapturePipelineStatus? { get async { await active?.pipeline.status } }
     /// Live input levels and elapsed time of the active recording.
@@ -386,7 +385,7 @@ public actor MeetingRecorder {
             let models = try jobs.models()
             var job = try await store.enqueue(kind: .finalTranscription, meetingID: recording.meetingID,
                 recordingID: recording.id, settings: jobs.settings(meeting), models: models)
-            let missing = FinalTranscriptionPipeline.blocking(try await jobs.missing(models), settings: job.snapshot.settings)
+            let missing = FinalTranscriptionPipeline.blocking(try await jobs.missing(models), settings: job.snapshot.settings, models: models)
             if !missing.isEmpty {
                 let names = missing.map(\.rawValue).sorted().joined(separator: ", ")
                 try await store.updateJob(job.id, stage: .waitingForModels,

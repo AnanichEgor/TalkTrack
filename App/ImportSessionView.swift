@@ -328,3 +328,24 @@ struct ImportProgressRow: View {
         }
     }
 }
+
+/// After an import: how many participants' voices have been learned so far.
+struct ImportVoiceLearningRow: View {
+    let learning: WorkspacePresentation.ImportVoiceLearning
+    let recording: Bool
+
+    private var detail: String {
+        if recording { return "Continues when the recording stops" }
+        return learning.current ?? "Waiting to start"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Learning voices: \(learning.finished) of \(learning.total)").font(.callout)
+            ProgressView(value: min(max(learning.fraction, 0), 1)).controlSize(.small)
+            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+        }
+        .accessibilityElement(children: .combine)
+        .help("Voices of the imported participants. Each meeting can stop learning its voices.")
+    }
+}

@@ -128,7 +128,7 @@ private func settings(_ change: (inout DictationSettings) -> Void) -> DictationS
         await rig.controller.shortcutPressed() // key repeat while held
         await rig.controller.shortcutReleased()
         #expect(rig.host.delivered == ["Hello world "])
-        #expect(rig.host.hud == [.recording(waveform: true), .recognizing, .hidden])
+        #expect(rig.host.hud == [.recording(waveform: true, maximumSeconds: DictationSettings().maximumSeconds), .recognizing, .hidden])
         // The lease spans key down to the end of recognition; output is restored.
         // Loading starts concurrently at key down.
         #expect(rig.log.values.contains("prepare live-asr"))
@@ -276,12 +276,19 @@ private func settings(_ change: (inout DictationSettings) -> Void) -> DictationS
         #expect(rig.host.hud.last == .notice(.nothingRecognized))
     }
 
+    @Test func theIndicatorReceivesTheConfiguredMaximumLength() async {
+        let rig = Rig(settings: settings { $0.maximumSeconds = 45 })
+        await rig.controller.shortcutPressed()
+        #expect(rig.host.hud.first == .recording(waveform: true, maximumSeconds: 45))
+        await rig.controller.shortcutReleased()
+    }
+
     @Test func soundsAndMuteFollowSettings() async {
         let rig = Rig(settings: settings { $0.playSounds = false; $0.muteOutput = false; $0.showWaveform = false })
         await rig.controller.shortcutPressed()
         await rig.controller.shortcutReleased()
         #expect(!rig.log.values.contains { $0.contains("sound") || $0 == "mute" || $0 == "restore" })
-        #expect(rig.host.hud.first == .recording(waveform: false))
+        #expect(rig.host.hud.first == .recording(waveform: false, maximumSeconds: DictationSettings().maximumSeconds))
     }
 
     @Test func disablingUnloadsTheModel() async {

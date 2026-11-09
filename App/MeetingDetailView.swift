@@ -366,7 +366,7 @@ struct StatusRow: View {
     private var message: String {
         if workspace.selectedProgress != nil, case .processing(let stage) = status,
            [.queued, .decoding, .transcribing, .aligning, .diarizing].contains(stage) { return "Transcribing…" }
-        return workspace.selectedQueueMessage ?? status.message
+        return workspace.selectedQueueMessage ?? workspace.selectedStatusMessage ?? status.message
     }
 
     var body: some View {
@@ -643,14 +643,7 @@ struct PlayerBar: View {
         }
         .padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 12)
         .background(.bar)
-        .alert(splitting?.title ?? "", isPresented: Binding(get: { splitting != nil }, set: { if !$0 { splitting = nil } }),
-               presenting: splitting) { pending in
-            Button("Split") { Task { await split?.split(pending.recordingID, pending.time) } }
-            Button("Cancel", role: .cancel) {}
-                .keyboardShortcut(.defaultAction)
-        } message: { pending in
-            Text(pending.message)
-        }
+        .splitConfirmation($splitting, split: split)
         .onChange(of: tracks, initial: true) { player.tracks = PlaybackTracks(rawValue: tracks) ?? .auto }
         .onChange(of: recordings, initial: true) { player.load(meetingID: meetingID, recordings: recordings) }
         .onChange(of: meetingID) { player.load(meetingID: meetingID, recordings: recordings) }

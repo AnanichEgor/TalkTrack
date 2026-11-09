@@ -1,10 +1,47 @@
 import Foundation
 import TalkTrackDomain
 
+/// A word with the recognizer's own timing, in seconds from the window start.
+public struct FinalASRWord: Codable, Equatable, Sendable {
+    public let text: String
+    public let start: Double
+    public let end: Double
+    public init(text: String, start: Double, end: Double) { self.text = text; self.start = start; self.end = end }
+}
+
 public struct FinalASRText: Codable, Equatable, Sendable {
     public let text: String
     public let language: MeetingLanguage
-    public init(text: String, language: MeetingLanguage) { self.text = text; self.language = language }
+    /// Present when the recognizer times its own words (Parakeet); absent when the Qwen aligner must.
+    public var words: [FinalASRWord]?
+    /// True when the window was recognized again by the recovery model.
+    public var recovered: Bool?
+    public init(text: String, language: MeetingLanguage, words: [FinalASRWord]? = nil, recovered: Bool? = nil) {
+        self.text = text; self.language = language; self.words = words; self.recovered = recovered
+    }
+}
+
+/// Which of the two meeting languages a text is written in, judged by its letters.
+public enum FinalASRScript {
+    /// Cyrillic letters mean Russian, Latin letters English; `nil` when there are no letters.
+    public static func language(of text: String) -> MeetingLanguage? {
+        var cyrillic = 0, latin = 0
+        for scalar in text.unicodeScalars where scalar.properties.isAlphabetic {
+            switch scalar.value {
+            case 0x0400...0x04FF: cyrillic += 1
+            case 0x0041...0x024F: latin += 1
+            default: break
+            }
+        }
+        if cyrillic == 0 && latin == 0 { return nil }
+        return cyrillic >= latin ? .russian : .english
+    }
+
+    /// Whether a text with letters contradicts a fixed meeting language (`.auto` never does).
+    public static func contradicts(_ text: String, meeting: MeetingLanguage) -> Bool {
+        guard meeting != .auto, let found = language(of: text) else { return false }
+        return found != meeting
+    }
 }
 
 public struct FinalAlignmentItem: Sendable {
@@ -127,5 +164,25 @@ public struct FinalTranscriptionCheckpoint: Codable, Equatable, Sendable {
     /// (detect-loudspeaker-echo D5). Nil in checkpoints saved before it: a
     /// resumed job keeps the strict gate throughout, so one job never mixes rules.
     public var echoModeVersion: Int? = nil
+    /// Audible windows the fast model left empty or in the wrong script and the
+    /// recovery models could not re-recognize because they are not installed.
+    public var unrecoveredWindows: Int? = nil
     public var blocks: [FinalTextBlock] { windows.flatMap { $0.blocks ?? [] } }
+}
+
+extension ModelSnapshot {
+    /// Preprocessing marker of the pinned Parakeet TDT catalog entry.
+    public static let parakeetPreprocessing = "mlx-audio-01dec7c9-parakeet-tdt-v1"
+    public var isParakeet: Bool { role == .finalASR && preprocessingVersion == Self.parakeetPreprocessing }
+}
+
+extension FinalTranscriptionPipeline {
+    /// Snapshots for a new job. A Parakeet job also names the Qwen recovery model.
+    public static func jobModels(_ catalog: ModelCatalog) throws -> [ModelSnapshot] {
+        var models = try requiredRoles.map { try catalog.model(for: $0).snapshot(for: $0) }
+        if models.contains(where: \.isParakeet), let recovery = try? catalog.model(for: .recoveryASR).snapshot(for: .recoveryASR) {
+            models.append(recovery)
+        }
+        return models
+    }
 }

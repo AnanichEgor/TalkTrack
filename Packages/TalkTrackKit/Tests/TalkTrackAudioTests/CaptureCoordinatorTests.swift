@@ -167,7 +167,7 @@ private func eventually(_ condition: @escaping @Sendable () async -> Bool) async
         let second = Task { await coordinator.stop() }
         do { try await start.value; Issue.record("Expected cancellation") } catch is CancellationError { }
         await gate.release()
-        await first.value; await second.value
+        _ = await first.value; _ = await second.value
         #expect(await coordinator.phase == .idle)
         #expect(await system.active == false); #expect(await mic.active == false)
         #expect(await system.stops == 1); #expect(await mic.stops == 1)
@@ -295,7 +295,7 @@ private func eventually(_ condition: @escaping @Sendable () async -> Bool) async
         try await eventually { await system.stops == 1 }
         #expect(await mic.active)
         await gate.release()
-        try await pause.value; await stop.value
+        try await pause.value; _ = await stop.value
         #expect(await coordinator.phase == .idle)
         #expect(await mic.stops == 1)
     }

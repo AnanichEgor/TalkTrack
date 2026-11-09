@@ -10,14 +10,19 @@ existing **Voice profile** to add explicitly confirmed evidence to that person.
 Selecting an existing profile does not rename that profile or rewrite historical
 meeting names. A day name can differ from the saved profile's display name.
 
-Save commits the day name and closes the sheet at once; the voice is learned in
-the background (background-voice-learning, 2026-11-06). The notice says
-`Learning the voice of <name> in the background.` and keeps **Undo**. An error,
+Save commits the day name, then the sheet waits while the voice is learned and
+offers **Cancel Remembering** (user decision, 2026-11-08, replacing the sheet that
+closed at once). During a recording the task waits for Stop and the notice says
+so. Only imported participants' voices are queued; the sidebar shows `Learning
+voices: N of M` until they finish. The notice keeps **Undo**. An error,
 too little speech or a changed name leaves the committed day name and transcript
 intact; a saved name alone never means a voice was saved. See **Background
 learning** below.
 
 ## Evidence and storage
+
+The reader passes windows without this speaker's speech without reading or decoding
+them, so the wait depends on the speaker's speech rather than on the recording's length.
 
 Enrollment reads committed AAC in bounded ten-second windows through the same
 reader and shared MLX runtime as transcription. It intersects the final speaker's

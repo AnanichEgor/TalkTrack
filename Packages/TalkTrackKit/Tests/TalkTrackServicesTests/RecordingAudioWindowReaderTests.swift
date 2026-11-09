@@ -43,6 +43,24 @@ private func readAudio(_ reader: RecordingAudioWindowReader) async throws -> Rec
 }
 
 @Suite struct RecordingAudioWindowReaderTests {
+    @Test func skippedWindowsLeaveTheWantedOnesIdentical() async throws {
+        let folder = try TemporaryFolder()
+        defer { folder.remove() }
+        let (library, manifest) = try await windowFixture(folder, frames: 997_643, tracks: [.system])
+        let config = try AudioWindowConfiguration(sourceFrames: 288_000, overlapFrames: 48_000)
+        let full = try await RecordingAudioWindowReader.open(library: library, recording: manifest.recording, track: .system, configuration: config)
+        var all: [RecordingAudioWindow] = []
+        while case let .audio(window)? = try await full.next() { all.append(window) }
+        #expect(all.count >= 3)
+        let wantedStarts = Set([all[0], all[all.count - 1]].map(\.owned.start.microseconds))
+        let skipping = try await RecordingAudioWindowReader.open(library: library, recording: manifest.recording, track: .system, configuration: config)
+        var kept: [RecordingAudioWindow] = []
+        while case let .audio(window)? = try await skipping.next(wanted: { wantedStarts.contains($0.start.microseconds) }) { kept.append(window) }
+        #expect(kept.map(\.samples) == [all[0].samples, all[all.count - 1].samples])
+        #expect(kept.map(\.owned) == [all[0].owned, all[all.count - 1].owned])
+        #expect(kept.map(\.active) == [all[0].active, all[all.count - 1].active])
+    }
+
     @Test func actualAACWindowsCrossChunksWithNoMissingFramesAndUniqueOverlapOwnership() async throws {
         let folder = try TemporaryFolder()
         defer { folder.remove() }

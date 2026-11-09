@@ -45,7 +45,7 @@ import TalkTrackDomain
         await #expect(throws: VoiceProfileSettingsError.changed) { try await profiles.undoEnrollment(created: later, previous: again) }
         // Never while a recognition result is being committed.
         let current = try await profiles.recognitionProfiles()
-        try await profiles.withRecognitionSnapshot(current) {
+        _ = try await profiles.withRecognitionSnapshot(current) {
             await #expect(throws: VoiceProfileSettingsError.busy) { try await profiles.undoEnrollment(created: later, previous: again) }
         }
         try await f.store.close(); try await q.store.close()

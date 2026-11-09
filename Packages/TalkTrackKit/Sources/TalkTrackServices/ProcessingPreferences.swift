@@ -15,6 +15,13 @@ public enum ProcessingPreferences {
     public static let microphoneNameKey = "microphoneDeviceName"
     /// Catalog id of the text model for new jobs; absent means chosen by memory.
     public static let textModelKey = "textModel"
+    /// Catalog id of the final-transcription model; unset means the default (Parakeet).
+    public static let finalASRModelKey = "finalASRModel"
+    public static let defaultFinalASRModel = "final-asr-parakeet"
+
+    public static func finalASRModel(in defaults: UserDefaults = .standard) -> String? {
+        defaults.string(forKey: finalASRModelKey)
+    }
 
     public static func textModel(in defaults: UserDefaults = .standard) -> String? {
         defaults.string(forKey: textModelKey)

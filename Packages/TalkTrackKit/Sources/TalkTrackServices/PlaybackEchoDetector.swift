@@ -172,8 +172,6 @@ struct EchoDecimator {
         if drop > 0 { input.removeFirst(drop); inputBase += UInt64(drop) }
         return (produced, out)
     }
-
-    mutating func reset() { input = []; next = nil }
 }
 
 /// Turns measurements into stable loudspeaker / headset stretches (design D2).

@@ -251,7 +251,8 @@ struct WorkspaceServices {
             libraryRoot = library.root
             let store = try await SessionStore.open(library)
             // The text model saved in Settings, read for every new job.
-            let current: @Sendable () -> ModelCatalog = { catalog.selecting(textModel: ProcessingPreferences.textModel()) }
+            let current: @Sendable () -> ModelCatalog = { catalog.selecting(textModel: ProcessingPreferences.textModel())
+                .selecting(finalASRModel: ProcessingPreferences.finalASRModel()) }
             let policy = FinalJobPolicy.catalog(current, missing: { try await runtime.unavailableFinalModels($0) },
                                                 settings: { meeting in
                 // The meeting's own language; other options are frozen from current preferences.

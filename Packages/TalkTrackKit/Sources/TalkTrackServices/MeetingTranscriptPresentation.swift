@@ -127,6 +127,8 @@ public struct NamingUndo: Equatable, Sendable {
     public private(set) var learningTasks: [VoiceLearningTask] = []
     public var canUndo: Bool { undo != nil && !isBusy && renameTarget == nil && draftTarget == nil }
     public private(set) var isBusy = false
+    public private(set) var isRemembering = false
+    @ObservationIgnored private var rememberingTask: Task<VoiceLearningTask, any Error>?
     public private(set) var errorMessage: String?
     public private(set) var renameError: String?
     private let store: SessionStore
@@ -165,7 +167,7 @@ public struct NamingUndo: Equatable, Sendable {
     public var meetingNames: [String] {
         guard let snapshot else { return [] }
         var seen = Set<String>(), result: [String] = []
-        for name in snapshot.assignments.compactMap(\.name) + snapshot.anchors.filter { $0.voiceID == nil }.map(\.name)
+        for name in snapshot.assignments.compactMap(\.name) + snapshot.anchors.filter({ $0.voiceID == nil }).map(\.name)
             + snapshot.liveNames.map(\.name) where seen.insert(NamedSpeech.person(name)).inserted {
             result.append(name)
         }
@@ -311,11 +313,19 @@ public struct NamingUndo: Equatable, Sendable {
     public var canSave: Bool { !isBusy && (chosenVoiceID != nil || (try? SpeakerRenameError.validatedName(draftName)) != nil &&
         (!rememberVoice || !selectedProfileNeedsNewSpeech || replaceIncompatibleVoice)) }
 
-    /// The sheet is open for an Unidentified reply: it names that reply only,
-    /// and its speech is too short or mixed to remember as a voice.
+    /// The sheet is open for an Unidentified reply: it names that reply only.
     public var namingUnidentified: Bool {
         guard let target = renameTarget else { return false }
         return snapshot?.speakers.first { $0.id == target.speakerID }?.unidentified == true
+    }
+    /// An Unidentified block long enough to teach a voice, such as a whole
+    /// imported recording whose captions have no speakers. Short phrases are not.
+    public var namingLongUnidentified: Bool { namingUnidentified && hasEnoughSpeechToRemember(replySegmentIDs) }
+    private func hasEnoughSpeechToRemember(_ segmentIDs: [UUID]) -> Bool {
+        let ids = Set(segmentIDs)
+        let speech = snapshot?.revisions.flatMap(\.segments).filter { ids.contains($0.id) }
+            .reduce(Int64(0)) { $0 + $1.interval.duration.microseconds } ?? 0
+        return speech >= VoiceEnrollmentPolicy.minimumMicroseconds
     }
     public struct DayVoice: Equatable, Identifiable, Sendable {
         public let id: UUID
@@ -383,7 +393,7 @@ public struct NamingUndo: Equatable, Sendable {
             let unidentified = snapshot?.speakers.first { $0.id == target.speakerID }?.unidentified == true
             scope = unidentified ? .reply : requested ?? .reply
             currentName = (scope == .reply ? named : nil) ?? target.name
-            draftName = ""; rememberVoice = !unidentified; selectedProfileID = nil
+            draftName = ""; rememberVoice = !unidentified || hasEnoughSpeechToRemember(segmentIDs); selectedProfileID = nil
             chosenVoiceID = nil
             replaceIncompatibleVoice = false; savedVoices = []
             profiles = []; profileLoadError = nil; noticeMessage = nil
@@ -413,7 +423,7 @@ public struct NamingUndo: Equatable, Sendable {
             let recognized = published.reduce(0) { $0 + ($1.recognizedReplies ?? 0) }
             let active = published.contains { $0.replyRecognition?.isActive == true }
             noticeMessage = published.isEmpty ? "No recording could be rebuilt. Reprocess the meeting to apply names."
-                : !active ? "Names applied. Recognition needs more named replies: name at least two replies of a person, at different moments, and a reply of someone else."
+                : !active ? "Names applied. Recognition by replies needs replies of at least two different people. If only one person spoke besides you, name each remaining voice with that name."
                 : "Names applied: \(recognized) more repl\(recognized == 1 ? "y was" : "ies were") recognized from your named replies; the rest stay VoiceN. The words are unchanged."
         } catch { errorMessage = error.localizedDescription }
     }
@@ -553,6 +563,7 @@ public struct NamingUndo: Equatable, Sendable {
             for task in all { receive(task) }
         }
     }
+    public func cancelRemembering() { rememberingTask?.cancel() }
     public func cancelRename() {
         guard !isBusy else { return }
         renameTarget = nil; replySegmentIDs = []; scope = .voice; draftName = ""; currentName = nil; renameError = nil; rememberVoice = true; selectedProfileID = nil
@@ -587,10 +598,21 @@ public struct NamingUndo: Equatable, Sendable {
                             choice = .replaceIncompatible(profileID: profile.id, revisionID: profile.revisionID)
                         } else { choice = .existing(profileID: profile.id, revisionID: profile.revisionID) }
                     } else { choice = .newProfile }
-                    // The sheet closes now; the voice is learned in the background (D2).
-                    let task = try await enrollment.learn(saved.confirmation, choice: choice)
-                    learningTaskID = task.id; learningNoticePlace = place
-                    noticeMessage = "Name saved for \(place). Learning the voice of \(task.name) in the background."
+                    // The sheet stays open until the voice is learned; only capture defers it.
+                    isRemembering = true
+                    let work = Task { try await enrollment.learnNow(saved.confirmation, choice: choice) }
+                    rememberingTask = work
+                    defer { rememberingTask = nil; isRemembering = false }
+                    let task = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+                    learningTaskID = task.id
+                    switch task.state {
+                    case .queued, .running:
+                        learningNoticePlace = place
+                        noticeMessage = "Name saved for \(place). The voice of \(task.name) will be learned after the recording stops."
+                    case .cancelled: noticeMessage = "Name saved for \(place). Remembering the voice was cancelled."
+                    // The task's own row reports the outcome.
+                    default: noticeMessage = "Name saved for \(place)."
+                    }
                 } catch {
                     noticeMessage = "Name saved for \(place). Voice was not remembered. \(error.localizedDescription)"
                 }

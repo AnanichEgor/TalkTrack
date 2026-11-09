@@ -37,6 +37,70 @@ struct PendingSplit: Identifiable {
     }
 }
 
+extension View {
+    /// Asks before splitting a recording at the chosen time.
+    func splitConfirmation(_ splitting: Binding<PendingSplit?>, split: RecordingSplitActions?) -> some View {
+        alert(splitting.wrappedValue?.title ?? "",
+              isPresented: Binding(get: { splitting.wrappedValue != nil }, set: { if !$0 { splitting.wrappedValue = nil } }),
+              presenting: splitting.wrappedValue) { pending in
+            Button("Split") { Task { await split?.split(pending.recordingID, pending.time) } }
+            Button("Cancel", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
+        } message: { pending in
+            Text(pending.message)
+        }
+    }
+
+    /// Layout of one speech block in Transcript and Translation, highlighted
+    /// while it is under the playhead.
+    func speechBlock(current: Bool) -> some View {
+        font(.title3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(current ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(current ? .isSelected : [])
+    }
+}
+
+extension TranscriptPlaybackIndex {
+    /// The block under the playhead, once this meeting has been played or sought.
+    @MainActor func highlightedItem(player: MeetingPlayer, meetingID: UUID) -> String? {
+        guard player.meetingID == meetingID else { return nil }
+        switch player.state {
+        case .playing: break
+        case .paused, .failed: guard player.position > .zero else { return nil }
+        case .unavailable, .ended: return nil
+        }
+        return activeItem(at: player.position)
+    }
+}
+
+/// `[time]:`; with timing it plays from that speech.
+struct PlaybackTimestamp: View {
+    let timestamp: String
+    let start: MediaTime?
+    let player: MeetingPlayer?
+    let meetingID: UUID
+    let current: Bool
+    let help: String
+
+    var body: some View {
+        let label = Text("[\(timestamp)]:").foregroundStyle(.secondary).monospacedDigit()
+        if let player, let start {
+            Button { player.play(from: start, meetingID: meetingID) } label: { label }
+                .buttonStyle(.plain)
+                .pointerStyle(player.canPlay ? .link : nil)
+                .disabled(!player.canPlay)
+                .help(player.captureActive ? "Playback is unavailable while TalkTrack is recording" : help)
+                .accessibilityLabel("Play from \(timestamp)")
+                .accessibilityValue(current ? "Now playing" : "")
+        } else {
+            label
+        }
+    }
+}
+
 struct MeetingTranscriptView: View {
     @Bindable var presentation: MeetingTranscriptPresentation
     /// The workspace player. With it, timestamps play from their speech and the
@@ -148,13 +212,7 @@ struct MeetingTranscriptView: View {
                                         annotations(block, in: snapshot)
                                     }
                                 }
-                                .font(.title3)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(item.id == current ? Color.accentColor.opacity(0.14) : .clear,
-                                            in: RoundedRectangle(cornerRadius: 6))
-                                .accessibilityElement(children: .contain)
-                                .accessibilityAddTraits(item.id == current ? .isSelected : [])
+                                .speechBlock(current: item.id == current)
                                 .modifier(RenameActions(enabled: canRename(block, in: snapshot) && !presentation.isBusy,
                                                         namedFragment: block.isNamedFragment, unidentified: block.isUnidentified,
                                     rename: { Task { await presentation.beginRename(recordingID: block.recordingID, segmentID: block.segments[0].id) } },
@@ -206,14 +264,7 @@ struct MeetingTranscriptView: View {
         } message: { recording in
             Text(deletionMessage(recording))
         }
-        .alert(splitting?.title ?? "", isPresented: Binding(get: { splitting != nil }, set: { if !$0 { splitting = nil } }),
-               presenting: splitting) { pending in
-            Button("Split") { Task { await split?.split(pending.recordingID, pending.time) } }
-            Button("Cancel", role: .cancel) {}
-                .keyboardShortcut(.defaultAction)
-        } message: { pending in
-            Text(pending.message)
-        }
+        .splitConfirmation($splitting, split: split)
         .confirmationDialog("Clear all speaker names in this meeting?", isPresented: $confirmClearNames) {
             Button("Clear Names", role: .destructive) { Task { await presentation.clearSpeakerNames() } }
         } message: {
@@ -518,31 +569,14 @@ struct MeetingTranscriptView: View {
         index = TranscriptPlaybackIndex(timeline: timeline, items: items)
     }
 
-    /// The block under the playhead, once this meeting has been played or sought.
     private var highlighted: String? {
-        guard let player, let index, player.meetingID == presentation.meetingID else { return nil }
-        switch player.state {
-        case .playing: break
-        case .paused, .failed: guard player.position > .zero else { return nil }
-        case .unavailable, .ended: return nil
-        }
-        return index.activeItem(at: player.position)
+        guard let player else { return nil }
+        return index?.highlightedItem(player: player, meetingID: presentation.meetingID)
     }
 
-    /// `[time]:`; with timing it plays from that speech.
-    @ViewBuilder private func timestamp(_ block: TranscriptBlock, id: String, current: Bool) -> some View {
-        let label = Text("[\(block.timestamp)]:").foregroundStyle(.secondary).monospacedDigit()
-        if let player, let start = index?.start(of: id) {
-            Button { player.play(from: start, meetingID: presentation.meetingID) } label: { label }
-                .buttonStyle(.plain)
-                .pointerStyle(player.canPlay ? .link : nil)
-                .disabled(!player.canPlay)
-                .help(player.captureActive ? "Playback is unavailable while TalkTrack is recording" : "Play from \(block.timestamp)")
-                .accessibilityLabel("Play from \(block.timestamp)")
-                .accessibilityValue(current ? "Now playing" : "")
-        } else {
-            label
-        }
+    private func timestamp(_ block: TranscriptBlock, id: String, current: Bool) -> some View {
+        PlaybackTimestamp(timestamp: block.timestamp, start: index?.start(of: id), player: player, meetingID: presentation.meetingID,
+                          current: current, help: "Play from \(block.timestamp)")
     }
     private func canRename(_ block: TranscriptBlock, in snapshot: MeetingTranscriptSnapshot) -> Bool {
         guard case .system = block.speaker else { return false }
@@ -649,13 +683,15 @@ struct RenameSpeakerView: View {
             Text(unidentified ? "Who Said This?" : fragment ? "Name This Reply" : "Rename Speaker").font(.title2.bold())
             Text("Current speaker: \(presentation.currentName ?? target.label)").foregroundStyle(.secondary)
             if unidentified {
-                Text("This phrase is too short, or overlaps another speaker, to match to a voice. Choose a voice of this day or enter a name; only this reply changes.")
+                Text(presentation.namingLongUnidentified
+                     ? "This speech has no speaker yet. Choose a voice of this day or enter a name; only this block changes. Name it only if one person speaks here, because a saved voice learns from all of it."
+                     : "This phrase is too short, or overlaps another speaker, to match to a voice. Choose a voice of this day or enter a name; only this reply changes.")
                     .font(.callout).foregroundStyle(.secondary)
                 dayVoices
             } else {
                 Picker("Apply to", selection: $presentation.scope) {
                     Text("This reply").tag(MeetingTranscriptPresentation.NamingScope.reply)
-                    Text("All replies of \(target.label)").tag(MeetingTranscriptPresentation.NamingScope.voice)
+                    Text("All replies of this voice").tag(MeetingTranscriptPresentation.NamingScope.voice)
                 }
                 .pickerStyle(.segmented).disabled(presentation.isBusy)
                 .help("Correct only this reply, or name every reply of this voice on this meeting day")
@@ -677,12 +713,20 @@ struct RenameSpeakerView: View {
                       prompt: Text(presentation.currentName.map { "Current: \($0)" } ?? "Name").foregroundStyle(.tertiary))
                 .textFieldStyle(.roundedBorder).focused($nameFocused)
                 .accessibilityLabel("Speaker name").disabled(presentation.isBusy)
-            if !unidentified { savedVoices }
+            if !unidentified || presentation.namingLongUnidentified { savedVoices }
+            if presentation.isRemembering {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Learning this voice…").font(.callout)
+                    Button("Cancel Remembering") { presentation.cancelRemembering() }
+                        .help("Stop learning this voice. The name stays.")
+                }
+            }
             if let error = presentation.renameError {
                 Text(error).foregroundStyle(Color.errorText).font(.callout).textSelection(.enabled)
             }
             HStack {
-                if presentation.isBusy { ProgressView().controlSize(.small) }
+                if presentation.isBusy && !presentation.isRemembering { ProgressView().controlSize(.small) }
                 Spacer()
                 Button("Cancel") { presentation.cancelRename() }
                     .keyboardShortcut(.cancelAction).disabled(presentation.isBusy)

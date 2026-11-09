@@ -23,7 +23,36 @@ func fixtureRow(_ fixture: FinalFixture, _ start: Double, _ end: Double, voices:
                          speakers: voices, text: "Draft", detectedLanguage: "English")
 }
 
+/// Publishes a final transcript over a saved draft in which `placed` names the
+/// voice of nearly all the speech and `unplaced` only a sliver of it, too little
+/// to name a final block. The fixture must have only its draft.
+func publishDraft(_ fixture: FinalFixture, placed: String, unplaced: String) async throws {
+    let store = fixture.store, meetingID = fixture.recording.meetingID
+    let long = try fixtureRow(fixture, 0, 2.8, voices: [ProvisionalSpeaker(id: UUID(), number: 1)])
+    let sliver = try fixtureRow(fixture, 2.8, 3, voices: [ProvisionalSpeaker(id: UUID(), number: 2)])
+    try await store.saveLiveDraft(LiveDraft(meetingID: meetingID, recordingID: fixture.recording.id, utterances: [long, sliver], complete: true))
+    try await store.nameDraftVoice(meetingID: meetingID, utterance: long, name: placed)
+    try await store.nameDraftReply(meetingID: meetingID, utterance: sliver, name: unplaced)
+    _ = try await stageFinal(fixture)
+    _ = try await store.publishFinalTranscript(jobID: fixture.job.id)
+}
+
 @Suite struct LiveNamingTests {
+    @MainActor @Test func theStatusRowListsNamesThatWereNotPlaced() async throws {
+        let folder = try TemporaryFolder(); defer { folder.remove() }
+        let fixture = try await finalFixture(folder)
+        try removeFinalHead(fixture)
+        try await publishDraft(fixture, placed: "Petr", unplaced: "Olga")
+
+        let presentation = MeetingTranscriptPresentation(store: fixture.store, meetingID: fixture.recording.meetingID)
+        await presentation.refresh()
+        let entry = try #require(presentation.draftNamingMessages.first)
+        #expect(entry.message == "Named 1 reply from the draft. Not placed: Olga.")
+        // Remember Voices… offers only people who named a reply.
+        #expect(entry.people == ["Petr"])
+        try await fixture.store.close()
+    }
+
     @Test func replyAndVoiceNamesAreSavedRemovedUndoneAndSurviveRelaunch() async throws {
         let f = try await DraftFixture.make()
         defer { f.remove() }

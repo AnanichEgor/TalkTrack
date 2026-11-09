@@ -473,18 +473,14 @@ public class Qwen3ForcedAlignerModel: Module {
         let timestampTokenId = config.timestampTokenId ?? 151705
         let timestampSegmentTime = Double(config.timestampSegmentTime ?? 80.0)
 
-        let inputIdsFlat = inputIds[0]
-        let outputIdsFlat = outputIds[0]
+        // Two bulk reads. Reading each token with `item()` synchronized with the
+        // GPU hundreds of times per window.
+        let inputIdValues = inputIds.reshaped(-1).asArray(Int32.self)
+        let outputIdValues = outputIds.reshaped(-1).asArray(Int32.self)
 
-        let totalTokens = inputIdsFlat.dim(0)
         var timestampValues: [Double] = []
-
-        for i in 0..<totalTokens {
-            let tokenId = Int(inputIdsFlat[i].item(Int32.self))
-            if tokenId == timestampTokenId {
-                let predictedClass = Int(outputIdsFlat[i].item(Int32.self))
-                timestampValues.append(Double(predictedClass) * timestampSegmentTime)
-            }
+        for (i, tokenId) in inputIdValues.enumerated() where Int(tokenId) == timestampTokenId {
+            timestampValues.append(Double(outputIdValues[i]) * timestampSegmentTime)
         }
 
         // Parse timestamps into word-level alignments

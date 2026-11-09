@@ -4,6 +4,11 @@ import Testing
 import TalkTrackDomain
 @testable import TalkTrackServices
 
+private extension TemporaryFolder {
+    /// The review library's own folder, which outlives the test.
+    init(existing url: URL) { self.url = url }
+}
+
 /// The library for the native interface review (task 9.5), exported only when
 /// `TALKTRACK_UI_REVIEW_LIBRARY` names an empty folder: long Russian titles,
 /// descriptions, speaker names and notes, many meetings, and one meeting with
@@ -211,9 +216,21 @@ import TalkTrackDomain
         try await store.nameDraftReply(meetingID: call.id, utterance: draftRows[7], name: "Олег")
         #expect(try await store.meetingTranscript(meetingID: call.id).drafts.first?.utterances.count == draftRows.count)
 
+        // live-draft-naming: a call whose final transcript took names from its draft,
+        // for the "Named N replies from the draft" row. Goes last: the fixture opens the library itself.
+        let published = try await store.createMeeting(MeetingDraft(title: "Звонок после расшифровки",
+                                                                   description: "Имена из черновика перешли в финальную расшифровку"))
+
         let snapshot = try await store.meetingTranscript(meetingID: meeting.id)
         #expect(snapshot.items.count > blocks / 2)
         try await store.close()
+
+        let fixture = try await finalFixture(TemporaryFolder(existing: url), meetingID: published.id)
+        try removeFinalHead(fixture)
+        try await publishDraft(fixture, placed: "Марина", unplaced: "Ольга")
+        #expect(try await fixture.store.meetingTranscript(meetingID: published.id).draftNaming[fixture.recording.id]?.unplaced == ["Ольга"])
+        try await fixture.store.close()
+
         print("UI review library: \(url.path) — \(blocks) segments, \(snapshot.items.count) transcript items")
     }
 }

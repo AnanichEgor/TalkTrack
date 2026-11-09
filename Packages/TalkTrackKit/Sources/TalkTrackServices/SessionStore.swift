@@ -265,7 +265,7 @@ public actor SessionStore {
             try db.execute("DELETE FROM heads WHERE meeting_id=? AND scope=?", [m, r])
             // A translation still running covers this recording; it cannot publish.
             for var job in try self.jobs(meetingID: meetingID) where job.snapshot.kind == .translation
-                && ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains(job.stage) {
+                && job.stage.isActive {
                 job.stage = .cancelled; job.lastError = reason
                 try saveJob(job)
             }
@@ -485,7 +485,7 @@ public actor SessionStore {
     private func activeSummaryJob(meetingID: UUID, recordingID: UUID?) throws -> ProcessingJob? {
         try jobs(meetingID: meetingID).first {
             $0.snapshot.kind == .summary && $0.snapshot.recordingID == recordingID &&
-                ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains($0.stage)
+                $0.stage.isActive
         }
     }
 
@@ -544,7 +544,7 @@ public actor SessionStore {
             }
             try requireTranslationSource(meetingID: meetingID)
             guard !(try jobs(meetingID: meetingID)).contains(where: { $0.snapshot.kind == .translation &&
-                ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains($0.stage) }) else {
+                $0.stage.isActive }) else {
                 throw TranslationError.alreadyQueued
             }
             let transcript = try meetingTranscript(meetingID: meetingID)
@@ -604,7 +604,7 @@ public actor SessionStore {
             ? $0.id.uuidString < $1.id.uuidString : $0.snapshot.createdAt < $1.snapshot.createdAt }
         let jobs = try meetings().flatMap { meeting -> [ProcessingJob] in try records(.job, meetingID: meeting.id) }
             .filter { $0.snapshot.kind == .finalTranscription
-                && ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains($0.stage) }
+                && $0.stage.isActive }
         return jobs.filter { $0.stage != .queued }.sorted(by: order) + jobs.filter { $0.stage == .queued }.sorted(by: order)
     }
 
@@ -615,7 +615,7 @@ public actor SessionStore {
         try db.transaction {
             var cancelled: [UUID] = []
             for var job in try jobs(meetingID: meetingID) where job.snapshot.kind == .finalTranscription
-                && ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains(job.stage) {
+                && job.stage.isActive {
                 job.stage = .cancelled
                 job.lastError = "Cancelled."
                 try saveJob(job)
@@ -644,7 +644,7 @@ public actor SessionStore {
                 guard value.snapshot.source.cancellationGeneration == (try meeting(value.snapshot.source.meetingID)).cancellationGeneration,
                       source.job == value.snapshot else { throw StoreError.staleSource }
                 guard !(try jobs(meetingID: value.snapshot.source.meetingID)).contains(where: {
-                    $0.id != id && $0.snapshot.kind == .translation && ![.completed, .failed, .interrupted, .cancelled, .waitingForModels].contains($0.stage)
+                    $0.id != id && $0.snapshot.kind == .translation && $0.stage.isActive
                 }) else { throw TranslationError.alreadyQueued }
                 value.stage = .queued; value.lastError = nil
                 try saveJob(value)
@@ -1292,8 +1292,7 @@ public actor SessionStore {
                   let checkpoint = try finalCheckpoint(jobID: jobID), checkpoint.readyForPublication,
                   checkpoint.version == 1, checkpoint.correctionPromptVersion == IndexedSpellingCorrection.promptVersion,
                   checkpoint.job == job.snapshot,
-                  checkpoint.job.models.count == FinalTranscriptionPipeline.requiredRoles.count,
-                  Set(checkpoint.job.models.map(\.role)) == Set(FinalTranscriptionPipeline.requiredRoles),
+                  FinalTranscriptionPipeline.hasValidRoles(checkpoint.job.models),
                   let id = job.snapshot.recordingID, let recording: Recording = try record(.recording, id: id),
                   recording.meetingID == job.snapshot.source.meetingID,
                   checkpoint.recordingFingerprint == (try Self.fingerprint(recording)),
@@ -1441,7 +1440,7 @@ public actor SessionStore {
     /// the re-publication like any other final transcript.
     public func applyNames(meetingID: UUID, at date: Date = Date()) throws -> [FinalTranscriptPublication] {
         let meetingJobs = try jobs(meetingID: meetingID)
-        guard !meetingJobs.contains(where: { $0.snapshot.kind == .finalTranscription && ![.completed, .failed, .cancelled].contains($0.stage) }) else {
+        guard !meetingJobs.contains(where: { $0.snapshot.kind == .finalTranscription && $0.stage.isActive }) else {
             throw FinalTranscriptionError.busy
         }
         var publications: [FinalTranscriptPublication] = []
@@ -1593,7 +1592,7 @@ public actor SessionStore {
 
     private func activeJob(_ id: UUID) throws -> ProcessingJob {
         let value = try job(id)
-        guard ![.completed, .cancelled, .failed, .interrupted].contains(value.stage),
+        guard !value.stage.isEnded,
               value.snapshot.source.cancellationGeneration == (try meeting(value.snapshot.source.meetingID)).cancellationGeneration else {
             throw StoreError.cancelledJob
         }

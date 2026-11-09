@@ -6,7 +6,7 @@ xcuserdata/
 !.swiftpm/configuration/
 
 # The default meeting library lives in this folder; never commit recordings.
-/.talktrack-library/
+/.talktrack-library*/
 /.agents/
 /.claude/
 /.idea/
@@ -15,7 +15,6 @@ xcuserdata/
 # Local-only files
 __pycache__/
 *.pyc
-/docs/SESSION_HANDOFF.md
 # Real meeting files used for local import checks.
 /tmp/
 
@@ -36,11 +35,9 @@ __pycache__/
 /TalkTrack.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
 !/TalkTrack.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 /Fixtures/Inference/
-/Fixtures/PermissionProbe/
 /Packages/TalkTrackKit/Sources/TalkTrackStorageFixture/
 /Packages/TalkTrackKit/Sources/TalkTrackAudioStorageFixture/
 /App/AudioCaptureCheckView.swift
-/App/LiveTranscriptionCheckView.swift
 /App/SavedSpeakersCheckView.swift
 /App/SpeakerRenameCheckView.swift
 /App/ReviewSupport.swift

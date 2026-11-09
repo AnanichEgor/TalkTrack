@@ -56,7 +56,6 @@ public enum DictationShortcut: Hashable, Sendable {
     /// macOS virtual key codes refused for dialog navigation: Return, keypad
     /// Enter, Tab, Space, Escape.
     public static let reservedKeyCodes: Set<UInt16> = [36, 76, 48, 49, 53]
-    public static let escapeKeyCode: UInt16 = 53
 
     /// Validates a key press (not a modifier change) for use as the shortcut.
     public static func validate(keyCode: UInt16, modifiers: DictationModifiers) -> Result<DictationShortcut, DictationShortcutRefusal> {

@@ -56,7 +56,6 @@ public struct AvailableUpdate: Equatable, Sendable {
     /// The last version announced with an alert, so each version alerts once.
     public static let announcedKey = "announcedUpdateVersion"
     public static let latestReleaseURL = URL(string: "https://api.github.com/repos/AnanichEgor/TalkTrack/releases/latest")!
-    public static let releasesPage = URL(string: "https://github.com/AnanichEgor/TalkTrack/releases")!
 
     public let currentVersion: String
     public private(set) var status: Status = .idle

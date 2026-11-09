@@ -54,7 +54,7 @@ public final class InferenceRuntime: ModelInstallationControl, DictationInferenc
             try await scheduler.run {
                 try await residents.unloadAll()
                 switch manifest.adapter {
-                case .qwen3ASR, .qwen3Aligner:
+                case .qwen3ASR, .qwen3Aligner, .parakeetTDT:
                     try await QwenSpeechAdapter().prepare(manifest, context: context)
                 case .pyannoteSegmentation, .weSpeaker:
                     try await SpeakerInferenceAdapter().prepare(manifest, context: context)
@@ -112,7 +112,7 @@ public final class InferenceRuntime: ModelInstallationControl, DictationInferenc
         }
     }
 
-    /// Long audio is recognized in pieces of at most a minute, split where it
+    /// Long audio is recognized in pieces of at most 30 seconds, split where it
     /// is quietest, each with the dictionary as context.
     public func dictate(modelID: String, samples: [Float], language: MeetingLanguage, context: String,
                         lease: InferenceScheduler.InteractiveLease) async throws -> DictationRecognition {
@@ -207,6 +207,11 @@ public final class InferenceRuntime: ModelInstallationControl, DictationInferenc
         return try await speech(manifest) { adapter in
             try await adapter.transcribeBatch(windows, language: language, maxTokens: maxTokens, allowEmpty: allowEmpty)
         }
+    }
+
+    /// Windows recognized by a Parakeet model together, with its own word timings.
+    func recognizeWords(_ manifest: ModelManifest, windows: [[Float]]) async throws -> [ParakeetRecognition] {
+        try await speech(manifest) { adapter in try await adapter.recognizeWords(windows) }
     }
 
     public func align(_ model: ModelSnapshot, samples: [Float], text: String,

@@ -60,12 +60,13 @@ public struct ModelFile: Codable, Equatable, Sendable {
 }
 
 public enum ModelAdapter: String, Codable, Sendable {
-    case qwen3ASR, qwen3Aligner, pyannoteSegmentation, weSpeaker, qwen3Text
+    case qwen3ASR, qwen3Aligner, parakeetTDT, pyannoteSegmentation, weSpeaker, qwen3Text
 
     var allowedRoles: Set<ModelRole> {
         switch self {
         case .qwen3ASR: [.liveASR, .finalASR]
         case .qwen3Aligner: [.alignment]
+        case .parakeetTDT: [.finalASR]
         case .pyannoteSegmentation: [.segmentation]
         case .weSpeaker: [.embedding]
         case .qwen3Text: [.summary, .translation, .spelling]
@@ -78,6 +79,8 @@ public enum ModelAdapter: String, Codable, Sendable {
         case .qwen3ASR, .qwen3Aligner:
             return common.union(["model.safetensors", "model.safetensors.index.json", "vocab.json", "merges.txt",
                 "tokenizer_config.json", "preprocessor_config.json", "chat_template.json", "generation_config.json"])
+        case .parakeetTDT:
+            return common.union(["model.safetensors", "tokenizer.model", "vocab.txt"])
         case .pyannoteSegmentation, .weSpeaker:
             return common.union(["model.safetensors"])
         case .qwen3Text:
@@ -134,9 +137,13 @@ public struct ModelManifest: Codable, Equatable, Identifiable, Sendable {
             .appendingPathComponent(revision).appendingPathComponent(file.path.value)
     }
 
+    /// The Qwen3-ASR final model also serves `recoveryASR`. Its manifest (and so its installed
+    /// readiness fingerprint) stays as published; the role is resolved here, not stored.
+    var servesRecovery: Bool { adapter == .qwen3ASR && roles.contains(.finalASR) }
+
     public func snapshot(for role: ModelRole) throws -> ModelSnapshot {
         try validate()
-        guard roles.contains(role) else { throw ModelCatalogError.invalidManifest("Unsupported processing role") }
+        guard roles.contains(role) || (role == .recoveryASR && servesRecovery) else { throw ModelCatalogError.invalidManifest("Unsupported processing role") }
         return ModelSnapshot(role: role, repository: repository, revision: revision,
             directory: try installationPath, preprocessingVersion: preprocessingVersion)
     }
@@ -231,13 +238,21 @@ public struct ModelCatalog: Sendable {
     public let legacyModels: [ModelManifest]
     /// The text model new jobs use: the user's choice, else the default for this Mac's memory.
     public private(set) var selectedTextModelID: String
+    /// The final-transcription model new jobs use: the user's choice, else Parakeet.
+    public private(set) var selectedFinalASRModelID: String
+
+    /// Alternatives for final transcription, fastest default first.
+    public var finalASRModels: [ModelManifest] {
+        models.filter { $0.roles.contains(.finalASR) }
+            .sorted { ($0.adapter == .parakeetTDT ? 0 : 1) < ($1.adapter == .parakeetTDT ? 0 : 1) }
+    }
 
     /// Text models that serve summaries, translation and spelling, largest first.
     public var textModels: [ModelManifest] {
         models.filter { $0.adapter == .qwen3Text }.sorted { $0.weightByteCount > $1.weightByteCount }
     }
 
-    public init(data: Data, textModel: String? = nil,
+    public init(data: Data, textModel: String? = nil, finalASRModel: String? = nil,
                 physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory) throws {
         let envelope = try JSONDecoder().decode(Envelope.self, from: data)
         guard envelope.schemaVersion == 1 else { throw ModelCatalogError.unsupportedSchema(envelope.schemaVersion) }
@@ -246,12 +261,19 @@ public struct ModelCatalog: Sendable {
         let all = models + legacy
         for model in all { try model.validate() }
         let textModels = models.filter { $0.adapter == .qwen3Text }
-        let roles = models.filter { $0.adapter != .qwen3Text }.flatMap(\.roles)
+        let finalASRRoles: Set<ModelRole> = [.finalASR, .recoveryASR]
+        let finalASRModels = models.filter { $0.roles.contains(.finalASR) }
+        let roles = models.filter { $0.adapter != .qwen3Text && !$0.roles.contains(.finalASR) }.flatMap(\.roles)
         let textRoles: Set<ModelRole> = [.summary, .translation, .spelling]
-        guard Set(models.map(\.id)).count == models.count,
+        // Final transcription models are alternatives for finalASR; one qwen3ASR model also recovers windows.
+        guard !finalASRModels.isEmpty, Set(finalASRModels.map(\.id)).count == finalASRModels.count,
+              finalASRModels.allSatisfy({ !$0.roles.contains(.liveASR) }),
+              finalASRModels.filter(\.servesRecovery).count == 1,
+              Set(models.map(\.id)).count == models.count,
               Set(try models.map { try $0.installationPath.value.lowercased() }).count == models.count,
-              roles.count == Set(roles).count, Set(roles).union(textRoles) == Set(ModelRole.allCases),
-              Set(roles).isDisjoint(with: textRoles) else {
+              roles.count == Set(roles).count,
+              Set(roles).union(textRoles).union(finalASRRoles) == Set(ModelRole.allCases),
+              Set(roles).isDisjoint(with: textRoles.union(finalASRRoles)) else {
             throw ModelCatalogError.invalidManifest("Catalog must assign every role exactly once")
         }
         guard !textModels.isEmpty, textModels.allSatisfy({ Set($0.roles) == textRoles }) else {
@@ -266,7 +288,22 @@ public struct ModelCatalog: Sendable {
         self.models = models
         self.legacyModels = legacy
         selectedTextModelID = ""
+        selectedFinalASRModelID = ""
         selectedTextModelID = Self.resolve(textModel, among: self.textModels, physicalMemory: physicalMemory)
+        selectedFinalASRModelID = Self.resolveFinalASR(finalASRModel, among: self.finalASRModels)
+    }
+
+    private static func resolveFinalASR(_ id: String?, among models: [ModelManifest]) -> String {
+        if let id, models.contains(where: { $0.id == id }) { return id }
+        return models.first { $0.id == ProcessingPreferences.defaultFinalASRModel }?.id ?? models.first?.id ?? ""
+    }
+
+    /// The same catalog with another final-transcription model for new jobs; an unknown id
+    /// falls back to the default.
+    public func selecting(finalASRModel id: String?) -> ModelCatalog {
+        var copy = self
+        copy.selectedFinalASRModelID = Self.resolveFinalASR(id, among: finalASRModels)
+        return copy
     }
 
     /// The installed text model is chosen by memory unless the user picked one:
@@ -297,7 +334,8 @@ public struct ModelCatalog: Sendable {
         guard let url = Bundle.module.url(forResource: "ModelCatalog", withExtension: "json") else {
             throw ModelCatalogError.missingResource
         }
-        return try ModelCatalog(data: Data(contentsOf: url), textModel: ProcessingPreferences.textModel(in: defaults))
+        return try ModelCatalog(data: Data(contentsOf: url), textModel: ProcessingPreferences.textModel(in: defaults),
+                                finalASRModel: ProcessingPreferences.finalASRModel(in: defaults))
     }
 
     /// An active installation by its catalog id.
@@ -310,6 +348,11 @@ public struct ModelCatalog: Sendable {
 
     public func model(for role: ModelRole) throws -> ModelManifest {
         if role.isTextRole { return try model(id: selectedTextModelID) }
+        if role == .finalASR { return try model(id: selectedFinalASRModelID) }
+        if role == .recoveryASR {
+            guard let model = models.first(where: \.servesRecovery) else { throw ModelCatalogError.invalidManifest("No recovery model") }
+            return model
+        }
         guard let model = models.first(where: { $0.roles.contains(role) }) else {
             throw ModelCatalogError.invalidManifest("No model for \(role.rawValue)")
         }
@@ -320,7 +363,7 @@ public struct ModelCatalog: Sendable {
     /// today's selected model into an older job.
     public func model(for snapshot: ModelSnapshot) throws -> ModelManifest {
         guard let model = try (models + legacyModels).first(where: {
-            guard $0.roles.contains(snapshot.role) else { return false }
+            guard $0.roles.contains(snapshot.role) || (snapshot.role == .recoveryASR && $0.servesRecovery) else { return false }
             return try $0.snapshot(for: snapshot.role) == snapshot
         }) else { throw ModelCatalogError.invalidManifest("The immutable model snapshot is unavailable") }
         return model

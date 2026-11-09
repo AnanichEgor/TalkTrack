@@ -230,7 +230,7 @@ extension SessionStore {
         let meetingID = original.meetingID, T = cut.microseconds
         guard let current: Recording = try record(.recording, id: original.id), current == original else { throw StoreError.staleSource }
         let jobs = try self.jobs(meetingID: meetingID)
-        let unfinished: (ProcessingJob) -> Bool = { ![.completed, .failed, .interrupted, .cancelled].contains($0.stage) }
+        let unfinished: (ProcessingJob) -> Bool = { !$0.stage.isEnded }
         guard !jobs.contains(where: { unfinished($0) && $0.snapshot.recordingID == original.id }) else { throw RecordingSplitError.busy }
         let before = try sourceSnapshot(meetingID: meetingID)
         let first = plan.first, second = plan.second

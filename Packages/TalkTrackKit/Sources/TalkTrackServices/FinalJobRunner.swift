@@ -99,10 +99,6 @@ public actor FinalJobRunner {
         if !active { wake() }
     }
 
-    /// Whether a job is waiting for a recording to stop before it continues.
-    public var hasPausedJob: Bool { captureActive && pausedJobID != nil }
-    public private(set) var pausedJobID: UUID?
-
     private func nextJob() async throws -> ProcessingJob? {
         var jobs: [ProcessingJob] = []
         for kind in kinds { jobs += try await store.queuedJobs(kind: kind) }
@@ -147,14 +143,12 @@ public actor FinalJobRunner {
                 let meetingID = job.snapshot.source.meetingID
                 let task = Task<Void, any Error> { [process] in try await process(job.id) }
                 current = (meetingID, task); currentJobID = job.id
-                if pausedJobID == job.id { pausedJobID = nil }
                 continuation.yield(.started(jobID: job.id, meetingID: meetingID))
                 let result = await task.result
                 current = nil; currentJobID = nil
                 if pausedForCapture == job.id {
                     pausedForCapture = nil
                     if case .failure = result, await requeueAfterCapture(job.id) {
-                        pausedJobID = job.id
                         continuation.yield(.paused(jobID: job.id, meetingID: meetingID))
                         continue
                     }

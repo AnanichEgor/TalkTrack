@@ -172,23 +172,44 @@ struct MeetingSidebar: View {
     @Binding var sheet: MeetingSheet?
     @Binding var deleting: Meeting?
 
+    private func meetingButtons(quickRecord: some LabelStyle, newMeeting: some LabelStyle) -> some View {
+        HStack(spacing: 8) {
+            Button { Task { await workspace.quickRecord() } } label: {
+                Label {
+                    Text("Quick Record")
+                } icon: {
+                    Image(systemName: "record.circle.fill").foregroundStyle(workspace.canQuickRecord ? Color.red : Color.secondary)
+                }
+                .labelStyle(quickRecord)
+            }
+            .controlSize(.large)
+            .disabled(!workspace.canQuickRecord)
+            .help(workspace.canQuickRecord ? "Create a meeting and start recording it now" : "Stop the current recording first")
+            .accessibilityLabel("Quick Record")
+            Button { sheet = .create } label: {
+                Label("New Meeting", systemImage: "plus").labelStyle(newMeeting).frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            .help("Create a meeting (⌘N)")
+            Button { sheet = .importSession(nil) } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
+            .controlSize(.large)
+            .disabled(workspace.importStatus != nil)
+            .help(workspace.importStatus != nil ? "Wait for the running import to finish" : "Import a Teams recording and transcript (⇧⌘I)")
+            .accessibilityLabel("Import Session")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Meetings").font(.title2.bold())
-                HStack(spacing: 8) {
-                    Button { sheet = .create } label: {
-                        Label("New Meeting", systemImage: "plus").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent).controlSize(.large)
-                    .help("Create a meeting (⌘N)")
-                    Button { sheet = .importSession(nil) } label: {
-                        Image(systemName: "square.and.arrow.down")
-                    }
-                    .controlSize(.large)
-                    .disabled(workspace.importStatus != nil)
-                    .help(workspace.importStatus != nil ? "Wait for the running import to finish" : "Import a Teams recording and transcript (⇧⌘I)")
-                    .accessibilityLabel("Import Session")
+                // The sidebar can be narrower than both labels with their icons.
+                ViewThatFits(in: .horizontal) {
+                    meetingButtons(quickRecord: .titleAndIcon, newMeeting: .titleAndIcon)
+                    meetingButtons(quickRecord: .titleOnly, newMeeting: .titleOnly)
+                    meetingButtons(quickRecord: .iconOnly, newMeeting: .titleAndIcon)
                 }
                 SearchField(text: $workspace.search, prompt: "Search meetings (⌘F)", focusRequests: app.searchFocusRequests)
             }
@@ -235,6 +256,11 @@ struct MeetingSidebar: View {
             if let status = workspace.importStatus {
                 Divider()
                 ImportProgressRow(status: status, cancel: workspace.cancelImport)
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+            }
+            if let learning = workspace.importVoiceLearning {
+                Divider()
+                ImportVoiceLearningRow(learning: learning, recording: workspace.phase != .idle)
                     .padding(.horizontal, 16).padding(.vertical, 8)
             }
             Divider()
@@ -360,7 +386,6 @@ struct MeetingFormView: View {
     @State private var saving = false
     @FocusState private var titleFocused: Bool
 
-    private var isNew: Bool { if case .edit = sheet { false } else { true } }
     private var heading: String {
         switch sheet {
         case .create: "New Meeting"

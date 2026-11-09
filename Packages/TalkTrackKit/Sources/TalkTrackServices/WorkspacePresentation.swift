@@ -167,7 +167,11 @@ public struct RecordControls: Equatable, Sendable {
     public private(set) var jobs: [ProcessingJob] = []
     /// Selected recordings with a final transcript but no final job (imports).
     private var transcribedWithoutJob: Set<UUID> = []
+    /// Audible windows a finished Parakeet job could not recognize or recover, summed over the selected meeting.
+    public private(set) var unrecoveredWindows = 0
     public private(set) var phase: MeetingRecorderPhase = .idle
+    private var isQuickRecording = false
+    private var recordStarted = false
     public private(set) var activeMeeting: Meeting?
     /// Input levels and elapsed time of the active recording, polled by the interface.
     public var levels: AudioLevelMeter { recorder.levels }
@@ -322,8 +326,15 @@ public struct RecordControls: Equatable, Sendable {
             for recording in recordings where !jobs.contains(where: { $0.snapshot.kind == .finalTranscription && $0.snapshot.recordingID == recording.id }) {
                 if try await store.transcript(meetingID: id, recordingID: recording.id)?.kind == .final { withoutJob.insert(recording.id) }
             }
+            var lost = 0
+            for recording in recordings {
+                guard let job = jobs.last(where: { $0.snapshot.kind == .finalTranscription && $0.snapshot.recordingID == recording.id }),
+                      job.stage == .completed, job.snapshot.models.contains(where: \.isParakeet) else { continue }
+                lost += try await store.finalCheckpoint(jobID: job.id)?.unrecoveredWindows ?? 0
+            }
             guard selectedID == id else { return }
             selected = meeting; self.recordings = recordings; self.jobs = jobs; transcribedWithoutJob = withoutJob
+            unrecoveredWindows = lost
             await refreshMissingModels()
         } catch {
             guard selectedID == id else { return }
@@ -337,7 +348,7 @@ public struct RecordControls: Equatable, Sendable {
         guard let unavailableModels else { return }
         for job in jobs where job.stage == .waitingForModels {
             if let missing = try? await unavailableModels(job.snapshot.models) {
-                missingModels[job.id] = FinalTranscriptionPipeline.blocking(missing, settings: job.snapshot.settings)
+                missingModels[job.id] = FinalTranscriptionPipeline.blocking(missing, settings: job.snapshot.settings, models: job.snapshot.models)
             }
         }
     }
@@ -351,6 +362,33 @@ public struct RecordControls: Equatable, Sendable {
         selectedID = meeting.id
         await loadSelection()
         return meeting
+    }
+
+    /// Whether Quick Record can create a meeting and start capturing now.
+    public var canQuickRecord: Bool {
+        isLoaded && phase == .idle && activeMeeting == nil && !isCommandRunning && !isQuitting && !isQuickRecording
+    }
+
+    /// Creates `New Meeting` described by its creation date and time, and
+    /// records it at once. A meeting whose recording could not start is removed.
+    public func quickRecord(now: Date = Date()) async {
+        guard canQuickRecord else { return }
+        isQuickRecording = true
+        defer { isQuickRecording = false }
+        let previous = selectedID
+        let meeting: Meeting
+        do {
+            meeting = try await createMeeting(title: "New Meeting", description: now.formatted(date: .long, time: .shortened))
+        } catch {
+            issue = WorkspaceIssue(error)
+            return
+        }
+        await record()
+        guard !recordStarted else { return }
+        try? await store.deleteMeeting(meeting.id)
+        await reloadMeetings()
+        selectedID = previous
+        await loadSelection()
     }
 
     public func renameMeeting(_ id: UUID, title: String, description: String) async throws {
@@ -401,17 +439,30 @@ public struct RecordControls: Equatable, Sendable {
             return
         }
         stopPlayback?(meetingID)
-        let active: (ProcessingJob) -> Bool = { ![.completed, .failed, .interrupted, .cancelled].contains($0.stage) }
-        for job in (try? await store.jobs(meetingID: meetingID)) ?? []
-            where active(job) && (job.snapshot.recordingID == recordingID || job.snapshot.kind == .translation) {
-            try? await runner.cancel(jobID: job.id)
-        }
+        await cancelWork(meetingID: meetingID, recordingID: recordingID)
         do { try await store.deleteRecording(meetingID: meetingID, recordingID: recordingID) }
         catch { issue = WorkspaceIssue(error) }
+        await reloadAfterRecordingChange()
+    }
+
+    /// Stops one recording's unfinished work and the meeting's translation,
+    /// which covers every recording.
+    private func cancelWork(meetingID: UUID, recordingID: UUID) async {
+        for job in (try? await store.jobs(meetingID: meetingID)) ?? []
+            where !job.stage.isEnded && (job.snapshot.recordingID == recordingID || job.snapshot.kind == .translation) {
+            try? await runner.cancel(jobID: job.id)
+        }
+    }
+
+    /// Refreshes everything showing a meeting's recordings after one was
+    /// deleted, split or moved; a move also selects its destination.
+    private func reloadAfterRecordingChange(selecting destinationID: UUID? = nil) async {
         recordingDeletions += 1
         transcriptGeneration += 1
+        if destinationID != nil { search = "" }
         await refreshQueue()
         await reloadMeetings()
+        if let destinationID { selectedID = destinationID }
         await loadSelection()
     }
 
@@ -451,11 +502,7 @@ public struct RecordControls: Equatable, Sendable {
             return
         }
         stopPlayback?(meeting.id)
-        let active: (ProcessingJob) -> Bool = { ![.completed, .failed, .interrupted, .cancelled].contains($0.stage) }
-        for job in (try? await store.jobs(meetingID: meeting.id)) ?? []
-            where active(job) && (job.snapshot.recordingID == recordingID || job.snapshot.kind == .translation) {
-            try? await runner.cancel(jobID: job.id)
-        }
+        await cancelWork(meetingID: meeting.id, recordingID: recordingID)
         do {
             let result = try await store.splitRecording(recordingID, meetingID: meeting.id, at: time)
             if result.needsTranscription, let policy, let current = try? await store.meeting(meeting.id) {
@@ -467,11 +514,7 @@ public struct RecordControls: Equatable, Sendable {
             issue = WorkspaceIssue(error)
             return
         }
-        recordingDeletions += 1
-        transcriptGeneration += 1
-        await refreshQueue()
-        await reloadMeetings()
-        await loadSelection()
+        await reloadAfterRecordingChange()
     }
 
     /// Meetings a recording of the selected meeting can move to, newest first.
@@ -490,11 +533,7 @@ public struct RecordControls: Equatable, Sendable {
             return
         }
         stopPlayback?(sourceID); stopPlayback?(destinationID)
-        let active: (ProcessingJob) -> Bool = { ![.completed, .failed, .interrupted, .cancelled].contains($0.stage) }
-        for job in (try? await store.jobs(meetingID: sourceID)) ?? []
-            where active(job) && (job.snapshot.recordingID == recordingID || job.snapshot.kind == .translation) {
-            try? await runner.cancel(jobID: job.id)
-        }
+        await cancelWork(meetingID: sourceID, recordingID: recordingID)
         do {
             let result = try await store.moveRecording(recordingID, from: sourceID, to: destinationID)
             if result.needsTranscription, let policy, let destination = try? await store.meeting(destinationID) {
@@ -506,13 +545,7 @@ public struct RecordControls: Equatable, Sendable {
             issue = WorkspaceIssue(error)
             return
         }
-        recordingDeletions += 1
-        transcriptGeneration += 1
-        search = ""
-        await refreshQueue()
-        await reloadMeetings()
-        selectedID = destinationID
-        await loadSelection()
+        await reloadAfterRecordingChange(selecting: destinationID)
     }
 
     /// Creates a meeting from the New Meeting fields and moves the recording
@@ -547,6 +580,50 @@ public struct RecordControls: Equatable, Sendable {
     private var importTask: Task<Void, Never>?
     /// Learns the voices of imported names when the import asks for it.
     public var voiceLearning: VoiceProfileEnrollment?
+
+    /// The imported participants' voices still being learned. A voice waiting
+    /// for the user's review counts as finished here; its meeting asks about it.
+    public struct ImportVoiceLearning: Equatable, Sendable {
+        fileprivate var tasks: [UUID: VoiceLearningTask]
+        fileprivate static func working(_ task: VoiceLearningTask) -> Bool { task.state == .queued || task.state == .running }
+        public var total: Int { tasks.count }
+        public var finished: Int { tasks.values.filter { !Self.working($0) }.count }
+        public var isFinished: Bool { finished == total }
+        public var fraction: Double { total == 0 ? 1 : Double(finished) / Double(total) }
+        /// Whose voice is being learned now; nil while none has started.
+        public var current: String? { tasks.values.first { $0.state == .running }?.name }
+    }
+    public private(set) var importVoiceLearning: ImportVoiceLearning?
+    private var importLearningWatch: Task<Void, Never>?
+
+    private func trackImportedLearning(_ tasks: [VoiceLearningTask], _ enrollment: VoiceProfileEnrollment) async {
+        guard !tasks.isEmpty else { return }
+        // Totals restart once the previous import's voices are all finished.
+        var tracked = importVoiceLearning ?? ImportVoiceLearning(tasks: [:])
+        for task in tasks { tracked.tasks[task.id] = task }
+        importVoiceLearning = tracked
+        guard importLearningWatch == nil else { await refreshImportedLearning(enrollment); return }
+        let updates = await enrollment.updates()
+        await refreshImportedLearning(enrollment)
+        guard importVoiceLearning != nil else { return }
+        importLearningWatch = Task { [weak self] in
+            for await task in updates {
+                guard let self else { return }
+                self.mergeImportedLearning([task])
+                if self.importVoiceLearning == nil { break }
+            }
+            self?.importLearningWatch = nil
+        }
+    }
+    /// Updates made before the watch began.
+    private func refreshImportedLearning(_ enrollment: VoiceProfileEnrollment) async {
+        if let all = try? await enrollment.tasks() { mergeImportedLearning(all) }
+    }
+    private func mergeImportedLearning(_ tasks: [VoiceLearningTask]) {
+        guard var tracked = importVoiceLearning else { return }
+        for task in tasks where tracked.tasks[task.id] != nil { tracked.tasks[task.id] = task }
+        importVoiceLearning = tracked.isFinished ? nil : tracked
+    }
 
     /// Why an import into `meetingID` (nil: a new meeting) cannot start now.
     public func importRefusal(into meetingID: UUID?) -> SessionImportError? {
@@ -602,7 +679,7 @@ public struct RecordControls: Equatable, Sendable {
         }
         if result.hasTranscript, request.rememberVoices, !result.named.isEmpty, let voiceLearning {
             let confirmations = (try? await store.importedVoiceConfirmations(result)) ?? []
-            _ = await voiceLearning.learnImported(confirmations)
+            await trackImportedLearning(await voiceLearning.learnImported(confirmations), voiceLearning)
         }
         transcriptGeneration += 1
         search = ""
@@ -661,6 +738,19 @@ public struct RecordControls: Equatable, Sendable {
                                                     transcribed: transcribedWithoutJob)
         if case .queued = status, runningJobMeetingID == meetingID { return .processing(.transcribing) }
         return status
+    }
+
+    /// The status row text: a ready transcript says so when audible speech stayed unrecognized.
+    public var selectedStatusMessage: String? {
+        guard let status = selectedStatus else { return nil }
+        return Self.lossMessage(status: status, unrecoveredWindows: unrecoveredWindows)
+    }
+
+    static func lossMessage(status: MeetingProcessingStatus, unrecoveredWindows: Int) -> String? {
+        guard case .ready = status, unrecoveredWindows > 0 else { return nil }
+        let one = unrecoveredWindows == 1
+        return "Transcript ready, but \(one ? "1 audible stretch was" : "\(unrecoveredWindows) audible stretches were") not recognized. "
+            + "Install Qwen3-ASR in Settings ▸ Models and Reprocess to recover \(one ? "it" : "them")."
     }
 
     /// `In queue: 2nd, after “Daily 5”` while the selected meeting waits behind another.
@@ -770,6 +860,7 @@ public struct RecordControls: Equatable, Sendable {
 
     public func record() async {
         guard let id = selectedID else { return }
+        recordStarted = false
         await command {
             await self.liveEnding?.value
             await self.beforeCapture?()
@@ -789,6 +880,7 @@ public struct RecordControls: Equatable, Sendable {
                 await self.setCaptureActive(false)
                 throw error
             }
+            self.recordStarted = true
             // The new recording's separator is where its draft rows appear.
             self.transcriptGeneration += 1
         }
@@ -878,7 +970,7 @@ public struct RecordControls: Equatable, Sendable {
     private func enqueue(_ meeting: Meeting, recordingIDs: [UUID], policy: FinalJobPolicy) async throws {
         let models = try policy.models()
         let settings = policy.settings(meeting)
-        let missing = FinalTranscriptionPipeline.blocking(try await policy.missing(models), settings: settings)
+        let missing = FinalTranscriptionPipeline.blocking(try await policy.missing(models), settings: settings, models: models)
         for recordingID in recordingIDs {
             let job = try await store.enqueue(kind: .finalTranscription, meetingID: meeting.id, recordingID: recordingID,
                                               settings: settings, models: models)

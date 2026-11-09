@@ -160,33 +160,44 @@ public actor RecordingAudioWindowReader {
     public var progress: Double { totalFrames == 0 ? 1 : Double(completedFrames) / Double(totalFrames) }
     public func close() { closed = true }
 
-    public func next() throws -> AudioWindowReadEvent? {
-        try Task.checkCancellation()
-        guard !closed, spanIndex < spans.count else { return nil }
-        let span = spans[spanIndex]
-        if let reason = span.gapReason {
-            let gap = RecordingAudioGap(meetingID: recording.meetingID, recordingID: recording.id, track: track, day: span.day,
-                active: try WindowFrames.interval(span.frames), wallClockStart: try wallTime(span.frames.lowerBound, in: span), reason: reason)
-            completedFrames = span.frames.upperBound; advanceSpan()
-            return .gap(gap)
+    public func next() throws -> AudioWindowReadEvent? { try next(wanted: nil) }
+
+    /// As `next`, but windows whose owned interval is not `wanted` are passed
+    /// without reading or decoding. The remaining windows are identical.
+    public func next(wanted: (@Sendable (MediaInterval) -> Bool)?) throws -> AudioWindowReadEvent? {
+        while true {
+            try Task.checkCancellation()
+            guard !closed, spanIndex < spans.count else { return nil }
+            let span = spans[spanIndex]
+            if let reason = span.gapReason {
+                let gap = RecordingAudioGap(meetingID: recording.meetingID, recordingID: recording.id, track: track, day: span.day,
+                    active: try WindowFrames.interval(span.frames), wallClockStart: try wallTime(span.frames.lowerBound, in: span), reason: reason)
+                completedFrames = span.frames.upperBound; advanceSpan()
+                return .gap(gap)
+            }
+            let start = readStart ?? span.frames.lowerBound
+            let end = start + min(UInt64(configuration.sourceFrames), span.frames.upperBound - start)
+            let last = end == span.frames.upperBound
+            let nextStart = last ? end : end - UInt64(configuration.overlapFrames)
+            let ownershipStart = ownedStart ?? span.frames.lowerBound
+            let ownershipEnd = last ? end : nextStart + UInt64(configuration.overlapFrames / 2)
+            if let wanted, !wanted(try WindowFrames.interval(ownershipStart..<ownershipEnd)) {
+                completedFrames = ownershipEnd
+                if last { advanceSpan() } else { readStart = nextStart; ownedStart = ownershipEnd }
+                continue
+            }
+            let source = try read(start..<end, in: span)
+            let converted = try AudioWindowResampler.convert48K(source, minimumOutputFrames: configuration.minimumModelFrames)
+            let window = RecordingAudioWindow(meetingID: recording.meetingID, recordingID: recording.id, track: track, day: span.day, sourceFrames: start..<end,
+                active: try WindowFrames.interval(start..<end), owned: try WindowFrames.interval(ownershipStart..<ownershipEnd),
+                wallClockStart: try wallTime(start, in: span), samples: converted.samples, validSampleFrames: converted.validFrameCount)
+            // Read, integrity, decode and conversion must all succeed before moving
+            // the cursor. Errors and cancellation can retry the same source range.
+            try Task.checkCancellation()
+            completedFrames = ownershipEnd
+            if last { advanceSpan() } else { readStart = nextStart; ownedStart = ownershipEnd }
+            return .audio(window)
         }
-        let start = readStart ?? span.frames.lowerBound
-        let end = start + min(UInt64(configuration.sourceFrames), span.frames.upperBound - start)
-        let last = end == span.frames.upperBound
-        let nextStart = last ? end : end - UInt64(configuration.overlapFrames)
-        let ownershipStart = ownedStart ?? span.frames.lowerBound
-        let ownershipEnd = last ? end : nextStart + UInt64(configuration.overlapFrames / 2)
-        let source = try read(start..<end, in: span)
-        let converted = try AudioWindowResampler.convert48K(source, minimumOutputFrames: configuration.minimumModelFrames)
-        let window = RecordingAudioWindow(meetingID: recording.meetingID, recordingID: recording.id, track: track, day: span.day, sourceFrames: start..<end,
-            active: try WindowFrames.interval(start..<end), owned: try WindowFrames.interval(ownershipStart..<ownershipEnd),
-            wallClockStart: try wallTime(start, in: span), samples: converted.samples, validSampleFrames: converted.validFrameCount)
-        // Read, integrity, decode and conversion must all succeed before moving
-        // the cursor. Errors and cancellation can retry the same source range.
-        try Task.checkCancellation()
-        completedFrames = ownershipEnd
-        if last { advanceSpan() } else { readStart = nextStart; ownedStart = ownershipEnd }
-        return .audio(window)
     }
 
     private func advanceSpan() { spanIndex += 1; readStart = nil; ownedStart = nil }

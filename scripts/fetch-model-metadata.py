@@ -67,7 +67,7 @@ def fetch(entry):
 
 def main():
     entries = json.loads((ROOT / "ThirdParty" / "model-provenance.json").read_text())
-    if len(entries) != 8 or len({entry["repository"] for entry in entries}) != 8:
+    if len(entries) != 9 or len({entry["repository"] for entry in entries}) != 9:
         raise ValueError("Expected seven selected checkpoints and one retained legacy checkpoint")
     OUTPUT.mkdir(parents=True, exist_ok=True)
     index = []

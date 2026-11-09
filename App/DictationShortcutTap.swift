@@ -21,8 +21,6 @@ import TalkTrackServices
     private var held = false
     private var listenOnly = false
 
-    var isRunning: Bool { tap != nil }
-
     /// Returns false when macOS refused the tap (permission missing or not yet
     /// effective). Without Accessibility only a listening tap is possible: the
     /// shortcut is observed (to explain the missing permission) but not suppressed.

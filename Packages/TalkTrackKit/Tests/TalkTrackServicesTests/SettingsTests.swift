@@ -125,7 +125,7 @@ private actor FakeInstallations: ModelInstallationControl {
         let fake = FakeInstallations(installed: [.liveASR, .finalASR], catalog: catalog)
         let models = ModelSettingsPresentation(catalog: catalog, control: fake, pollInterval: .milliseconds(10),
                                                defaults: defaults, physicalMemory: 64 << 30)
-        #expect(models.items.map(\.title) == ["Live transcription", "Final transcription", "Word timing",
+        #expect(models.items.map(\.title) == ["Live transcription", "Final transcription: Parakeet v3", "Final transcription: Qwen3-ASR 1.7B", "Word timing",
                                               "Speaker detection", "Voice identification",
                                               "Text processing: Qwen3.5 9B", "Text processing: Qwen3.5 4B"])
         await models.refresh()
