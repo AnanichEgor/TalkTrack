@@ -35,6 +35,46 @@ entry point. The explicit local/offline Hub parser has no shared cache. Leases
 hold installation locks until GPU work and model cleanup finish. SHA/Git-blob
 verification reads 1 MiB blocks and drains Foundation temporary buffers per block.
 
+## Models folder and launch cleanup
+
+`ModelDownloadFiles` owns the folder:
+
+| Path | Meaning |
+|---|---|
+| `<owner>/<repository>/<revision>/` | one installation (`ModelManifest.installationPath`) |
+| `<installation>/.talktrack-ready.json` | the manifest fingerprint, written once the installation is complete |
+| `.downloads/<fingerprint>/` | partial files of a download, resumed later |
+| `.locks/<sha256(installation path)>` | zero-byte lock files, `flock`ed while downloading, preparing, removing or loading |
+| `.trash/` | content a cleanup moved aside, deleted right after |
+
+Once per launch, after the library opens, `AppModel` calls
+`InferenceRuntime.removeUnusedModelFiles(keeping:)` in a detached utility task (clean-models-folder).
+It removes everything that does not belong to the current catalog:
+- installations of models or revisions the catalog does not list, and their emptied owner/repository folders;
+- the legacy text model, unless an unfinished job of the open library names it
+  (`SessionStore.modelDirectoriesOfUnfinishedJobs()`: any stage except completed or cancelled);
+- staging folders of models outside the catalog, and empty staging folders of catalog models that are not downloading;
+- lock files of paths outside the catalog;
+- `.DS_Store` files (also inside installations, where they would fail a later repair);
+- any other file, folder or symbolic link (links are removed, never followed).
+
+What stays:
+- every installed catalog model, selected or not (the unselected text model, the Qwen3-ASR
+  recovery model); they are removed only with Settings ▸ Models ▸ Remove;
+- non-empty staging folders of catalog models, so downloads resume.
+
+Each item is renamed into `.trash` (atomic, so no lookup ever sees a half-deleted model),
+then deleted outside the file actor. A `.trash` left by quitting is emptied at the next launch.
+An installation whose operation lock another process holds, a download running in this
+process, and staging changed within the last hour are skipped until a later launch.
+A single unreadable item is logged and skipped. The pass needs no inference lane
+and does not touch models in use.
+
+The result goes to the unified log, category `models`:
+`model cleanup removed=<n> freed=<bytes> kept-legacy=<n> skipped-busy=<n> ms=<ms>`, preceded by one
+line per removed or skipped path (model paths only, public).
+`scripts/inference-fixture.sh model-cleanup <Models copy> [<library copy>]` runs the same pass on a copy.
+
 `InferenceRuntime` serializes heavy operations and unloads background models between roles.
 During capture only the small live ASR/segmentation/embedding cohort stays
 resident; `endCapture` joins unloading before background admission. Capture

@@ -265,7 +265,7 @@ TalkTrack from the Screen & System Audio Recording list.
 | Data | Location |
 |---|---|
 | Meetings, audio, transcripts, notes, summaries | `~/Documents/TalkTrack/.talktrack-library` (movable in Settings ▸ General) |
-| Models | `~/Library/Application Support/TalkTrack/Models` |
+| Models | `~/Library/Application Support/TalkTrack/Models` (at launch, TalkTrack removes models and files it no longer uses) |
 | Saved voices | `~/Library/Application Support/TalkTrack/Speakers.sqlite3` |
 | Preferences, including the dictation dictionary and replacement rules | `defaults` domain `local.talktrack.app` |
 | Dictation audio and text | Not stored (memory only) |

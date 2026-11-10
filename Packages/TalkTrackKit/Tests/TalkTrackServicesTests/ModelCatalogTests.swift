@@ -46,6 +46,25 @@ import TalkTrackDomain
         }
     }
 
+    /// clean-models-folder D1. Lock names match the files downloads create (ModelCleanupTests).
+    @Test func keepSetNamesEveryCatalogPathAndLock() throws {
+        let catalog = try ModelCatalog.bundled()
+        let keep = try catalog.folderKeepSet(pinning: [])
+        #expect(keep.activeInstallations.count == 8)
+        #expect(keep.legacyInstallations.count == 1)
+        #expect(keep.activeStaging.count == 8)
+        #expect(keep.lockNames.count == 9)
+        #expect(keep.pinnedLegacy.isEmpty)
+        for model in catalog.models + catalog.legacyModels {
+            #expect(keep.lockNames.contains(ModelDownloadFiles.lockName(try model.installationPath.value)))
+        }
+        let legacy = try catalog.legacyModels[0].installationPath
+        let active = try catalog.models[0].installationPath
+        let pinned = try catalog.folderKeepSet(pinning: [legacy, active, RelativePath("text-server")])
+        #expect(pinned.pinnedLegacy == [legacy.value])
+        #expect(pinned.keptInstallations.count == 9)
+    }
+
     @Test func parakeetIsTheDefaultFinalModelAndQwenStaysSelectable() throws {
         let catalog = try ModelCatalog.bundled()
         let parakeet = try catalog.model(for: .finalASR)

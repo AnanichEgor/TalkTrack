@@ -596,6 +596,21 @@ public actor SessionStore {
             ? $0.id.uuidString < $1.id.uuidString : $0.snapshot.createdAt < $1.snapshot.createdAt }
     }
 
+    /// Model folders named by jobs that can still run, so their retired models
+    /// stay installed (clean-models-folder D1). Text-server snapshots name no folder.
+    public func modelDirectoriesOfUnfinishedJobs() throws -> Set<RelativePath> {
+        var directories = Set<RelativePath>()
+        for meeting in try meetings() {
+            let jobs: [ProcessingJob] = try records(.job, meetingID: meeting.id)
+            for job in jobs where job.stage != .completed && job.stage != .cancelled {
+                for model in job.snapshot.models where model.preprocessingVersion != TextServer.protocolVersion {
+                    directories.insert(model.directory)
+                }
+            }
+        }
+        return directories
+    }
+
     /// Queued jobs of one kind across all meetings, oldest first.
     public func queuedJobs(kind: JobKind) throws -> [ProcessingJob] {
         try meetings().flatMap { meeting -> [ProcessingJob] in try records(.job, meetingID: meeting.id) }

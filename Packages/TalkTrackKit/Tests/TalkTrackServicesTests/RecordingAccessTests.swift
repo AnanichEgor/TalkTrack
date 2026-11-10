@@ -20,6 +20,7 @@ import TalkTrackDomain
         "SessionImport.swift": "only `.import-` staging folders, which compaction never visits",
         "LibraryMigration.swift": "library-wide reading access while copying and verifying",
         "ModelDownloadFiles.swift": "model folders, not recordings",
+        "ModelCleanup.swift": "the Models folder cleanup, not recordings",
         "OwnedLibrary.swift": "DirectoryHandle itself",
     ]
 

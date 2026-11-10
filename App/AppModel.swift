@@ -86,6 +86,7 @@ struct WorkspaceServices {
     private let runtime: InferenceRuntime?
     private let catalog: ModelCatalog?
     private var loading = false
+    private var modelCleanupStarted = false
 
     init() {
         do {
@@ -254,6 +255,7 @@ struct WorkspaceServices {
             let library = try await openLibrary()
             libraryRoot = library.root
             let store = try await SessionStore.open(library)
+            startModelCleanup(store: store)
             // The text model saved in Settings, read for every new job.
             let current: @Sendable () -> ModelCatalog = { catalog.selecting(textModel: ProcessingPreferences.textModel())
                 .selecting(finalASRModel: ProcessingPreferences.finalASRModel()) }
@@ -376,6 +378,24 @@ struct WorkspaceServices {
             compaction.start()
         } catch {
             state = .failed(error.localizedDescription, recovery: (error as? LocalizedError)?.recoverySuggestion)
+            startModelCleanup(store: nil)
+        }
+    }
+
+    /// Removes Models-folder content outside the catalog once per launch, after
+    /// the library opened (clean-models-folder D4). Legacy models that unfinished
+    /// jobs name stay; without a library none are kept. Never waited for.
+    private func startModelCleanup(store: SessionStore?) {
+        guard !modelCleanupStarted, let runtime else { return }
+        modelCleanupStarted = true
+        Task.detached(priority: .utility) {
+            var pinned = Set<RelativePath>()
+            if let store {
+                // A library that cannot be read now keeps everything until the next launch.
+                guard let directories = try? await store.modelDirectoriesOfUnfinishedJobs() else { return }
+                pinned = directories
+            }
+            await runtime.removeUnusedModelFiles(keeping: pinned)
         }
     }
 

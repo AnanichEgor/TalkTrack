@@ -44,18 +44,20 @@ public actor ModelDownloadFiles {
     public static var defaultRoot: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/TalkTrack/Models", isDirectory: true)
     }
-    private let rootURL: URL
+    let rootURL: URL
     private let testAvailableBytes: Int64?
     private var rootHandle: DirectoryHandle?
-    private var active: [String: ModelDownloadTicket] = [:]
+    private(set) var active: [String: ModelDownloadTicket] = [:]
     private var locks: [UUID: FileHandle] = [:]
     private var sealed: Set<UUID> = []
     private let verifier = ModelIntegrityVerifier()
 
     public init() { rootURL = Self.defaultRoot; testAvailableBytes = nil }
     init(testRoot: URL, availableBytes: Int64? = nil) { rootURL = testRoot; testAvailableBytes = availableBytes }
+    /// Fixtures on a copy of the Models folder (clean-models-folder 4.2).
+    @_spi(Diagnostics) public init(root: URL) { rootURL = root; testAvailableBytes = nil }
 
-    private func root() throws -> DirectoryHandle {
+    func root() throws -> DirectoryHandle {
         if let rootHandle {
             let current = try DirectoryHandle.openAbsolute(rootURL)
             var a = stat(), b = stat()
@@ -114,10 +116,19 @@ public actor ModelDownloadFiles {
     }
 
     private func operationLock(_ manifest: ModelManifest) throws -> FileHandle {
+        try operationLock(path: manifest.installationPath.value)
+    }
+
+    /// The lock file of one installation path: `.locks/<sha256(path)>`.
+    nonisolated static func lockName(_ installationPath: String) -> String {
+        SHA256.hash(data: Data(installationPath.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Held while downloading, preparing, removing or leasing that installation,
+    /// by this or any other TalkTrack process.
+    func operationLock(path: String) throws -> FileHandle {
         let directory = try root().createDirectory(".locks")
-        let key = SHA256.hash(data: Data(try manifest.installationPath.value.utf8))
-            .map { String(format: "%02x", $0) }.joined()
-        let handle = try openFile(key, in: directory, write: true)
+        let handle = try openFile(Self.lockName(path), in: directory, write: true)
         guard flock(handle.fileDescriptor, LOCK_EX | LOCK_NB) == 0 else {
             try? handle.close()
             throw ModelDownloadError.busy
@@ -161,7 +172,7 @@ public actor ModelDownloadFiles {
         SHA256.hash(data: Data(file.path.value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    private func openFile(_ name: String, in directory: DirectoryHandle, write: Bool = false) throws -> FileHandle {
+    func openFile(_ name: String, in directory: DirectoryHandle, write: Bool = false) throws -> FileHandle {
         let flags = (write ? O_RDWR | O_CREAT : O_RDONLY) | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK
         let descriptor = openat(directory.fd, name, flags, 0o600)
         guard descriptor >= 0 else { throw LibraryError.io(operation: "open model file \(name)", code: errno) }

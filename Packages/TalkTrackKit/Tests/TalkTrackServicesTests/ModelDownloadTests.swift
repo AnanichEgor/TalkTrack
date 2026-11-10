@@ -6,7 +6,7 @@ import TalkTrackDomain
 
 private enum DownloadFixtureError: Error { case preparation }
 
-private actor FixtureModelTransport: ModelDownloadTransport {
+actor FixtureModelTransport: ModelDownloadTransport {
     enum Behavior { case normal, interrupted, changedETag, wrongRange, corrupt, truncated, paused, ignoresRange }
     private var behavior: Behavior
     private let content: [String: Data]
@@ -65,7 +65,7 @@ private actor PreparationProbe {
 }
 
 @Suite struct ModelDownloadTests {
-    private func fixture() throws -> (ModelManifest, [String: Data]) {
+    static func fixture() throws -> (ModelManifest, [String: Data]) {
         let original = try ModelCatalog.bundled().model(for: .segmentation)
         let bodies = ["config.json": Data(#"{"fixture":true}"#.utf8),
                       "README.md": Data("Local deterministic download fixture".utf8),
@@ -83,7 +83,7 @@ private actor PreparationProbe {
     @Test func duplicateRequestsShareBoundedTransfersAndPreparation() async throws {
         let folder = try TemporaryFolder()
         defer { folder.remove() }
-        let (manifest, bodies) = try fixture()
+        let (manifest, bodies) = try Self.fixture()
         let files = ModelDownloadFiles(testRoot: folder.url.appendingPathComponent("Models"))
         let transport = FixtureModelTransport(content: bodies)
         let coordinator = ModelDownloadCoordinator(files: files, transport: transport)
@@ -111,7 +111,7 @@ private actor PreparationProbe {
     func resumesOrRestartsWithoutMixingVersions(_ behavior: String) async throws {
         let folder = try TemporaryFolder()
         defer { folder.remove() }
-        let (manifest, bodies) = try fixture()
+        let (manifest, bodies) = try Self.fixture()
         let files = ModelDownloadFiles(testRoot: folder.url.appendingPathComponent("Models"))
         let mode: FixtureModelTransport.Behavior = behavior == "interrupted" ? .interrupted : behavior == "changedETag" ? .changedETag : .ignoresRange
         let transport = FixtureModelTransport(content: bodies, behavior: mode)
@@ -129,7 +129,7 @@ private actor PreparationProbe {
     func badResponsesNeverBecomeReady(_ behavior: String) async throws {
         let folder = try TemporaryFolder()
         defer { folder.remove() }
-        let (manifest, bodies) = try fixture()
+        let (manifest, bodies) = try Self.fixture()
         let files = ModelDownloadFiles(testRoot: folder.url.appendingPathComponent("Models"))
         let mode: FixtureModelTransport.Behavior = behavior == "corrupt" ? .corrupt : behavior == "truncated" ? .truncated : .wrongRange
         let transport = FixtureModelTransport(content: bodies, behavior: mode)
@@ -145,7 +145,7 @@ private actor PreparationProbe {
     @Test func cancellationWaitsForWritesAndRetainsResumablePartial() async throws {
         let folder = try TemporaryFolder()
         defer { folder.remove() }
-        let (manifest, bodies) = try fixture()
+        let (manifest, bodies) = try Self.fixture()
         let files = ModelDownloadFiles(testRoot: folder.url.appendingPathComponent("Models"))
         let transport = FixtureModelTransport(content: bodies, behavior: .paused)
         let coordinator = ModelDownloadCoordinator(files: files, transport: transport)
@@ -167,7 +167,7 @@ private actor PreparationProbe {
     @Test func preparationFailureKeepsVerifiedFilesWithoutReadyMarker() async throws {
         let folder = try TemporaryFolder()
         defer { folder.remove() }
-        let (manifest, bodies) = try fixture()
+        let (manifest, bodies) = try Self.fixture()
         let files = ModelDownloadFiles(testRoot: folder.url.appendingPathComponent("Models"))
         let transport = FixtureModelTransport(content: bodies)
         let coordinator = ModelDownloadCoordinator(files: files, transport: transport)
@@ -186,7 +186,7 @@ private actor PreparationProbe {
     @Test func spaceAndManifestFailuresDoNotStartNetworkRequests() async throws {
         let folder = try TemporaryFolder()
         defer { folder.remove() }
-        let (manifest, bodies) = try fixture()
+        let (manifest, bodies) = try Self.fixture()
         let files = ModelDownloadFiles(testRoot: folder.url.appendingPathComponent("Models"), availableBytes: 0)
         let transport = FixtureModelTransport(content: bodies)
         let coordinator = ModelDownloadCoordinator(files: files, transport: transport)

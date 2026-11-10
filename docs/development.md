@@ -59,6 +59,11 @@ and model fixtures to the generated project; it is not part of the repository.
   under a root chosen in Settings). TalkTrack only ever creates, migrates or deletes
   that folder, never its surroundings.
 - Models: `~/Library/Application Support/TalkTrack/Models`, outside the app bundle.
+  Every app launch removes what the bundled catalog does not list (see `docs/inference.md`),
+  Debug launches with `--workspace-library` and the UI review scripts included; then only
+  the fixture library's unfinished jobs keep a legacy model. Candidate models that a
+  comparison fixture installs with `InferenceRuntime(catalog:)` are removed at the next app
+  launch: run such comparisons before launching the app, or install them again.
 - Saved voices: `~/Library/Application Support/TalkTrack/Speakers.sqlite3`.
 
 ## Logging
@@ -79,6 +84,8 @@ coordinator and drivers, `recorder` for recorder phases, Stop and Quit. Rules:
   category `capture`: `playback-echo <loudspeaker|headset|unknown> run=<id>
   activeS=<active seconds> peak=<median correlation> lagMs=<median delay>`. Numbers
   only; the audio it measures is never logged or saved.
+
+The launch cleanup of the Models folder logs in category `models` (paths and counts only).
 
 Collect with `log show --predicate 'subsystem == "local.talktrack.app"' --last 1h --info`.
 

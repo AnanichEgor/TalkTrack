@@ -77,6 +77,15 @@ public final class InferenceRuntime: ModelInstallationControl, DictationInferenc
         }
     }
 
+    /// Removes Models-folder content outside this catalog, keeping legacy models
+    /// that `unfinishedJobDirectories` name (clean-models-folder). Needs no
+    /// inference lane: catalog installations stay untouched apart from `.DS_Store`.
+    @discardableResult
+    public func removeUnusedModelFiles(keeping unfinishedJobDirectories: Set<RelativePath>) async -> ModelCleanupReport {
+        do { return await files.cleanUp(keeping: try catalog.folderKeepSet(pinning: unfinishedJobDirectories)) }
+        catch { return ModelCleanupReport() }
+    }
+
     public func status(_ id: String) async throws -> ModelDownloadProgress? {
         try await downloads.status(catalog.model(id: id))
     }
