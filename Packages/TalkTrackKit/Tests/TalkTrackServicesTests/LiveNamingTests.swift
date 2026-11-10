@@ -217,10 +217,14 @@ func publishDraft(_ fixture: FinalFixture, placed: String, unplaced: String) asy
         // Cancelled processing keeps them too; a later successful run receives the name.
         _ = try await store.cancelFinalTranscription(meetingID: meetingID)
         #expect(try await store.liveDrafts(meetingID: meetingID).count == 1)
+        let db = try publicationDB(fixture.library)
+        #expect(try count(db, "SELECT COUNT(*) FROM records WHERE kind='liveDraft'") == 1)
         let job = try await nextFinalJob(fixture)
         _ = try await stageFinal(fixture, job: job)
         let publication = try await store.publishFinalTranscript(jobID: job.id)
         #expect(publication.draftNaming?.placed == ["Olga"])
+        // The final transcript deletes the draft record, not only its head (compact-library-storage D2).
+        #expect(try count(db, "SELECT COUNT(*) FROM records WHERE kind='liveDraft'") == 0)
         try await store.close()
     }
 

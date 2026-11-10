@@ -385,6 +385,8 @@ public actor FinalTranscriptionPipeline {
         try Task.checkCancellation()
         try Self.validateCoverage(checkpoint, recording: recording, requireCorrection: job.snapshot.settings.spellingCorrection)
         checkpoint.readyForPublication = true
+        // Levels only gate microphone windows while they are staged; every window is complete now.
+        checkpoint.systemLevels = nil
         try await store.saveFinalCheckpoint(checkpoint, stage: .validating)
         return checkpoint
     }

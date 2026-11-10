@@ -273,6 +273,9 @@ public actor LibraryMigrator {
         try save(journal)
         try failpoint(.journaled)
         let target = try DirectoryHandle.openAbsolute(destination.resolvingSymlinksInPath())
+        // No chunk file changes while it is copied and verified (compact-library-storage D7).
+        RecordingAccess.shared.beginReadingLibrary(source.manifest.libraryID)
+        defer { RecordingAccess.shared.endReadingLibrary(source.manifest.libraryID) }
         do {
             guard mkdirat(target.fd, journal.staging, 0o700) == 0 else {
                 throw LibraryError.io(operation: "create the destination folder", code: errno)

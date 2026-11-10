@@ -32,14 +32,19 @@ struct CommittedAudioChunks {
         guard chunk.file.value == "\(prefix)/\(chunk.id).m4a" else {
             throw AudioWindowReadError.invalidMetadata(recording.id)
         }
-        let folder = try owned.directory("Meetings").directory(recording.meetingID.uuidString)
-            .directory("Recordings").directory(recording.id.uuidString).directory(track.rawValue)
-        let receipt = try DomainCodec.decode(StoredAudioChunk.self, from: folder.read("\(chunk.id).json", maximum: 65_536))
-        guard receipt.libraryID == library.manifest.libraryID, receipt.meetingID == recording.meetingID,
-              receipt.recordingID == recording.id, receipt.chunk == chunk, receipt.encoding.validFrames == chunk.decodedFrameCount else {
-            throw AudioWindowReadError.damagedChunk(recordingID: recording.id, chunkID: chunk.id)
+        // The receipt and the file it describes are taken together: compaction
+        // replaces both between readers (compact-library-storage D7). The open
+        // descriptor keeps its file even if it is replaced afterwards.
+        let (fd, receipt) = try RecordingAccess.shared.reading(recording.id) { () throws -> (Int32, StoredAudioChunk) in
+            let folder = try owned.directory("Meetings").directory(recording.meetingID.uuidString)
+                .directory("Recordings").directory(recording.id.uuidString).directory(track.rawValue)
+            let receipt = try DomainCodec.decode(StoredAudioChunk.self, from: folder.read("\(chunk.id).json", maximum: 65_536))
+            guard receipt.libraryID == library.manifest.libraryID, receipt.meetingID == recording.meetingID,
+                  receipt.recordingID == recording.id, receipt.chunk == chunk, receipt.encoding.validFrames == chunk.decodedFrameCount else {
+                throw AudioWindowReadError.damagedChunk(recordingID: recording.id, chunkID: chunk.id)
+            }
+            return (try folder.audioFile("\(chunk.id).m4a", create: false), receipt)
         }
-        let fd = try folder.audioFile("\(chunk.id).m4a", create: false)
         do {
             let integrity = try audioIntegrity(fd, checkCancellation: checkCancellation)
             guard integrity.bytes == receipt.byteCount, integrity.hash == receipt.sha256 else {

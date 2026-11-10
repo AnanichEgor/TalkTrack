@@ -250,6 +250,13 @@ readiness before this validation. Completed ASR/alignment/speaker work and
 accepted correction batches are reused; failed unfinished work is retried.
 Checkpoint content and its job-stage change commit together in SQLite.
 
+A recording keeps the checkpoint behind its current transcript and those of later
+jobs that can still be retried. The checkpoints of superseded, completed or
+cancelled jobs and the earlier transcript revisions are deleted when a newer
+transcript is published. A job whose checkpoint was pruned therefore cannot be
+retried; a later operation needs a new job. See
+[retained processing state](storage.md#retained-processing-state).
+
 Final retries use the affected recording's generation, cancellation generation
 and transcript head. Editing notes or meeting-language defaults does not retarget
 that frozen final job; a newer affected transcript or changed audio does. The

@@ -489,6 +489,7 @@ extension SessionStore {
                                           segments: segments, modelRevisions: models, createdAt: date, importSource: source)
         try put(.transcript, id: revision.id, meetingID: meetingID, scope: recording.id.uuidString, value: revision)
         try setHead(.transcript, meetingID: meetingID, scope: recording.id.uuidString, id: revision.id)
+        try pruneProcessingState(meetingID: meetingID, recordingID: recording.id)
         return (revision, named)
     }
 

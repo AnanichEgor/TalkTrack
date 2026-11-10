@@ -29,7 +29,11 @@ public final class AACChunkEncoder {
     private var extended: ExtAudioFileRef?
     public private(set) var frames: UInt64 = 0
 
-    public init(fileDescriptor: Int32) throws {
+    public convenience init(fileDescriptor: Int32) throws { try self.init(fileDescriptor: fileDescriptor, reservesDuration: true) }
+
+    /// `reservesDuration: false` writes the earlier layout with a large `free` box
+    /// (compaction fixtures only).
+    package init(fileDescriptor: Int32, reservesDuration: Bool) throws {
         io = AudioDescriptorIO(fileDescriptor)
         var format = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatMPEG4AAC,
             mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 1024,
@@ -37,6 +41,11 @@ public final class AACChunkEncoder {
         do {
             try encodingCheck(AudioFileInitializeWithCallbacks(io.pointer, descriptorRead, descriptorWrite,
                 descriptorSize, descriptorResize, kAudioFileM4AType, &format, [], &file), "Create AAC chunk")
+            // Without a declared duration the M4A writer reserves a ~57 KB `free` box for a
+            // longer file; a chunk never exceeds ten seconds (compact-library-storage D4).
+            var reserve = Double(Self.maximumFrames) / Double(Self.sampleRate)
+            if reservesDuration { try encodingCheck(AudioFileSetProperty(file!, kAudioFilePropertyReserveDuration,
+                UInt32(MemoryLayout.size(ofValue: reserve)), &reserve), "Reserve AAC chunk duration") }
             try encodingCheck(ExtAudioFileWrapAudioFileID(file!, true, &extended), "Open AAC encoder")
             var pcm = monoPCM()
             try encodingCheck(ExtAudioFileSetProperty(extended!, kExtAudioFileProperty_ClientDataFormat,
@@ -160,16 +169,16 @@ public final class AACChunkEncoder {
     }
 }
 
-private func monoPCM() -> AudioStreamBasicDescription {
+func monoPCM() -> AudioStreamBasicDescription {
     AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
         mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagsNativeEndian | kAudioFormatFlagIsPacked,
         mBytesPerPacket: 4, mFramesPerPacket: 1, mBytesPerFrame: 4,
         mChannelsPerFrame: 1, mBitsPerChannel: 32, mReserved: 0)
 }
-private func encodingCheck(_ status: OSStatus, _ operation: String) throws {
+func encodingCheck(_ status: OSStatus, _ operation: String) throws {
     guard status == noErr else { throw AudioEncodingError(operation: operation, status: status) }
 }
-private final class AudioDescriptorIO {
+final class AudioDescriptorIO {
     let fd: Int32
     init(_ fd: Int32) { self.fd = fd }
     var pointer: UnsafeMutableRawPointer { Unmanaged.passUnretained(self).toOpaque() }
@@ -177,7 +186,7 @@ private final class AudioDescriptorIO {
         Unmanaged<AudioDescriptorIO>.fromOpaque(pointer).takeUnretainedValue().fd
     }
 }
-private let descriptorRead: AudioFile_ReadProc = { context, position, count, buffer, actual in
+let descriptorRead: AudioFile_ReadProc = { context, position, count, buffer, actual in
     var result: Int
     repeat { result = pread(AudioDescriptorIO.descriptor(context), buffer, Int(count), off_t(position)) }
     while result < 0 && errno == EINTR
@@ -196,7 +205,7 @@ private let descriptorWrite: AudioFile_WriteProc = { context, position, count, b
     actual.pointee = count
     return noErr
 }
-private let descriptorSize: AudioFile_GetSizeProc = { context in
+let descriptorSize: AudioFile_GetSizeProc = { context in
     var info = stat()
     return fstat(AudioDescriptorIO.descriptor(context), &info) == 0 ? info.st_size : 0
 }

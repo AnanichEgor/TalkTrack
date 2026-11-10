@@ -212,10 +212,21 @@ extension SessionStore {
         }
         guard [.complete, .interrupted].contains(recording.state) else { throw RecordingSplitError.capturing }
         let plan = try RecordingCut(recording, at: cut, partID: UUID())
+        // Its files are cloned and rewritten below; compaction waits (compact-library-storage D7).
+        return try RecordingAccess.shared.reading(recordingID) { try split(recording, plan: plan, at: cut, date: date) }
+    }
+
+    private func split(_ recording: Recording, plan: RecordingCut, at cut: MediaTime, date: Date) throws -> RecordingSplitResult {
+        let meetingID = recording.meetingID
         try stageSplitPart(original: recording, part: plan.second)
         let result: RecordingSplitResult
         do {
-            result = try db.transaction { try writeSplit(recording, plan: plan, at: cut, date: date) }
+            result = try db.transaction {
+                let written = try writeSplit(recording, plan: plan, at: cut, date: date)
+                try pruneProcessingState(meetingID: meetingID, recordingID: recording.id)
+                try pruneProcessingState(meetingID: meetingID, recordingID: plan.second.id)
+                return written
+            }
         } catch {
             try? removeSplitStaging(meetingID: meetingID, partID: plan.second.id)
             throw error

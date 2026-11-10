@@ -188,6 +188,9 @@ extension SessionStore {
                            named: [NamedSpeech], at date: Date) throws -> DraftNamingSummary? {
         let m = SQLValue.text(meetingID.uuidString)
         defer {
+            // The draft record goes with its head; nothing reads a draft without one.
+            try? db.execute("DELETE FROM records WHERE kind='liveDraft' AND id IN (SELECT id FROM heads WHERE meeting_id=? AND kind='liveDraft' AND scope=?)",
+                            [m, .text(recordingID.uuidString)])
             try? db.execute("DELETE FROM heads WHERE meeting_id=? AND kind='liveDraft' AND scope=?", [m, .text(recordingID.uuidString)])
         }
         let draft = try draftNamedSpeech(meetingID: meetingID).filter { $0.recordingID == recordingID }

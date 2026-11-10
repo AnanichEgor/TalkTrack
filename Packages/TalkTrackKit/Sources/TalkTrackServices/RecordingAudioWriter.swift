@@ -33,7 +33,7 @@ private final class RecordingIOExecutor: SerialExecutor {
     }
 }
 
-private final class RecordingFileLock {
+final class RecordingFileLock {
     let fd: Int32
     init(directory: DirectoryHandle, create: Bool) throws {
         let opened = try directory.audioFile(".writer.lock", create: create)
@@ -44,7 +44,27 @@ private final class RecordingFileLock {
         }
         fd = opened
     }
+    private init(fd: Int32) { self.fd = fd }
     deinit { close(fd) }
+
+    /// The lock of a recording folder for maintenance, creating the lock file
+    /// when an imported or split recording has none; nil while a writer,
+    /// recovery or another maintenance holds it.
+    static func acquireIfFree(_ directory: DirectoryHandle) throws -> RecordingFileLock? {
+        let file = openat(directory.fd, ".writer.lock", O_RDONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0o600)
+        guard file >= 0 else { throw LibraryError.io(operation: "open the recording lock", code: errno) }
+        var info = stat()
+        guard fstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else {
+            close(file); throw LibraryError.unsafePath(".writer.lock")
+        }
+        guard flock(file, LOCK_EX | LOCK_NB) == 0 else {
+            let code = errno
+            close(file)
+            if code == EWOULDBLOCK { return nil }
+            throw LibraryError.io(operation: "lock the recording", code: code)
+        }
+        return RecordingFileLock(fd: file)
+    }
 }
 
 /// Independent chunk encoders and durable receipts on a dedicated worker.
@@ -63,6 +83,9 @@ public actor RecordingAudioWriter {
     private var openChunks: [AudioTrack: OpenChunk] = [:]
     private var nextFrame: [AudioTrack: UInt64] = [:]
     private var stopped = false
+    /// Fixtures only: chunks in the earlier layout with a large `free` box.
+    private var paddedChunks = false
+    func usePaddedChunks() { paddedChunks = true }
     private var failure: String?
     private var echo: [PlaybackEchoStretch] = []
     private let commitHook: (@Sendable (AudioCommitPoint) throws -> Void)?
@@ -74,11 +97,11 @@ public actor RecordingAudioWriter {
         let startFrame: UInt64
         let hostTime: UInt64
         var temporaryName: String { ".pending-\(id.uuidString).m4a" }
-        init(directory: DirectoryHandle, startFrame: UInt64, hostTime: UInt64) throws {
+        init(directory: DirectoryHandle, startFrame: UInt64, hostTime: UInt64, padded: Bool = false) throws {
             self.startFrame = startFrame; self.hostTime = hostTime
             let name = ".pending-\(id.uuidString).m4a"
             fd = try directory.audioFile(name, create: true)
-            do { encoder = try AACChunkEncoder(fileDescriptor: fd) }
+            do { encoder = try AACChunkEncoder(fileDescriptor: fd, reservesDuration: !padded) }
             catch { close(fd); throw error }
         }
         deinit { encoder.abort(); close(fd) }
@@ -158,7 +181,7 @@ public actor RecordingAudioWriter {
                 if openChunks[track] == nil {
                     let anchor = try addingHostFrames(hostTimeStart, frames: UInt64(offset))
                     openChunks[track] = try OpenChunk(directory: tracks[track]!,
-                        startFrame: activeStartFrame + UInt64(offset), hostTime: anchor)
+                        startFrame: activeStartFrame + UInt64(offset), hostTime: anchor, padded: paddedChunks)
                 }
                 let current = openChunks[track]!
                 let count = min(samples.count - offset, Int(AACChunkEncoder.maximumFrames - current.encoder.frames))
@@ -377,6 +400,8 @@ public actor RecordingAudioWriter {
         directory = try recordings.directory(manifest.recording.id.uuidString)
         fileLock = try RecordingFileLock(directory: directory!, create: false)
         defer { fileLock = nil }
+        // An interrupted chunk compaction is finished or rolled back first (compact-library-storage D6).
+        try ChunkCompaction.recoverLocked(directory!)
         let original = try DomainCodec.decode(RecordingAudioManifest.self, from: directory!.read("manifest.json", maximum: 16_777_216))
         guard original.recording.id == manifest.recording.id, original.recording.meetingID == manifest.recording.meetingID else {
             throw audioStorageError("Recording manifest identity mismatch")

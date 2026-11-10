@@ -165,6 +165,10 @@ extension SessionStore {
     /// Renames `Meetings/<source>/Recordings/<recording>` into the destination
     /// and rewrites its manifest's meeting id. Nothing to do when it is absent.
     func relocateRecordingFolder(_ recordingID: UUID, from sourceID: UUID, to destinationID: UUID) throws {
+        try RecordingAccess.shared.reading(recordingID) { try relocateFolder(recordingID, from: sourceID, to: destinationID) }
+    }
+
+    private func relocateFolder(_ recordingID: UUID, from sourceID: UUID, to destinationID: UUID) throws {
         let name = recordingID.uuidString
         let meetings = try DirectoryHandle.openAbsolute(library.directory).directory("Meetings")
         guard meetings.exists(sourceID.uuidString) else { return }

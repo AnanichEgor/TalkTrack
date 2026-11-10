@@ -7,6 +7,8 @@ public actor SessionStore {
     static let applicationID = 0x54414C4B
     public nonisolated let library: OpenedLibrary
     private var connection: SQLiteConnection?
+    /// What the launch prune and VACUUM did, with timings (fixtures).
+    @_spi(Diagnostics) public private(set) var launchCompaction = DatabaseCompaction()
     private var finalJobOwners: [UUID: UUID] = [:]
     /// Standard voices per final checkpoint (by job ID); checkpoints of
     /// completed jobs do not change, so one computation serves the session.
@@ -67,12 +69,16 @@ public actor SessionStore {
         _ = try recoverInterruptedJobs()
         // Files of recordings deleted just before a crash; a failure is retried next launch.
         for (meetingID, recordingID) in try deletedRecordings() { try? removeRecordingFolder(meetingID: meetingID, recordingID: recordingID) }
+        // Chunk files left mid-compaction, before anything reads audio (compact-library-storage D6).
+        recoverAudioCompaction()
         // Folders of recordings moved just before a crash (move-recording D2).
         try? reconcileMovedRecordingFolders()
         // Files of splits committed just before a crash (split-recording D3).
         try? recoverSplits()
         // Imports interrupted before or just after their commit (import-teams-session D2).
         try? recoverImports()
+        // Processing state nothing can use any more, and the space it held (compact-library-storage D3).
+        launchCompaction = compactDatabase()
     }
 
     private func validateDatabase(_ db: SQLiteConnection) throws {
@@ -296,7 +302,7 @@ public actor SessionStore {
         guard meetings.exists(meetingID.uuidString) else { return }
         let meeting = try meetings.directory(meetingID.uuidString)
         guard meeting.exists("Recordings") else { return }
-        try meeting.directory("Recordings").removeTree(recordingID.uuidString)
+        try RecordingAccess.shared.reading(recordingID) { try meeting.directory("Recordings").removeTree(recordingID.uuidString) }
     }
 
     /// Keeps the translated utterances of the other recordings, with a frozen
@@ -346,7 +352,8 @@ public actor SessionStore {
         }
         let owned = try DirectoryHandle.openAbsolute(library.directory)
         let meetings = try owned.directory("Meetings")
-        try meetings.removeTree(id.uuidString)
+        // Every recording of the meeting goes; compaction waits (compact-library-storage D7).
+        try RecordingAccess.shared.readingLibrary(library.manifest.libraryID) { try meetings.removeTree(id.uuidString) }
     }
 
     func update(_ meeting: Meeting) throws {
@@ -1337,6 +1344,7 @@ public actor SessionStore {
             owner.generation += 1; try update(owner)
             try Task.checkCancellation()
             job.stage = .completed; job.lastError = nil; try saveJob(job)
+            try pruneProcessingState(meetingID: recording.meetingID, recordingID: id)
             return publication
         }
     }
@@ -1455,13 +1463,15 @@ public actor SessionStore {
                 let copy = FinalTranscriptionCheckpoint(version: old.version, correctionPromptVersion: old.correctionPromptVersion,
                     job: job.snapshot, recordingFingerprint: old.recordingFingerprint, windows: old.windows,
                     completedTracks: old.completedTracks, speakerCheckpoint: old.speakerCheckpoint,
-                    correctionBatches: old.correctionBatches, readyForPublication: true, systemLevels: old.systemLevels)
+                    correctionBatches: old.correctionBatches, readyForPublication: true, systemLevels: nil)
                 try put(.finalCheckpoint, id: job.id, meetingID: meetingID, scope: recording.id.uuidString, value: copy)
                 return job
             }
             do { publications.append(try publishFinalTranscript(jobID: job.id, at: date)) }
             catch {
                 try? updateJob(job.id, stage: .failed, error: error.localizedDescription)
+                // The source checkpoint stays current; the failed copy can never be used.
+                try? db.transaction { try deleteRecord(.finalCheckpoint, id: job.id) }
                 throw error
             }
         }
@@ -1519,6 +1529,7 @@ public actor SessionStore {
             try update(owner)
             job.stage = .completed
             try saveJob(job)
+            try pruneProcessingState(meetingID: owner.id, recordingID: recording.id)
         }
     }
 

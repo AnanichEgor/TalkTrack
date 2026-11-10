@@ -285,7 +285,8 @@ func finalFixture(_ folder: TemporaryFolder, seconds: Double = 3, language: Meet
         #expect(result.readyForPublication && result.completedTracks.count == 2)
         #expect(result.blocks.allSatisfy { $0.track == .system } && result.blocks.count == 1)
         #expect(await probe.textCalls == 1)
-        #expect(result.systemLevels?.isEmpty == false)
+        // Levels gate staging only; a ready checkpoint drops them (compact-library-storage D2).
+        #expect(result.systemLevels == nil)
         let chunks = try FileManager.default.contentsOfDirectory(atPath: fixture.library.directory
             .appendingPathComponent("Meetings/\(fixture.recording.meetingID.uuidString)/Recordings/\(fixture.recording.id.uuidString)/microphone").path)
         #expect(!chunks.isEmpty)

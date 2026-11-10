@@ -46,7 +46,8 @@ private func waitUntilHeld(_ probe: FinalProbe) async throws {
         let published = try await FinalTranscriptionPipeline(store: store, library: fixture.library, inference: probe)
             .runAndPublish(jobID: fixture.job.id)
         #expect(try await store.transcript(meetingID: meetingID, recordingID: recordingID)?.id == published.id)
-        #expect(try await store.transcriptRevision(fixture.previous.id) == fixture.previous)
+        // The replaced revision is pruned with the publication (compact-library-storage D1).
+        #expect(try await store.transcriptRevision(fixture.previous.id) == nil)
         try await store.close()
     }
 
@@ -153,7 +154,8 @@ private func waitUntilHeld(_ probe: FinalProbe) async throws {
         let snapshot = try await store.meetingTranscript(meetingID: identity.meetingID)
         #expect(snapshot.revisions.map(\.id) == [published.id])
         #expect(snapshot.assignments.map(\.name) == ["Алексей"])
-        #expect(try await store.transcriptRevision(first.id) != nil)
+        // The replaced revision is pruned with the publication (compact-library-storage D1).
+        #expect(try await store.transcriptRevision(first.id) == nil)
         try await store.close()
     }
 

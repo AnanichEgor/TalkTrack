@@ -248,12 +248,113 @@ editable notes. Source fingerprints use sorted, stable UUID dictionary keys.
 Final processing uses `FinalTranscriptionPipeline.runAndPublish` and
 `SessionStore.publishFinalTranscript`. The latter validates ready staging, reads
 the latest confirmed names, and commits transcript/speaker provenance, the affected
-head and job completion together. Old revisions and assignments remain readable;
+head and job completion together. Assignments remain readable as history;
 unknown names awaiting review do not discard complete text. Successful publication
-is idempotent. The existing low-level `publishTranscript` import API remains for
-persistence fixtures; it is not the final-processing entry point. The generic
-record table stores `finalCheckpoint`, `finalPublication` and `daySpeaker`
-payloads without changing schema version 2.
+is idempotent for the job it just completed. The existing low-level
+`publishTranscript` import API remains for persistence fixtures; it is not the
+final-processing entry point. The generic record table stores `finalCheckpoint`,
+`finalPublication` and `daySpeaker` payloads without changing schema version 2.
+
+### Retained processing state
+
+Processing state is kept only while something can use it (compact-library-storage,
+user decision 2026-11-10). `SessionStore.pruneProcessingState` runs in the same
+transaction as every change of a recording's transcript head:
+- final publication, including `Apply Names`;
+- the low-level `publishTranscript`;
+- an imported transcript;
+- both parts of a split.
+
+Per recording it keeps:
+
+1. **The current transcript head** and the publication with the same ID. Earlier
+   transcript revisions, including a replaced live revision, are deleted.
+   Summary and translation sources keep their own frozen copies.
+2. **The checkpoint of that publication's job.** `Apply Names`, voice groups and
+   reply recognition read only this one.
+3. **Checkpoints of later jobs that are neither completed nor cancelled.** They
+   can still be retried.
+4. **The checkpoint of the recording's last final job when it completed.** The
+   workspace reads its unrecovered windows.
+5. **For each pair of day speaker and voice-bank fingerprint** that a manual
+   assignment's evidence names (head or not, so Undo keeps working), the first
+   publication holding that bank. `confirmedVoiceAnchors` scans publications in
+   insertion order and finds the same bank as before.
+
+How the deletions behave:
+- Deleted records take their heads with them. Deletions run with
+  `secure_delete`, so pruned voice vectors are overwritten.
+- An `Apply Names` run that fails deletes its own checkpoint copy.
+- A final publication deletes the recording's `liveDraft` record together with
+  its head.
+- A ready checkpoint carries no `systemLevels`, which only gate microphone
+  windows while staging.
+
+Jobs, assignments, fragment anchors and summary and translation sources are never
+pruned.
+
+At launch `SessionStore.open` prunes every recording once, deletes `liveDraft`
+records no head refers to, and runs `VACUUM` when the free pages are at least
+16 MiB and a quarter of the file and the volume has twice the database size
+free. Failures are logged and retried at the next launch.
+
+### Chunk file compaction
+
+Chunks written before 2026-11-10 carry a `free` box of about 57 KB between `moov`
+and `mdat`, because the encoder did not declare the chunk's duration. New chunks
+reserve ten seconds and have none (`kAudioFilePropertyReserveDuration`).
+`AudioCompaction`, started by `AppModel`, removes the box from older chunks in
+the background without re-encoding.
+
+**Rewrite.** `AudioChunkCompactor` accepts only `ftyp`, `moov`, `free`…, `mdat`
+with nothing after `mdat` and 32-bit box sizes. It removes the `free` boxes and
+moves every `stco`/`co64` offset back by the removed length; each new offset must
+land inside the new `mdat`. Any other layout, or less than 4 KB of padding, is
+left alone. The rewritten file must have the same data format, magic cookie,
+packet table and packet count, and every packet's bytes and description read
+through AudioToolbox must match. The decoded frame count must still match the
+receipt. Decoded samples are not compared at run time: the same file can decode
+to slightly different samples on another thread.
+
+**Journal.** Per chunk, under the recording's `.writer.lock`:
+
+| Step | On disk |
+|---|---|
+| 0 | `.compacting` in the recording folder (once per pass) |
+| 1 | `.compact-<id>.audio`, fsynced and verified |
+| 2 | `.compact-<id>.receipt`: the receipt with the new size and SHA-256 |
+| 3 | the audio replaces `<id>.m4a` |
+| 4 | the receipt replaces `<id>.json` |
+| 5 | `manifest.json` takes the new sizes and hashes; `.compacting` is removed |
+
+A recording a full pass finished gets `.compacted` and is not scanned again.
+The journal names end in neither `.m4a` nor `.json`, so receipt listings never
+see them.
+
+**Recovery.** Only folders with `.compacting` are recovered: in `SessionStore.open`
+before the move, split and import repairs, in `RecordingAudioWriter.recover`, and
+before each compaction. A pending receipt whose size and hash match the current
+`<id>.m4a` (step 3 done) is moved into place. Otherwise the pending files are
+deleted and the original stays. The manifest is then patched from the receipts.
+
+**Coordination.** `RecordingAccess` is an in-process gate:
+- Reading access is taken around the receipt read and file open in
+  `CommittedAudioChunks` (playback, transcription windows, voice learning, sample
+  preview, echo replay), around a recording's folder move, split and delete,
+  library-wide around a meeting delete, and while a library move copies and
+  verifies.
+- Compaction takes writing access for one chunk at a time without waiting. When
+  anyone reads or waits for the recording, it finishes that chunk and leaves the
+  rest for a later pass. A reader therefore waits for at most one chunk.
+- The service starts 20 s after launch. It does not start a recording while
+  capture, an import, a final job or a library move is running, and stops at the
+  next chunk when one begins. Quit and library moves stop it first. Recordings
+  left over are retried two minutes later.
+
+Each recording's result is logged under `local.talktrack.app` / `storage`:
+`audio compaction recording=… compacted= skipped= refused= damaged= saved= busy=
+stopped= ms=`. Launch recovery logs `compaction recovered recordings=`. Pruning
+and `VACUUM` log `compact checkpoints= … vacuumed= before= after= ms=`.
 
 ## Schema upgrades and recovery
 

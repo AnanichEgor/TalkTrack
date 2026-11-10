@@ -81,6 +81,8 @@ struct WorkspaceServices {
     /// What launch recovery did with an unfinished move, shown in Settings.
     private(set) var moveRecovery: String?
     private var moveTask: Task<Void, Never>?
+    /// Removes padding from chunk files of older recordings in the background.
+    private var audioCompaction: AudioCompaction?
     private let runtime: InferenceRuntime?
     private let catalog: ModelCatalog?
     private var loading = false
@@ -232,7 +234,9 @@ struct WorkspaceServices {
             // A running voice-learning task stays queued for the next launch.
             speakers.attach(nil)
             async let learning: Void = services.enrollment.shutDown()
+            async let compaction: Void = { await self.audioCompaction?.stop() }()
             await workspace.prepareToQuit(notes: services.notes)
+            await compaction
             await learning
         }
         await downloads
@@ -362,6 +366,14 @@ struct WorkspaceServices {
                                                                 ?? current().model(for: .translation).snapshot(for: .translation) }))
             await workspace.start()
             await enrollment.start()
+            // Waits while recording, importing or transcribing (compact-library-storage D7).
+            let compaction = AudioCompaction(library: library, store: store) { @MainActor [weak self, weak workspace] in
+                guard let self, let workspace else { return true }
+                return workspace.phase != .idle || workspace.runningJobMeetingID != nil
+                    || workspace.importStatus != nil || self.moveTask != nil
+            }
+            audioCompaction = compaction
+            compaction.start()
         } catch {
             state = .failed(error.localizedDescription, recovery: (error as? LocalizedError)?.recoverySuggestion)
         }
@@ -427,6 +439,8 @@ struct WorkspaceServices {
             services.player.pause()
             speakers.attach(nil)
             await services.enrollment.shutDown()
+            await audioCompaction?.stop()
+            audioCompaction = nil
             await workspace.prepareToQuit(notes: services.notes)
             let source = services.store.library
             do {
