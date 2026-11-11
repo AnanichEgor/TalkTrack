@@ -8,23 +8,33 @@ actor SummaryJobInference: SummaryTextInference {
     var mode: Mode = .success
     var started = false
     var prompts: [String] = []
+    var systems: [String] = []
     var attempts: [Int] = []
+    /// Replaces the generated text when set.
+    var reply: String?
+    /// Formatted requests whose system prompt contains this count as 3000 tokens.
+    var oversizeMarker: String?
     func set(_ mode: Mode) { self.mode = mode; started = false }
+    func set(reply: String?) { self.reply = reply }
+    func set(oversizeMarker: String?) { self.oversizeMarker = oversizeMarker }
     func tokenCounts(_ model: ModelSnapshot, settings: ProcessingSettings, texts: [String]) async throws -> [Int] {
         texts.map { $0.count / 4 + 1 }
     }
-    func formattedTokenCount(_ model: ModelSnapshot, settings: ProcessingSettings, system: String, prompt: String) async throws -> Int { 600 }
+    func formattedTokenCount(_ model: ModelSnapshot, settings: ProcessingSettings, system: String, prompt: String) async throws -> Int {
+        oversizeMarker.map { system.contains($0) } == true ? 3000 : 600
+    }
     func summaryText(_ model: ModelSnapshot, settings: ProcessingSettings, system: String, prompt: String,
                      outputTokens: Int?, attempt: Int) async throws -> SummaryTextResponse {
-        started = true; prompts.append(prompt); attempts.append(attempt)
+        started = true; prompts.append(prompt); systems.append(system); attempts.append(attempt)
         switch mode {
         case .failure: throw SummaryGenerationError.outputLimit
         case .wait: try await Task.sleep(for: .seconds(60))
         case .success, .malformed, .malformedFirst: break
         }
-        let template = SummaryTemplates.template(settings.summaryType)!
-        let text = mode == .malformed || (mode == .malformedFirst && attempt == 0) ? "A truncated outline" : template.sections.map {
-            "## " + $0.title(settings.summaryLanguage) + "\nNone noted."
+        // Every heading the prompt asks for (custom templates are not in `SummaryTemplates`).
+        let headings = system.split(separator: "\n").filter { $0.hasPrefix("## ") }
+        let text = mode == .malformed || (mode == .malformedFirst && attempt == 0) ? "A truncated outline" : reply ?? headings.map {
+            $0 + "\nNone noted."
         }.joined(separator: "\n\n")
         return SummaryTextResponse(text: text,
             contextPlan: try TextContextPlanner.resolve(selection: settings.contextLimit, role: .summary,
@@ -272,7 +282,7 @@ struct SummaryFixture {
         await p.refresh()
         #expect(p.entries.map(\.number) == [1, 2] && p.entries.allSatisfy { $0.output == nil && $0.requirement == nil })
         #expect(p.pending.count == 2 && p.canGenerate)
-        p.type = .standup
+        p.selection = .builtIn(.standup)
         await p.generate(); await runner.idle(); await p.refresh()
         #expect(p.entries.allSatisfy { $0.output?.job.settings.summaryType == .standup && !$0.outdated })
         #expect(p.entries[0].output?.job.recordingID == p.entries[0].recording.id)
@@ -299,7 +309,7 @@ struct SummaryFixture {
         #expect(p.entries[1].output != kept[1] && p.entries[0].output == kept[0])
 
         // Another type makes every summary outdated; Generate queues them all.
-        p.type = .auto; await p.refresh()
+        p.selection = .builtIn(.auto); await p.refresh()
         #expect(p.entries.allSatisfy(\.outdated) && p.pending.count == 2)
         if let export { try folder.url.path.write(toFile: export, atomically: true, encoding: .utf8) }
         try await f.store.close()

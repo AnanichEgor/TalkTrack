@@ -27,17 +27,20 @@ public struct SummaryTemplate: Equatable, Sendable {
     public let icon: String
     public let sections: [Section]
     public let rules: [String]
+    /// A custom template's section named by `per_person` in its file.
+    public var perPersonHeading: String? = nil
 
     /// The section grouped by person, from which speakers who barely spoke are
-    /// removed after generation (Standup, since version 3).
+    /// removed after generation (Standup, since version 3; custom templates by `per_person`).
     public var perPersonSection: Section? {
-        type == .standup && !["1", "2"].contains(version) ? sections.first { $0.english == "Updates by Person" } : nil
+        if type == .custom { return perPersonHeading.flatMap { heading in sections.first { $0.english == heading } } }
+        return type == .standup && !["1", "2"].contains(version) ? sections.first { $0.english == "Updates by Person" } : nil
     }
 }
 
 public enum SummaryTemplates {
     /// The version new jobs snapshot as `ProcessingSettings.templateVersion`.
-    public static let currentVersion = "4"
+    public static let currentVersion = "5"
 
     /// Every version ever shipped, by version then type. Never edit a version
     /// in place: saved summaries are compared against the version they used.
@@ -48,7 +51,10 @@ public enum SummaryTemplates {
     /// Version 4 renames Standup's Russian per-person heading (the old one read
     /// as "who takes which task"), states that updates are reports and not tasks,
     /// widens Blockers, requires bulleted cited decisions, leaves out small talk,
-    /// and adds translation rules and retry feedback to the prompt.
+    /// and adds translation rules and retry feedback to the prompt. Version 5
+    /// (same sections) writes notes of long recordings' parts under plain labels
+    /// instead of "## " headings, which the final summary copied as extra
+    /// headings, and says the labels are not summary headings (`SummaryPrompt`).
     public static func template(_ type: SummaryType, version: String = currentVersion) -> SummaryTemplate? {
         switch version {
         case "1": version1.first { $0.type == type }
@@ -76,6 +82,10 @@ public enum SummaryTemplates {
             return SummaryTemplate(type: old.type, version: "4", title: old.title, purpose: old.purpose, icon: old.icon,
                 sections: sections, rules: standup ? old.rules + [standupReportsV4, offTopicV4] : old.rules + [offTopicV4])
         }
+        case "5": template(type, version: "4").map {
+            SummaryTemplate(type: $0.type, version: "5", title: $0.title, purpose: $0.purpose, icon: $0.icon,
+                            sections: $0.sections, rules: $0.rules)
+        }
         default: nil
         }
     }
@@ -91,9 +101,20 @@ public enum SummaryTemplates {
 
     private static let standupUpdates = S(english: "Updates by Person", russian: "Кто что делает",
         guidance: "One bullet group per speaker label who gave a work update: done, next and blockers, as each person said them. Omit a field the person did not mention.")
-    private static let standupSubstance = "Leave out of Updates by Person anyone who only greeted, joked, agreed, asked to be heard or otherwise said nothing about their work; never write a bullet group just to say a person had no update."
+    static let standupSubstance = "Leave out of Updates by Person anyone who only greeted, joked, agreed, asked to be heard or otherwise said nothing about their work; never write a bullet group just to say a person had no update."
 
     public static var current: [SummaryTemplate] { SummaryType.allCases.compactMap { template($0) } }
+
+    /// The current guidance of a built-in section that a custom template may
+    /// name without an explanation: Decisions, Action Items or Open Questions,
+    /// in English or Russian, in any letter case.
+    public static func sharedGuidance(heading: String) -> String? {
+        let key = heading.trimmingCharacters(in: .whitespaces).lowercased()
+        let shared = ["Decisions", "Action Items", "Open Questions"]
+        return template(.auto)?.sections.first {
+            shared.contains($0.english) && ($0.english.lowercased() == key || $0.russian.lowercased() == key)
+        }?.guidance
+    }
 
     typealias S = SummaryTemplate.Section
 
@@ -168,6 +189,21 @@ public enum SummaryPrompt {
     struct Phrases {
         let languageName, noneNoted, ownerUnspecified, owner, due: String
     }
+    /// Version 5 and later: prompts name headings and fixed words only in
+    /// English, whatever the summary language; the content is written in the
+    /// summary language and `SummaryCheck.localizedFrame` then puts in the
+    /// localized headings and words. Prompts then contain no Russian.
+    static func englishFrame(_ version: String) -> Bool { labelledNotes(version) }
+
+    /// The fixed words of a prompt for `version`: English from version 5,
+    /// with the summary language still named for the content.
+    static func phrases(_ language: OutputLanguage, version: String) -> Phrases {
+        guard englishFrame(version), language != .english else { return phrases(language) }
+        let english = phrases(.english)
+        return Phrases(languageName: phrases(language).languageName, noneNoted: english.noneNoted,
+                       ownerUnspecified: english.ownerUnspecified, owner: english.owner, due: english.due)
+    }
+
     static func phrases(_ language: OutputLanguage) -> Phrases {
         language == .russian
             ? Phrases(languageName: "Russian", noneNoted: "Не отмечено.", ownerUnspecified: "Ответственный: не указан",
@@ -182,8 +218,11 @@ public enum SummaryPrompt {
     /// so a retry fixes the format instead of starting over blindly.
     public static func system(_ template: SummaryTemplate, language: OutputLanguage, fromParts: Bool = false,
                               corrections: [String] = []) -> String {
-        let p = phrases(language)
+        let p = phrases(language, version: template.version)
         let v4 = !["1", "2", "3"].contains(template.version)
+        let labelled = SummaryPrompt.labelledNotes(template.version)
+        let englishFrame = englishFrame(template.version) && language != .english
+        let headingLanguage: OutputLanguage = englishFrame ? .english : language
         // Version 1: a whole meeting and its notes. Later: one recording, no notes.
         let notes = template.version == "1"
         let source = switch (fromParts, notes) {
@@ -193,14 +232,14 @@ public enum SummaryPrompt {
         case (false, true): "You write a meeting summary from the meeting's transcript and the notes its user typed."
         case (true, false): """
             You write the summary of one recorded conversation from notes taken, in order, on consecutive parts of its transcript. Treat them as the transcript: keep their owners, deadlines and times. Every decision, action item, fact and number in them belongs in the summary; put facts and numbers under the heading that fits them.
-            """
+            """ + (labelled ? " The notes' group labels (Topics:, Facts and numbers: and the others) only sort the notes; they are not headings of the summary." : "")
         case (false, false): "You write the summary of one recorded conversation from its transcript."
         }
-        let sections = template.sections.map { "## \($0.title(language))\n\($0.guidance)" }.joined(separator: "\n\n")
+        let sections = template.sections.map { "## \($0.title(headingLanguage))\n\($0.guidance)" }.joined(separator: "\n\n")
         let rules = template.rules.map { "- \($0)" }.joined(separator: "\n")
         return """
         \(source)
-        Write the whole summary in \(p.languageName), whatever language the meeting was in.\(v4 ? " If the meeting was in another language, translate what was said faithfully and completely; do not drop or add content because of translation. Keep people's names and speaker labels exactly as written in the transcript." : "")
+        Write the whole summary in \(p.languageName), whatever language the meeting was in.\(englishFrame ? " Only the headings and the fixed words \"\(p.noneNoted)\", \"\(p.owner):\", \"\(p.ownerUnspecified)\" and \"\(p.due):\" stay exactly in English as given; TalkTrack translates them." : "")\(v4 ? " If the meeting was in another language, translate what was said faithfully and completely; do not drop or add content because of translation. Keep people's names and speaker labels exactly as written in the transcript." : "")
 
         Accuracy:
         - Use only facts stated in the supplied material. Do not invent or infer facts, names, owners, dates, deadlines, numbers or commitments.
@@ -326,6 +365,27 @@ public enum SummaryCheck {
 
     /// Removes bullets that only say there is nothing to report, in every
     /// section (version 4); a section left empty reads "none noted".
+    /// Puts the localized headings and fixed words into a version 5+ response,
+    /// whose prompt named them in English only. Earlier versions and English
+    /// summaries are returned unchanged.
+    public static func localizedFrame(_ output: String, template: SummaryTemplate, language: OutputLanguage) -> String {
+        guard SummaryPrompt.englishFrame(template.version), language != .english else { return output }
+        let english = SummaryPrompt.phrases(.english), local = SummaryPrompt.phrases(language)
+        let headings = Dictionary(template.sections.map { ($0.english, $0.title(language)) }, uniquingKeysWith: { first, _ in first })
+        return output.split(separator: "\n", omittingEmptySubsequences: false).map { raw -> String in
+            var line = String(raw)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("## "), let title = headings[String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)] {
+                return "## " + title
+            }
+            line = line.replacingOccurrences(of: english.ownerUnspecified, with: local.ownerUnspecified)
+            line = line.replacingOccurrences(of: english.noneNoted, with: local.noneNoted)
+            // Any action item, whatever its bullet ("- [ ]", "- - [ ]", "*").
+            return line.replacingOccurrences(of: "— \(english.owner):", with: "— \(local.owner):")
+                .replacingOccurrences(of: "— \(english.due):", with: "— \(local.due):")
+        }.joined(separator: "\n")
+    }
+
     public static func withoutEmptyBullets(_ output: String, language: OutputLanguage) -> String {
         var result: [Substring] = [], headingIndex: Int?, kept = 0, removed = false
         func close() {

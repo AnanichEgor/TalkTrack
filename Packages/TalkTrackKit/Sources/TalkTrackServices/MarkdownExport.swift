@@ -36,7 +36,9 @@ extension SessionStore {
     /// Committed content only; reading never changes the library. `settings` are
     /// the current output settings; a summary is compared under its own summary
     /// type, so the type picked for the next summaries does not mark it outdated.
-    public func meetingExport(meetingID: UUID, settings: ProcessingSettings) throws -> MeetingExportSnapshot {
+    /// `templateHashes`: the current content hash of each custom template, by id.
+    public func meetingExport(meetingID: UUID, settings: ProcessingSettings,
+                              templateHashes: [UUID: String] = [:]) throws -> MeetingExportSnapshot {
         let transcript = try meetingTranscript(meetingID: meetingID)
         let recordings = transcript.recordings.sorted { $0.startedAt < $1.startedAt }
         var summaries: [MeetingExportSnapshot.Summary] = []
@@ -44,8 +46,9 @@ extension SessionStore {
             guard let output = try summary(meetingID: meetingID, recordingID: recording.id) else { continue }
             var own = settings
             own.summaryType = output.job.settings.summaryType
+            own.customTemplate = output.job.settings.customTemplate
             summaries.append(.init(recording: recording, number: index + 1, text: output.text,
-                                   outdated: try isOutdated(output, settings: own)))
+                                   outdated: try isOutdated(output, settings: own, templateHashes: templateHashes)))
         }
         var translation: MeetingExportSnapshot.Translation?
         if let output = try output(.translation, meetingID: meetingID) {

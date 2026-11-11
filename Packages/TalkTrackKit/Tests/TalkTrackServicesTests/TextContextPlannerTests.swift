@@ -5,7 +5,7 @@ import TalkTrackDomain
 
 @Suite struct TextContextPlannerTests {
     @Test func autoSelectsSmallestExactFitAndNextSize() throws {
-        #expect(ContextLimit.manualOptions.map(\.rawValue) == [4096, 8192, 16384, 32768, 65536])
+        #expect(ContextLimit.manualOptions.map(\.rawValue) == [8192, 16384, 32768, 65536])
         #expect(ContextLimit.maximumSelectable == .standard)
         for (index, limit) in ContextLimit.manualOptions.enumerated() {
             let exact = try TextContextPlanner.resolve(selection: .automatic, role: .summary,
@@ -34,7 +34,7 @@ import TalkTrackDomain
         let summary = try TextContextPlanner.resolve(selection: .automatic, role: .summary, inputTokens: 1800)
         let translation = try TextContextPlanner.resolve(selection: .automatic, role: .translation, inputTokens: 1800)
         let correction = try TextContextPlanner.resolve(selection: .automatic, role: .spelling, inputTokens: 1800)
-        #expect(summary.contextTokens == 4096 && summary.outputTokens == 1800)
+        #expect(summary.contextTokens == 8192 && summary.outputTokens == 1800)
         #expect(translation.contextTokens == 16384 && translation.outputTokens == 7200)
         #expect(correction.contextTokens == 8192 && correction.outputTokens == 4500)
         #expect(throws: TextContextPlanningError.self) {
@@ -78,7 +78,12 @@ import TalkTrackDomain
         let running = ProcessingPreferences.snapshot(from: defaults)
         defaults.set(4096, forKey: ProcessingPreferences.contextKey)
         #expect(running.contextLimit == .automatic)
-        #expect(ProcessingPreferences.snapshot(from: defaults).contextLimit == .tokens4K)
+        // 4K is no longer offered (2026-11-11): a saved 4K becomes 8K and is stored so.
+        #expect(ProcessingPreferences.snapshot(from: defaults).contextLimit == .tokens8K)
+        #expect(defaults.integer(forKey: ProcessingPreferences.contextKey) == 8192)
+        #expect(!ContextLimit.allCases.contains(.tokens4K))
+        #expect(try TextContextPlanner.resolve(selection: .tokens4K, role: .summary, inputTokens: 100).contextTokens == 4096)
+        #expect(try TextContextPlanner.resolve(selection: .automatic, role: .summary, inputTokens: 100).contextTokens == 8192)
         for raw in [129024, 131072] {
             let legacy = try JSONDecoder().decode(ContextLimit.self, from: Data(String(raw).utf8))
             #expect(!ContextLimit.allCases.contains(legacy))

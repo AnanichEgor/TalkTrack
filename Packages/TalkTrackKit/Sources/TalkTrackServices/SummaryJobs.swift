@@ -22,8 +22,11 @@ public struct SummarySource: Codable, Equatable, Sendable {
 
 public enum SummaryJobError: Error, Equatable, LocalizedError, Sendable {
     case finalRequired, alreadyQueued, missingModel, busy, invalidOutput
+    /// The job's custom template was deleted (or the library is on another Mac).
+    case templateDeleted
     public var errorDescription: String? {
         switch self {
+        case .templateDeleted: "The summary template was deleted. Choose another template, then generate the summary again."
         case .finalRequired: "The summary is available after final transcription of this recording finishes."
         case .alreadyQueued: "A summary is already queued or running for this recording."
         case .missingModel: "The summary model is missing. Download it in Settings, then retry."
@@ -53,12 +56,15 @@ public actor SummaryJobPipeline {
     private let store: SessionStore
     private let inference: any SummaryTextInference
     private let missing: @Sendable ([ModelSnapshot]) async throws -> [ModelRole]
+    private let customTemplate: @Sendable (UUID) async -> CustomSummaryTemplate?
     private var running: Set<UUID> = []
     private var progress: [UUID: SummaryProgress] = [:]
 
+    /// `customTemplate` reads an imported template's current version by id.
     public init(store: SessionStore, inference: any SummaryTextInference,
-                missing: @escaping @Sendable ([ModelSnapshot]) async throws -> [ModelRole] = { _ in [] }) {
-        self.store = store; self.inference = inference; self.missing = missing
+                missing: @escaping @Sendable ([ModelSnapshot]) async throws -> [ModelRole] = { _ in [] },
+                customTemplate: @escaping @Sendable (UUID) async -> CustomSummaryTemplate? = { _ in nil }) {
+        self.store = store; self.inference = inference; self.missing = missing; self.customTemplate = customTemplate
     }
 
     public func status(jobID: UUID) -> SummaryProgress? { progress[jobID] }
@@ -77,9 +83,19 @@ public actor SummaryJobPipeline {
                 throw SummaryJobError.missingModel
             }
             try Task.checkCancellation()
+            // A custom template is read again on every run, Retry included, so
+            // a replaced template's current version is used (D5).
+            var custom: CustomSummaryTemplate?
+            if job.settings.summaryType == .custom {
+                guard let reference = job.settings.customTemplate, let value = await customTemplate(reference.id) else {
+                    throw SummaryJobError.templateDeleted
+                }
+                custom = value
+            }
             try await store.updateJob(jobID, stage: .generating)
             let transcript = try source.transcript()
-            guard let template = SummaryTemplates.template(job.settings.summaryType, version: job.settings.templateVersion) else {
+            guard let template = custom.map({ $0.file.template(version: job.settings.templateVersion) })
+                    ?? SummaryTemplates.template(job.settings.summaryType, version: job.settings.templateVersion) else {
                 throw SummaryGenerationError.invalidRequest
             }
             // A response in the wrong format gets up to two more, differently
@@ -89,14 +105,16 @@ public actor SummaryJobPipeline {
             var draft: SummaryDraft?
             var corrections: [String] = []
             for attempt in 0..<Self.formatAttempts where draft == nil {
-                let value = try await summarize(source, model: model, transcript: transcript, attempt: attempt,
-                                                corrections: corrections, jobID: jobID)
+                let value = try await summarize(source, model: model, template: template, transcript: transcript,
+                                                attempt: attempt, corrections: corrections, jobID: jobID)
                 try Task.checkCancellation()
-                if Self.isValid(value.text, template: template, language: job.settings.summaryLanguage) { draft = value }
-                else { corrections = SummaryCheck.formatProblems(value.text, template: template, language: job.settings.summaryLanguage) }
+                // From version 5 the response's headings and fixed words are English.
+                let frame = SummaryPrompt.frameLanguage(template, job.settings.summaryLanguage)
+                if Self.isValid(value.text, template: template, language: frame) { draft = value }
+                else { corrections = SummaryCheck.formatProblems(value.text, template: template, language: frame) }
             }
             guard let draft else { throw SummaryJobError.invalidOutput }
-            var text = draft.text
+            var text = SummaryCheck.localizedFrame(draft.text, template: template, language: job.settings.summaryLanguage)
             if !["1", "2", "3"].contains(template.version) {
                 text = SummaryCheck.withoutEmptyBullets(text, language: job.settings.summaryLanguage)
             }
@@ -107,7 +125,8 @@ public actor SummaryJobPipeline {
             progress[jobID] = .saving
             try await store.updateJob(jobID, stage: .publishing)
             try Task.checkCancellation()
-            try await store.publishOutput(GeneratedOutput(kind: .summary, job: job, text: text))
+            try await store.publishOutput(GeneratedOutput(kind: .summary, job: job, text: text,
+                                                          templateContentHash: custom?.contentHash))
         } catch {
             // A missing model is a durable waiting state, not a generic failure.
             if (try? await store.job(jobID).stage) != .waitingForModels {
@@ -128,14 +147,15 @@ public actor SummaryJobPipeline {
 
     /// A text server sees the whole meeting at once; when it refuses the request
     /// as larger than its model accepts, the meeting is split for 32K, then 8K.
-    private func summarize(_ source: SummarySource, model: ModelSnapshot, transcript: [TranscriptDisplayItem],
-                           attempt: Int, corrections: [String], jobID: UUID) async throws -> SummaryDraft {
+    private func summarize(_ source: SummarySource, model: ModelSnapshot, template: SummaryTemplate,
+                           transcript: [TranscriptDisplayItem], attempt: Int, corrections: [String],
+                           jobID: UUID) async throws -> SummaryDraft {
         var settings = source.job.settings
         var fallbacks = settings.contextLimit == .unbounded ? TextServerPreferences.fallbackContexts : []
         while true {
             do {
                 return try await MeetingSummarizer(model: model, settings: settings, inference: inference, attempt: attempt,
-                    corrections: corrections, progress: { [weak self] value in await self?.report(value, jobID: jobID) })
+                    corrections: corrections, template: template, progress: { [weak self] value in await self?.report(value, jobID: jobID) })
                     .summarize(meeting: source.meeting, notes: source.notes?.text, transcript: transcript)
             } catch TextServerError.contextTooSmall(let host) {
                 guard !fallbacks.isEmpty else { throw TextServerError.contextTooSmall(host) }

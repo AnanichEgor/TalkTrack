@@ -161,13 +161,24 @@ private extension TemporaryFolder {
         try await store.stageNotes(notes)
         try await store.commitNotes(notes)
 
-        // A summary per recording, so deleting one shows in the Summary tab.
+        // A summary per recording, so deleting one shows in the Summary tab. The last
+        // was made with an imported template since deleted (custom-summary-templates):
+        // its tag says so and the picker asks for a template. Two templates stay imported.
         let summaryModel = try ModelCatalog.bundled().model(for: .summary).snapshot(for: .summary)
+        let templates = SummaryTemplateStore(directory: url.appendingPathComponent(
+            "fixture-home/Library/Application Support/TalkTrack/Templates", isDirectory: true))
+        try await templates.save(try #require(SummaryTemplateGuide.exampleText))
+        try await templates.save(try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../../../Fixtures/SummaryTemplates/team-sync.md").standardizedFileURL, encoding: .utf8))
+        let retro = try await templates.save(SummaryTemplateFileTests.retro)
         for recording in recordings {
-            let job = try await store.enqueueSummary(meetingID: meeting.id, recordingID: recording.id,
-                settings: ProcessingSettings(summaryLanguage: .russian, contextLimit: .defaultSelection), model: summaryModel)
-            try await SummaryJobPipeline(store: store, inference: SummaryJobInference()).run(jobID: job.id)
+            var settings = ProcessingSettings(summaryLanguage: .russian, contextLimit: .defaultSelection)
+            if recording.id == recordings.last?.id { settings.summaryType = .custom; settings.customTemplate = retro.reference }
+            let job = try await store.enqueueSummary(meetingID: meeting.id, recordingID: recording.id, settings: settings, model: summaryModel)
+            try await SummaryJobPipeline(store: store, inference: SummaryJobInference(),
+                                         customTemplate: { await templates.template(id: $0) }).run(jobID: job.id)
         }
+        try await templates.delete(id: retro.id)
 
         let model = ModelSnapshot(role: .translation, repository: "fixture", revision: "1",
                                   directory: try RelativePath("fixture/1"), preprocessingVersion: "1")

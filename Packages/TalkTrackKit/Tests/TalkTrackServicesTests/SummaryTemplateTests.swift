@@ -48,12 +48,98 @@ struct SummarySample {
 }
 
 @Suite struct SummaryTemplateTests {
+    /// Version 5: notes on long recordings' parts use plain labels, never "## "
+    /// headings the final summary would copy; older versions keep their prompts.
+    /// Built-in prompts contain no Russian, whatever the output language: headings
+    /// and fixed words are named in English and localized after generation.
+    @Test func builtInPromptsContainNoRussian() throws {
+        func cyrillic(_ text: String) -> [String] {
+            text.split(separator: "\n").map(String.init).filter { $0.unicodeScalars.contains { (0x0400...0x04FF).contains($0.value) } }
+        }
+        var prompts: [String] = [IndexedSpellingCorrection.systemPrompt]
+        for language in OutputLanguage.allCases {
+            prompts += [SummaryPrompt.partSystem(language: language, notes: false),
+                        SummaryPrompt.mergeSystem(language: language, notes: false),
+                        IndexedTranslation.system(language)]
+            for template in SummaryTemplates.current {
+                for fromParts in [false, true] {
+                    prompts.append(SummaryPrompt.system(template, language: language, fromParts: fromParts))
+                    let longest = SummaryPrompt.longestCorrections(template, language: language)
+                    prompts.append(SummaryPrompt.system(template, language: language, fromParts: fromParts, corrections: longest))
+                }
+            }
+        }
+        for prompt in prompts { #expect(cyrillic(prompt).isEmpty, "\(cyrillic(prompt))") }
+        let russian = SummaryPrompt.system(try #require(SummaryTemplates.template(.standup)), language: .russian)
+        #expect(russian.contains("Write the whole summary in Russian") && russian.contains("## Updates by Person\n"))
+    }
+
+    /// The response's English frame becomes the summary language's headings and words.
+    @Test func localizedFrameTranslatesOnlyHeadingsAndFixedWords() throws {
+        let standup = try #require(SummaryTemplates.template(.standup))
+        let response = """
+        ## Updates by Person
+        - **Voice1**: закончил отчёт [09:00:01]
+
+        ## Blockers
+        None noted.
+
+        ## Decisions
+        - Перенести релиз [09:01:00]
+
+        ## Action Items
+        - [ ] Отправить письмо — Owner: Voice1 — Due: пятница [09:02:00]
+        - [ ] Обновить карту — Owner: not specified [09:03:00]
+        """
+        let localized = SummaryCheck.localizedFrame(response, template: standup, language: .russian)
+        #expect(localized == """
+        ## Обновления по участникам
+        - **Voice1**: закончил отчёт [09:00:01]
+
+        ## Блокеры
+        Не отмечено.
+
+        ## Решения
+        - Перенести релиз [09:01:00]
+
+        ## Задачи
+        - [ ] Отправить письмо — Ответственный: Voice1 — Срок: пятница [09:02:00]
+        - [ ] Обновить карту — Ответственный: не указан [09:03:00]
+        """)
+        #expect(SummaryJobPipeline.isValid(localized, template: standup, language: .russian))
+        #expect(SummaryJobPipeline.isValid(response, template: standup, language: .english))
+        // Action items with another bullet, as 4B and 9B sometimes write them.
+        #expect(SummaryCheck.localizedFrame("- - [ ] Письмо — Owner: Антон — Due: [09:35:24]\n*   Отчёт — Owner: Максим [09:41:52]",
+                                            template: standup, language: .russian)
+                == "- - [ ] Письмо — Ответственный: Антон — Срок: [09:35:24]\n*   Отчёт — Ответственный: Максим [09:41:52]")
+        // English summaries and earlier versions are unchanged.
+        #expect(SummaryCheck.localizedFrame(response, template: standup, language: .english) == response)
+        let v4 = try #require(SummaryTemplates.template(.standup, version: "4"))
+        #expect(SummaryCheck.localizedFrame(response, template: v4, language: .russian) == response)
+    }
+
+    @Test func version5PartNotesUseLabelsNotHeadings() throws {
+        for language in OutputLanguage.allCases {
+            for prompt in [SummaryPrompt.partSystem(language: language, notes: false),
+                           SummaryPrompt.mergeSystem(language: language, notes: false)] {
+                #expect(prompt.contains("\"Facts and numbers:\"") && !prompt.contains("## Facts and Numbers"))
+            }
+            #expect(SummaryPrompt.partSystem(language: language, notes: false, labelled: false).contains("## Facts and Numbers"))
+        }
+        let current = try #require(SummaryTemplates.template(.auto))
+        let old = try #require(SummaryTemplates.template(.auto, version: "4"))
+        #expect(current.sections == old.sections && current.rules == old.rules)
+        #expect(SummaryPrompt.system(current, language: .english, fromParts: true).contains("they are not headings of the summary"))
+        #expect(!SummaryPrompt.system(old, language: .english, fromParts: true).contains("they are not headings of the summary"))
+        #expect(SummaryPrompt.labelledNotes("5") && !SummaryPrompt.labelledNotes("4"))
+    }
+
     @Test func sixVersionedTypesWithFixedHeadingsInBothLanguages() throws {
         #expect(SummaryTemplates.current.map(\.type) == SummaryType.allCases)
         #expect(SummaryTemplates.current.map(\.title) == ["Auto", "One-to-One", "Customer Discovery", "Hiring Interview", "Standup", "Weekly Review"])
         #expect(ProcessingSettings().templateVersion == SummaryTemplates.currentVersion)
         for template in SummaryTemplates.current {
-            #expect(template.version == "4")
+            #expect(template.version == "5")
             #expect(!template.sections.isEmpty && !template.purpose.isEmpty)
             for language in OutputLanguage.allCases {
                 let titles = template.sections.map { $0.title(language) }
@@ -63,7 +149,7 @@ struct SummarySample {
             #expect(template.sections.contains { ["Action Items", "Next Steps"].contains($0.english) })
         }
         // A version that never existed resolves to nothing, never to a different template.
-        #expect(SummaryTemplates.template(.auto, version: "5") == nil)
+        #expect(SummaryTemplates.template(.auto, version: "6") == nil)
         #expect(SummaryTemplates.template(.standup, version: "1")?.sections.first?.russian == "Кто что делает")
         // Version 2 keeps version 1's sections and rules; only the source changed.
         // Version 3 changes only Standup: people without a work update are left out.
@@ -84,7 +170,7 @@ struct SummarySample {
     /// Version 4: Standup's Russian heading reads as updates, not tasks; reports are
     /// not turned into tasks; decisions are cited bullets; small talk and translation rules.
     @Test func version4ClarifiesStandupDecisionsAndTranslation() throws {
-        let standup = try #require(SummaryTemplates.template(.standup))
+        let standup = try #require(SummaryTemplates.template(.standup, version: "4"))
         #expect(standup.version == "4")
         #expect(standup.sections.map(\.russian) == ["Обновления по участникам", "Блокеры", "Решения", "Задачи"])
         #expect(standup.sections.map(\.english) == ["Updates by Person", "Blockers", "Decisions", "Action Items"])

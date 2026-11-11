@@ -30,6 +30,9 @@ struct SettingsView: View {
             Tab("Text", systemImage: "text.alignleft", value: AppModel.SettingsTab.text) {
                 TextSettings()
             }
+            Tab("Summaries", systemImage: "doc.text", value: AppModel.SettingsTab.summaries) {
+                SummaryTemplatesSettings(presentation: model.summaryTemplates)
+            }
             Tab("Speakers", systemImage: "person.2", value: AppModel.SettingsTab.speakers) {
                 Form { SavedSpeakersView(presentation: model.speakers, preview: model.samplePreview) }.formStyle(.grouped)
             }

@@ -15,6 +15,8 @@ struct WorkspaceServices {
     let jobPolicy: FinalJobPolicy
     let player: MeetingPlayer
     let summaries: SummaryJobPipeline
+    /// Imported summary templates, shared by all libraries.
+    let templates: SummaryTemplateStore
     let runner: FinalJobRunner
     /// The text model for new jobs, read when they are queued (Settings may change it).
     let summaryModel: @MainActor (SummaryModelChoice?) throws -> ModelSnapshot
@@ -31,7 +33,7 @@ struct WorkspaceServices {
         case ready(WorkspacePresentation, WorkspaceServices)
     }
 
-    enum SettingsTab: Hashable, CaseIterable { case general, audio, models, text, speakers, dictation }
+    enum SettingsTab: Hashable, CaseIterable { case general, audio, models, text, summaries, speakers, dictation }
 
     /// Moving the library to another folder (Settings ▸ General).
     enum LibraryMove: Equatable {
@@ -55,6 +57,8 @@ struct WorkspaceServices {
     /// while the Settings window is closed.
     let models: ModelSettingsPresentation?
     let speakers: SavedSpeakersPresentation
+    /// Imported summary templates (Settings ▸ Summaries), shared by all libraries.
+    let summaryTemplates: SummaryTemplatesPresentation
     /// Plays saved-voice samples in Settings ▸ Speakers; nil until a library opens.
     private(set) var samplePreview: VoiceSamplePreview?
     /// New releases on GitHub (Settings ▸ General ▸ Updates, menu bar).
@@ -102,6 +106,7 @@ struct WorkspaceServices {
             setupError = error.localizedDescription
         }
         speakers = SavedSpeakersPresentation(store: VoiceProfileStore(home: Self.profilesHome))
+        summaryTemplates = SummaryTemplatesPresentation(store: SummaryTemplateStore(directory: Self.templatesDirectory))
         if let runtime {
             let dictation = DictationModel(inference: runtime, meetingRecording: { [weak self] in self?.isCapturing ?? false })
             dictation.system.hud.openModels = { [weak self] in
@@ -285,7 +290,10 @@ struct WorkspaceServices {
             let localMissing: @Sendable ([ModelSnapshot]) async throws -> [ModelRole] = {
                 try await runtime.unavailableFinalModels($0.filter { !TextServer.isServer($0) })
             }
-            let summaries = SummaryJobPipeline(store: store, inference: text, missing: localMissing)
+            let templates = summaryTemplates.store
+            // A custom template is read again on every run, so Retry uses its current version.
+            let summaries = SummaryJobPipeline(store: store, inference: text, missing: localMissing,
+                                               customTemplate: { await templates.template(id: $0) })
             let translations = TranslationJobPipeline(store: store, inference: text, missing: localMissing)
             // Calibrated from the user's own confirmations; until then it
             // returns without reading audio or loading models.
@@ -305,6 +313,9 @@ struct WorkspaceServices {
                 }
             }
             await pipeline.setProgressHandler { [weak runner] in runner?.report($0) }
+            // Deleting a template cancels its summaries in this library.
+            summaryTemplates.sessions = store
+            summaryTemplates.runner = runner
             let workspace = WorkspacePresentation(store: store, recorder: recorder, runner: runner)
             workspace.stopPlayback = { [weak player] meetingID in
                 if player?.meetingID == meetingID { player?.pause() }
@@ -350,7 +361,7 @@ struct WorkspaceServices {
             preview.isCapturing = { [weak workspace] in workspace.map { $0.phase != .idle } ?? false }
             state = .ready(workspace, WorkspaceServices(store: store, notes: NotesAutosave(store: store),
                                                         enrollment: enrollment, jobPolicy: policy, player: player,
-                                                        summaries: summaries, runner: runner,
+                                                        summaries: summaries, templates: templates, runner: runner,
                                                         summaryModel: { choice in
                                                             switch choice {
                                                             case .server:
@@ -520,6 +531,12 @@ struct WorkspaceServices {
     /// Voice profiles stay inside a fixture library, never in the real home.
     private static var profilesHome: URL {
         fixtureRoot?.appendingPathComponent("fixture-home") ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    /// Review and fixture runs keep imported templates beside their temporary library.
+    private static var templatesDirectory: URL {
+        fixtureRoot?.appendingPathComponent("fixture-home/Library/Application Support/TalkTrack/Templates", isDirectory: true)
+            ?? SummaryTemplateStore.defaultDirectory
     }
 }
 

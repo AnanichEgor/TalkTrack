@@ -35,11 +35,91 @@ guaranteed.
     is told what the rejected answer got wrong (`SummaryCheck.formatProblems`),
     and bullets that only say there is nothing to report are removed
     (`SummaryCheck.withoutEmptyBullets`).
+  - 5 (2026-11-11): same sections and rules. Notes on the parts of a long
+    recording are grouped under plain labels ("Topics:", "Facts and numbers:" …)
+    instead of `## ` headings, and the final summary is told the labels are not
+    its headings: with `##` notes, 9B at 8K copied `## Facts and Numbers` into
+    summaries and failed the format check (`SummaryPrompt.labelledNotes`).
+    Custom templates are snapshotted with the current version. Prompts contain
+    no Russian: for a Russian summary they name the headings and the fixed
+    words ("None noted.", "Owner:", "Owner: not specified", "Due:") in English
+    and ask for the content in Russian; the format check runs on that English
+    frame, then `SummaryCheck.localizedFrame` puts in the Russian headings and
+    words before saving. An imported template's own headings are used verbatim.
 - **Sampling.** `TextSampling.summary`: temperature 0.2, repetition penalty
   1.05, fixed seed (seed + attempt on the one retry); thinking mode is off.
 - **Translation.** `IndexedTranslation.version` 1: indexed batches of at most 16
   utterance texts; labels, dates, `You` and timestamps are copied from the
   frozen source, never read from the model.
+
+## Custom templates
+
+Users add their own summary types by importing a Markdown file (Settings ▸
+Summaries ▸ Import Template…); there is no in-app editor.
+
+- **Format.** A header between `---` lines with `name` (required), `purpose`,
+  `rules` (a list) and `per_person`, then one `## Heading` and its explanation
+  per section (`SummaryTemplateFile`). Headings appear in the summary exactly as
+  written, whatever the summary language. Decisions, Action Items and Open
+  Questions (English or Russian, any case) may have no explanation and then take
+  the built-in guidance. One code fence around the whole file is ignored.
+- **Bundled guide and example.** `TalkTrack Summary Template Guide.md` and
+  `Example Template.md` are TalkTrackServices resources, in English only; Settings
+  ▸ Summaries ▸ Download Guide & Example… saves both. The guide has a section for
+  AI assistants that write a template from the user's description.
+- **Same core.** A custom template is a `SummaryTemplate` of type `.custom` over
+  the current prompt core: grounding, action-item form, citations, translation,
+  format checks and retries, long-meeting chunking and the empty-bullet filter
+  are the built-in ones. Only sections, explanations and rules differ. The
+  brief-speaker filter runs only in the section named by `per_person`, which also
+  adds Standup's per-person rule.
+- **Validation** (`SummaryTemplateValidator`, no model needed). Errors refuse the
+  import with their line: no header, missing or long name, unknown or repeated
+  header field (with a suggestion for typos), no sections or more than 12, bad or
+  repeated headings, a section without explanation, a `#` line in an
+  explanation, `per_person` naming no section, a field over its limit, or a
+  template over the size budget. Warnings never block: more than 8 sections,
+  very short explanations, requests for tables/JSON/numbering/headings,
+  computed times or guessed speakers, rules that repeat the core, headings in
+  another language than the summary language, nearly identical explanations.
+- **Size budget.** Sections, explanations and rules are estimated as UTF-8
+  bytes / 3 and limited to 700 estimated tokens; explanations to 600 and rules
+  to 400 characters, at most 10 rules, names and headings to 60. Measured with
+  the 9B and 4B tokenizers (identical counts) on 2026-11-11: real tokens are
+  0.62–0.69 of the estimate for English text and about 0.5 for Russian. The
+  final request without any recording (prompt, the longest retry note, a
+  60-character title and 300-character description) takes 1153–1318 tokens for
+  the built-in types, 1192 for the example, 1396 for an 8-section Russian
+  template estimated at 696, and 1554 for an English template estimated at 728.
+  The budget was set when 4K was selectable: there a template at the budget left
+  about 500 tokens for the recording's notes. Since 2026-11-11 the smallest
+  context is 8K, which leaves several thousand. Measure again with
+  `scripts/inference-fixture.sh template-budget <out.json> [<template.md> ...]`
+  (local developer tool).
+- **Storage.** `~/Library/Application Support/TalkTrack/Templates`: `<id>.md`
+  (the imported text, LF, one trailing newline) and `Templates.json` (names,
+  order, import dates), shared by all libraries on the Mac. Re-importing a file
+  with an existing name replaces that template after confirmation and keeps its
+  place; only the current version is kept. A file that no longer parses is
+  listed as damaged with Delete only.
+- **Provenance.** A job references the template by id, name and SHA-256 of its
+  text (`ProcessingSettings.customTemplate`) and stores no content. The summary
+  records the hash of the version actually used
+  (`GeneratedOutput.templateContentHash`); Retry resolves the template again and
+  uses its current version. Replacing a template marks its summaries Outdated.
+- **Missing template.** A summary whose template was deleted, or whose library
+  was opened on another Mac, stays readable with its stored name and "(template
+  deleted)"; it is not Outdated. The picker asks to choose a template and
+  Generate, Regenerate and Retry stay unavailable until one is chosen; under the
+  chosen template such summaries count as made with another type. Deleting
+  a template cancels its queued and running summaries after confirmation.
+- **Context.** A template that leaves no room for the recording at the selected
+  context fails before any model work with "The template … is too large for the
+  8K context"; within the budget this can only happen to a historical 4K job (`SummaryGenerationError.templateTooLarge`); the previous summary
+  stays.
+- **Library compatibility.** The first summary job with a custom template raises
+  the library schema to 4; older builds then refuse the library. Libraries that
+  never used one stay at 3.
 
 ## Complete-input chunking
 
@@ -47,7 +127,7 @@ guaranteed.
 with the job's own tokenizer and never clips input:
 
 1. **Direct** when the input plus the summary reserve fits the selected context
-   (Auto picks the smallest of 4K–64K; default 32K).
+   (Auto picks the smallest of 8K–64K; default 32K; 4K was removed on 2026-11-11, saved 4K preferences become 8K and old 4K jobs keep their budget).
 2. **Parts** otherwise: transcript blocks are packed in order into parts; a
    block too large alone is split at word boundaries and each piece keeps its
    `[time]: Speaker - ` prefix and date line. Each part becomes notes.

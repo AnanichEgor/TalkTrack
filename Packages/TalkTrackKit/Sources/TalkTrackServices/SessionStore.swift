@@ -3,7 +3,10 @@ import CryptoKit
 import TalkTrackDomain
 
 public actor SessionStore {
-    static let schemaVersion = 3
+    /// Version 4 differs from 3 only by summary jobs that reference a custom
+    /// template; a library is raised to 4 by its first such job, so libraries
+    /// that never use one stay readable by older builds (custom-summary-templates D8).
+    static let schemaVersion = 4
     static let applicationID = 0x54414C4B
     public nonisolated let library: OpenedLibrary
     private var connection: SQLiteConnection?
@@ -449,14 +452,16 @@ public actor SessionStore {
     /// `Generate Summaries`: one job per recording whose final transcript is
     /// ready and whose summary is missing or outdated under `settings`.
     /// Recordings with an active summary job or unfinished final text are skipped.
-    public func enqueueSummaries(meetingID: UUID, settings: ProcessingSettings, model: ModelSnapshot) throws -> [ProcessingJob] {
+    /// `templateHashes`: the current content hash of each custom template, by id.
+    public func enqueueSummaries(meetingID: UUID, settings: ProcessingSettings, model: ModelSnapshot,
+                                 templateHashes: [UUID: String] = [:]) throws -> [ProcessingJob] {
         try db.transaction {
             var queued: [ProcessingJob] = []
             for recording in try recordings(meetingID: meetingID) {
                 guard (try? requireSummarySource(meetingID: meetingID, recordingID: recording.id)) != nil,
                       try activeSummaryJob(meetingID: meetingID, recordingID: recording.id) == nil else { continue }
                 if let current = try summary(meetingID: meetingID, recordingID: recording.id),
-                   try !isOutdated(current, settings: settings) { continue }
+                   try !isOutdated(current, settings: settings, templateHashes: templateHashes) { continue }
                 queued.append(try writeSummaryJob(meetingID: meetingID, recordingID: recording.id, settings: settings, model: model))
             }
             return queued
@@ -465,8 +470,11 @@ public actor SessionStore {
 
     private func writeSummaryJob(meetingID: UUID, recordingID: UUID, settings: ProcessingSettings,
                                  model: ModelSnapshot) throws -> ProcessingJob {
-        guard model.role == .summary,
-              SummaryTemplates.template(settings.summaryType, version: settings.templateVersion) != nil else {
+        // A custom template is referenced, not stored; the caller resolved it.
+        let custom = settings.summaryType == .custom
+        guard model.role == .summary, custom == (settings.customTemplate != nil),
+              custom ? settings.templateVersion == SummaryTemplates.currentVersion
+                     : SummaryTemplates.template(settings.summaryType, version: settings.templateVersion) != nil else {
             throw SummaryGenerationError.invalidRequest
         }
         try requireSummarySource(meetingID: meetingID, recordingID: recordingID)
@@ -480,6 +488,8 @@ public actor SessionStore {
         let job = ProcessingJob(snapshot: ProcessingJobSnapshot(kind: .summary, recordingID: recordingID,
             source: try sourceSnapshot(meetingID: meetingID), settings: settings, models: [model]))
         try saveJob(job)
+        // Older builds cannot read a job that names a custom template (D8).
+        if custom, try db.integer("PRAGMA user_version") < 4 { try db.execute("PRAGMA user_version = 4") }
         // Notes are not summary input (user decision, 2026-10-13).
         let source = SummarySource(job: job.snapshot, meeting: transcript.meeting, notes: nil,
             recordings: [recording], revisions: [revision],
@@ -609,6 +619,13 @@ public actor SessionStore {
             }
         }
         return directories
+    }
+
+    /// Queued, running or model-waiting summary jobs of all meetings that use
+    /// the custom template `templateID` (deleting it cancels them, D7).
+    public func unfinishedSummaryJobs(templateID: UUID) throws -> [ProcessingJob] {
+        try meetings().flatMap { meeting -> [ProcessingJob] in try records(.job, meetingID: meeting.id) }
+            .filter { $0.snapshot.kind == .summary && !$0.stage.isEnded && $0.snapshot.settings.customTemplate?.id == templateID }
     }
 
     /// Queued jobs of one kind across all meetings, oldest first.
@@ -1580,16 +1597,29 @@ public actor SessionStore {
         return try head(kind == .summary ? .summary : .translation, meetingID: meetingID)
     }
 
-    public func isOutdated(_ output: GeneratedOutput, settings: ProcessingSettings) throws -> Bool {
+    /// `templateHashes`: the current content hash of each custom template, by id.
+    /// A summary whose custom template is missing is not outdated under its own
+    /// template, which cannot be used again; another chosen template or type
+    /// is a changed type, as always (custom-summary-templates D5).
+    public func isOutdated(_ output: GeneratedOutput, settings: ProcessingSettings,
+                           templateHashes: [UUID: String] = [:]) throws -> Bool {
         let source = try sourceSnapshot(meetingID: output.job.source.meetingID)
         let old = output.job.settings
+        var templateChanged = false
+        if output.kind == .summary, old.summaryType == .custom, let reference = old.customTemplate {
+            guard let current = templateHashes[reference.id] else {
+                return settings.summaryType != .custom || settings.customTemplate?.id != reference.id
+            }
+            templateChanged = current != (output.templateContentHash ?? reference.contentHash)
+                || settings.customTemplate?.id != reference.id
+        }
         // `templateVersion` is per kind; an output is current only at its kind's current version.
         let currentVersion = output.kind == .summary ? SummaryTemplates.currentVersion : IndexedTranslation.version
         // A text server has no context limit; choosing between it and a local
         // model is a model choice, which never outdates a result.
         let contextChanged = old.contextLimit != settings.contextLimit
             && old.contextLimit != .unbounded && settings.contextLimit != .unbounded
-        let settingsChanged = contextChanged || old.templateVersion != currentVersion ||
+        let settingsChanged = contextChanged || templateChanged || old.templateVersion != currentVersion ||
             (output.kind == .summary ? old.summaryLanguage != settings.summaryLanguage || old.summaryType != settings.summaryType :
                                       old.translationLanguage != settings.translationLanguage)
         if output.kind == .summary, let recordingID = output.job.recordingID {

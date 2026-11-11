@@ -65,7 +65,9 @@ public enum ProcessingPreferences {
     public static func context(in defaults: UserDefaults = .standard) -> ContextLimit {
         let raw = (defaults.object(forKey: contextKey) as? Int) ?? ContextLimit.defaultSelection.rawValue
         let decoded = ContextLimit(rawValue: raw) ?? .defaultSelection
-        let selected: ContextLimit = ContextLimit.allCases.contains(decoded) ? decoded : .maximumSelectable
+        // A value no longer offered becomes the nearest one: 4K becomes 8K, 128K becomes 64K.
+        let selected: ContextLimit = ContextLimit.allCases.contains(decoded) ? decoded
+            : ContextLimit.manualOptions.first { $0.rawValue >= decoded.rawValue } ?? .maximumSelectable
         if selected.rawValue != raw { defaults.set(selected.rawValue, forKey: contextKey) }
         return selected
     }

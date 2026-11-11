@@ -111,9 +111,10 @@ durable review requests. Task 5.5 passed deterministic publication/reconciliatio
 fixtures; actual text-model staging/correction subsequently passed task 5.4.
 
 Text requests are admitted by the Mac's RAM, not by currently free memory (see below).
-Settings persist Auto, 4K, 8K, 16K, 32K and 64K (K = 1,024 tokens),
+Settings persist Auto, 8K, 16K, 32K and 64K (K = 1,024 tokens),
 defaulting to 32K, with 64K as the maximum offered size. The user removed
-the 128K option on 2026-10-08. The budget includes all chat-formatted input and reserved output.
+the 128K option on 2026-10-08 and 4K on 2026-11-11 (a saved 4K becomes 8K;
+4K jobs already queued keep their budget). The budget includes all chat-formatted input and reserved output.
 Auto selects the smallest offered size that fits the tokenizer's exact input count
 plus a task-specific response reserve. Summary reserves equal the input count,
 from 1,024 to 8,192 tokens (at most half of a manual context); translation

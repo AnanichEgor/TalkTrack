@@ -15,7 +15,7 @@ struct SummaryTab: View {
         self.captureActive = captureActive; self.export = export
         _presentation = State(initialValue: SummaryPresentation(meetingID: meetingID, store: services.store,
             runner: services.runner, pipeline: services.summaries, model: services.summaryModel,
-            settings: { SummaryModelOptions.settings(for: $0) }))
+            settings: { SummaryModelOptions.settings(for: $0) }, templates: services.templates))
     }
 
     /// The text server when it is set up, then the downloaded local text models.
@@ -39,8 +39,19 @@ struct SummaryTab: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 export
-                Picker("Summary type", selection: $presentation.type) {
-                    ForEach(SummaryTemplates.current, id: \.type) { Text($0.title).tag($0.type) }
+                Picker("Summary type", selection: $presentation.selection) {
+                    if presentation.selection == nil {
+                        Text("Choose a template").tag(SummaryTemplateChoice?.none)
+                    }
+                    ForEach(SummaryTemplates.current, id: \.type) { template in
+                        Label(template.title, systemImage: template.icon).tag(SummaryTemplateChoice?.some(.builtIn(template.type)))
+                    }
+                    if !presentation.customTemplates.isEmpty {
+                        Divider()
+                        ForEach(presentation.customTemplates) { template in
+                            Label(template.name, systemImage: CustomSummaryTemplate.icon).tag(SummaryTemplateChoice?.some(.custom(template.id)))
+                        }
+                    }
                 }
                 .frame(maxWidth: 290)
                 .disabled(presentation.isBusy)
@@ -66,6 +77,10 @@ struct SummaryTab: View {
             if captureActive {
                 Text("Stop recording before generating summaries.").font(.callout).foregroundStyle(.secondary)
             }
+            if presentation.loaded && presentation.selection == nil {
+                Text("The template of these summaries was deleted. Choose a template to generate summaries.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             Divider()
             if presentation.loaded && presentation.entries.isEmpty {
                 ContentUnavailableView("No Recordings", systemImage: "text.alignleft",
@@ -87,7 +102,7 @@ struct SummaryTab: View {
                 do { try await Task.sleep(for: .milliseconds(500)) } catch { break }
             }
         }
-        .onChange(of: presentation.type) { _, _ in Task { await presentation.refresh() } }
+        .onChange(of: presentation.selection) { _, _ in Task { await presentation.refresh() } }
     }
 
     @ViewBuilder private func section(_ entry: SummaryPresentation.Entry) -> some View {
@@ -119,9 +134,8 @@ struct SummaryTab: View {
                 }
             }
             if let output = entry.output {
-                let template = SummaryTemplates.template(output.job.settings.summaryType)
                 HStack(spacing: 8) {
-                    tag(template?.title ?? output.job.settings.summaryType.rawValue, icon: template?.icon ?? "doc.text")
+                    templateTag(output.job.settings, missing: entry.templateMissing)
                     tag(output.job.settings.summaryLanguage == .english ? "English" : "Russian", icon: "globe")
                     Text("Generated \(output.createdAt.formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption).foregroundStyle(.secondary)
@@ -139,8 +153,10 @@ struct SummaryTab: View {
                     Text(status).font(.callout).textSelection(.enabled).id(status)
                         .fixedSize(horizontal: false, vertical: true)
                     if entry.canRetry {
-                        Button("Retry") { Task { await presentation.retry(entry) } }.disabled(captureActive || presentation.isBusy)
-                            .help("Retry using this request’s saved transcript and settings")
+                        Button("Retry") { Task { await presentation.retry(entry) } }
+                            .disabled(captureActive || !presentation.canRetry(entry))
+                            .help(entry.templateMissing ? "The template of this request was deleted. Choose a template and generate the summary again."
+                                  : "Retry using this request’s saved transcript and settings")
                     }
                     if entry.job?.stage == .waitingForModels {
                         Button("Download Model…") { app.showMissingModels([.summary]); app.showSettings(openSettings) }
@@ -162,6 +178,18 @@ struct SummaryTab: View {
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// The type or imported template a summary was made with; a deleted template keeps its saved name.
+    @ViewBuilder private func templateTag(_ settings: ProcessingSettings, missing: Bool) -> some View {
+        if settings.summaryType == .custom {
+            let name = settings.customTemplate?.name ?? "Custom template"
+            tag(missing ? "\(name) (template deleted)" : name, icon: CustomSummaryTemplate.icon)
+                .help(missing ? "This summary’s template was deleted. Its text stays; choose a template to generate it again." : "Imported template")
+        } else {
+            let template = SummaryTemplates.template(settings.summaryType)
+            tag(template?.title ?? settings.summaryType.rawValue, icon: template?.icon ?? "doc.text")
+        }
     }
 
     private func tag(_ text: String, icon: String) -> some View {

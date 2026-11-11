@@ -27,20 +27,40 @@ public enum ContextLimit: Int, Codable, CaseIterable, Sendable {
     case automatic = 0
     case tokens4K = 4096, tokens8K = 8192, tokens16K = 16384
     case small = 32768, standard = 65536, large = 131072
-    // Preserve historical immutable jobs; neither large budget is selectable.
+    // Preserve historical immutable jobs; neither large budget nor 4K (removed
+    // 2026-11-11: too little room beside a template) is selectable.
     case legacy126K = 129024
     /// Text-server jobs: TalkTrack sets no context or output limit; the server decides.
     case unbounded = 9223372036854775807
 
     public static let defaultSelection: ContextLimit = .small
     public static let maximumSelectable: ContextLimit = .standard
-    public static let allCases: [ContextLimit] = [.automatic, .tokens4K, .tokens8K, .tokens16K, .small, .standard]
+    public static let allCases: [ContextLimit] = [.automatic, .tokens8K, .tokens16K, .small, .standard]
     public static var manualOptions: [ContextLimit] { allCases.filter { $0 != .automatic } }
+    public static let minimumSelectable: ContextLimit = .tokens8K
     public static func supports(tokenCount: Int) -> Bool { tokenCount > 0 && Self(rawValue: tokenCount) != nil }
     public var label: String { self == .automatic ? "Auto" : self == .unbounded ? "Server" : "\(rawValue / 1024)K" }
 }
 public enum SummaryType: String, Codable, CaseIterable, Sendable {
     case auto, oneToOne, customerDiscovery, hiringInterview, standup, weeklyReview
+    /// A template the user imported; `ProcessingSettings.customTemplate` names it.
+    case custom
+
+    /// The built-in types. `.custom` is not one: each imported template is its own choice.
+    public static let allCases: [SummaryType] = [.auto, .oneToOne, .customerDiscovery, .hiringInterview, .standup, .weeklyReview]
+}
+
+/// An imported summary template, referenced by a job instead of stored with it
+/// (custom-summary-templates D5): its id, its name when the job was queued, and
+/// the SHA-256 of the file text then.
+public struct CustomTemplateReference: Codable, Equatable, Hashable, Sendable {
+    public let id: UUID
+    public let name: String
+    public let contentHash: String
+
+    public init(id: UUID, name: String, contentHash: String) {
+        self.id = id; self.name = name; self.contentHash = contentHash
+    }
 }
 
 public struct ProcessingSettings: Codable, Equatable, Sendable {
@@ -53,11 +73,16 @@ public struct ProcessingSettings: Codable, Equatable, Sendable {
     /// Final transcripts run the text model's spelling pass. Snapshots saved
     /// before this setting existed always ran it, so a missing value is true.
     public var spellingCorrection: Bool
+    /// The imported template of a `.custom` summary; nil (and absent from the
+    /// JSON) otherwise, so built-in jobs keep the shape older builds read.
+    public var customTemplate: CustomTemplateReference?
 
     public init(meetingLanguage: MeetingLanguage = .auto, summaryLanguage: OutputLanguage = .english,
                 translationLanguage: OutputLanguage = .russian, contextLimit: ContextLimit = .defaultSelection,
-                summaryType: SummaryType = .auto, templateVersion: String = "4", spellingCorrection: Bool = true) {
+                summaryType: SummaryType = .auto, templateVersion: String = "5", spellingCorrection: Bool = true,
+                customTemplate: CustomTemplateReference? = nil) {
         self.spellingCorrection = spellingCorrection
+        self.customTemplate = customTemplate
         self.meetingLanguage = meetingLanguage
         self.summaryLanguage = summaryLanguage
         self.translationLanguage = translationLanguage
@@ -67,7 +92,7 @@ public struct ProcessingSettings: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case meetingLanguage, summaryLanguage, translationLanguage, contextLimit, summaryType, templateVersion, spellingCorrection
+        case meetingLanguage, summaryLanguage, translationLanguage, contextLimit, summaryType, templateVersion, spellingCorrection, customTemplate
     }
 
     public init(from decoder: any Decoder) throws {
@@ -79,6 +104,7 @@ public struct ProcessingSettings: Codable, Equatable, Sendable {
         summaryType = try c.decode(SummaryType.self, forKey: .summaryType)
         templateVersion = try c.decode(String.self, forKey: .templateVersion)
         spellingCorrection = try c.decodeIfPresent(Bool.self, forKey: .spellingCorrection) ?? true
+        customTemplate = try c.decodeIfPresent(CustomTemplateReference.self, forKey: .customTemplate)
     }
 }
 
@@ -197,9 +223,14 @@ public struct GeneratedOutput: Codable, Equatable, Identifiable, Sendable {
     public let text: String
     public let translatedSegments: [TranslatedSegment]
     public let createdAt: Date
+    /// The content hash of the custom template version this summary was
+    /// actually made with; Retry may use a newer version than the job named.
+    public let templateContentHash: String?
 
     public init(id: UUID = UUID(), kind: GeneratedOutputKind, job: ProcessingJobSnapshot,
-                text: String, translatedSegments: [TranslatedSegment] = [], createdAt: Date = Date()) {
+                text: String, translatedSegments: [TranslatedSegment] = [], createdAt: Date = Date(),
+                templateContentHash: String? = nil) {
+        self.templateContentHash = templateContentHash
         self.id = id
         self.kind = kind
         self.job = job

@@ -19,7 +19,8 @@ import UniformTypeIdentifiers
         do {
             var settings = ProcessingPreferences.snapshot()
             settings.templateVersion = IndexedTranslation.version
-            snapshot = try await services.store.meetingExport(meetingID: meetingID, settings: settings)
+            snapshot = try await services.store.meetingExport(meetingID: meetingID, settings: settings,
+                                                              templateHashes: await services.templates.hashes())
         } catch {
             workspace.issue = WorkspaceIssue(message: "This meeting could not be read for export.", recovery: error.localizedDescription)
             return
